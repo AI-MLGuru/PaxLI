@@ -20,9 +20,7 @@ async def list_audit_events(
     session_id: UUID,
     request: Request,
     audit_service: AuditService = Depends(get_audit_service),  # noqa: B008
-    session_service: VerificationSessionService = Depends(
-        get_session_service
-    ),  # noqa: B008
+    session_service: VerificationSessionService = Depends(get_session_service),
     tenant_id: str = Depends(tenant_header),  # noqa: B008
 ) -> AuditEventListEnvelope:
     try:

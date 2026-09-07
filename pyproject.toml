@@ -47,6 +47,13 @@ line-length = 100
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
 
+[tool.ruff.lint.per-file-ignores]
+"apps/api/averiq_api/routers/*.py" = ["B008"]
+
+[tool.black]
+target-version = ["py312"]
+line-length = 100
+
 [tool.mypy]
 python_version = "3.12"
 strict = true

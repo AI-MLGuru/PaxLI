@@ -13,9 +13,9 @@ class FailureReason:
 
 
 @dataclass(frozen=True)
-class ComponentResult:
+class ComponentResult[T]:
     outcome: ComponentOutcome
-    evidence: Any = None
+    evidence: T | None = None
     reason: FailureReason | None = None
     attempts: int = 1
 

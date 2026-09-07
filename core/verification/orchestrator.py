@@ -3,6 +3,7 @@ from collections.abc import Awaitable, Callable
 from core.reliability.circuit_breaker import CircuitBreaker, CircuitOpenError
 from core.reliability.enums import ComponentOutcome, FailureCategory
 from core.reliability.executor import execute_with_reliability
+from core.reliability.metrics import ReliabilityMetrics
 from core.reliability.models import ComponentResult, FailureReason
 from core.reliability.policies import RetryPolicy
 from core.verification.enums import VerificationStatus
@@ -26,12 +27,16 @@ class VerificationOrchestrator:
         timeout_seconds: float = 5.0,
         retry_policy: RetryPolicy | None = None,
         circuit_breaker: CircuitBreaker | None = None,
-    ) -> ComponentResult:
+        metrics: ReliabilityMetrics | None = None,
+    ) -> ComponentResult[object]:
         """Run one engine safely; dependency failure never becomes a rejection."""
         await self.process(session)
         policy = retry_policy or RetryPolicy()
+        result: ComponentResult[object]
         if circuit_breaker is not None and not circuit_breaker.allow_request():
-            result = ComponentResult(
+            if metrics is not None:
+                metrics.record_circuit_open()
+            result = ComponentResult[object](
                 ComponentOutcome.UNAVAILABLE,
                 reason=FailureReason(
                     "DEPENDENCY_CIRCUIT_OPEN",
@@ -49,9 +54,10 @@ class VerificationOrchestrator:
                     category=category,
                     timeout_code="DEPENDENCY_TIMEOUT",
                     unavailable_code="DEPENDENCY_UNAVAILABLE",
+                    metrics=metrics,
                 )
             except CircuitOpenError:
-                result = ComponentResult(
+                result = ComponentResult[object](
                     ComponentOutcome.UNAVAILABLE,
                     reason=FailureReason(
                         "DEPENDENCY_CIRCUIT_OPEN",
