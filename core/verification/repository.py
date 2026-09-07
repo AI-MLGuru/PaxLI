@@ -10,9 +10,7 @@ class VerificationSessionRepository(Protocol):
         self, session: VerificationSession, idempotency_key: str | None = None
     ) -> VerificationSession: ...
 
-    async def get(
-        self, session_id: UUID, tenant_id: str
-    ) -> VerificationSession | None: ...
+    async def get(self, session_id: UUID, tenant_id: str) -> VerificationSession | None: ...
 
     async def get_by_idempotency_key(
         self, tenant_id: str, idempotency_key: str

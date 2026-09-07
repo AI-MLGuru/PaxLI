@@ -12,9 +12,7 @@ class SqlAlchemyEvidenceRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def add(
-        self, evidence: Evidence, idempotency_key: str | None = None
-    ) -> Evidence:
+    async def add(self, evidence: Evidence, idempotency_key: str | None = None) -> Evidence:
         record = EvidenceRecord.from_domain(evidence, idempotency_key)
         self.session.add(record)
         await self.session.commit()
@@ -31,9 +29,7 @@ class SqlAlchemyEvidenceRepository:
         record = (await self.session.execute(statement)).scalar_one_or_none()
         return record.to_domain() if record else None
 
-    async def list_for_session(
-        self, session_id: UUID, tenant_id: str
-    ) -> Sequence[Evidence]:
+    async def list_for_session(self, session_id: UUID, tenant_id: str) -> Sequence[Evidence]:
         statement = (
             select(EvidenceRecord)
             .where(

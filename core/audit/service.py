@@ -108,7 +108,5 @@ class AuditService:
                 ) from exception
             return event
 
-    async def list_for_session(
-        self, *, session_id: UUID, tenant_id: str
-    ) -> Sequence[AuditEvent]:
+    async def list_for_session(self, *, session_id: UUID, tenant_id: str) -> Sequence[AuditEvent]:
         return await self.repository.list_for_session(session_id, tenant_id)

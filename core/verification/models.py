@@ -17,9 +17,7 @@ class VerificationSession(BaseModel):
     status: VerificationStatus = VerificationStatus.CREATED
     assurance_level: AssuranceLevel = AssuranceLevel.STANDARD
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    expires_at: datetime = Field(
-        default_factory=lambda: datetime.now(UTC) + timedelta(minutes=30)
-    )
+    expires_at: datetime = Field(default_factory=lambda: datetime.now(UTC) + timedelta(minutes=30))
     completed_at: datetime | None = None
 
     def transition_to(self, status: VerificationStatus) -> None:

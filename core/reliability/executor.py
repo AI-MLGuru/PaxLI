@@ -39,21 +39,23 @@ async def execute_with_reliability[T](
     for attempt in range(1, retry_policy.max_attempts + 1):
         try:
             value = await asyncio.wait_for(operation(), timeout=timeout_seconds)
-            return record(ComponentResult(
-                ComponentOutcome.SUCCESS, evidence=value, attempts=attempt
-            ))
+            return record(
+                ComponentResult(ComponentOutcome.SUCCESS, evidence=value, attempts=attempt)
+            )
         except TimeoutError:
             if attempt == retry_policy.max_attempts:
-                return record(ComponentResult(
-                    ComponentOutcome.TIMEOUT,
-                    reason=FailureReason(
-                        timeout_code,
-                        category,
-                        "Dependency operation timed out",
-                        retryable=True,
-                    ),
-                    attempts=attempt,
-                ))
+                return record(
+                    ComponentResult(
+                        ComponentOutcome.TIMEOUT,
+                        reason=FailureReason(
+                            timeout_code,
+                            category,
+                            "Dependency operation timed out",
+                            retryable=True,
+                        ),
+                        attempts=attempt,
+                    )
+                )
             delay = min(
                 retry_policy.max_delay_seconds,
                 retry_policy.base_delay_seconds * (2 ** (attempt - 1)),
@@ -62,16 +64,18 @@ async def execute_with_reliability[T](
             await sleep(delay)
         except retryable_exceptions:
             if attempt == retry_policy.max_attempts:
-                return record(ComponentResult(
-                    ComponentOutcome.UNAVAILABLE,
-                    reason=FailureReason(
-                        unavailable_code,
-                        category,
-                        "Dependency operation is unavailable",
-                        retryable=True,
-                    ),
-                    attempts=attempt,
-                ))
+                return record(
+                    ComponentResult(
+                        ComponentOutcome.UNAVAILABLE,
+                        reason=FailureReason(
+                            unavailable_code,
+                            category,
+                            "Dependency operation is unavailable",
+                            retryable=True,
+                        ),
+                        attempts=attempt,
+                    )
+                )
             delay = min(
                 retry_policy.max_delay_seconds,
                 retry_policy.base_delay_seconds * (2 ** (attempt - 1)),
@@ -79,15 +83,17 @@ async def execute_with_reliability[T](
             delay *= 1 + retry_policy.jitter_ratio * random_value()
             await sleep(delay)
         except Exception as exception:
-            return record(ComponentResult(
-                ComponentOutcome.FAILED,
-                reason=FailureReason(
-                    "DEPENDENCY_NON_RETRYABLE_FAILURE",
-                    category,
-                    str(exception)[:512],
-                    retryable=False,
-                ),
-                attempts=attempt,
-            ))
+            return record(
+                ComponentResult(
+                    ComponentOutcome.FAILED,
+                    reason=FailureReason(
+                        "DEPENDENCY_NON_RETRYABLE_FAILURE",
+                        category,
+                        str(exception)[:512],
+                        retryable=False,
+                    ),
+                    attempts=attempt,
+                )
+            )
 
     raise AssertionError("retry loop must return")

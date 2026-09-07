@@ -12,9 +12,7 @@ from infrastructure.database.base import Base
 class VerificationSessionRecord(Base):
     __tablename__ = "verification_sessions"
     __table_args__ = (
-        UniqueConstraint(
-            "tenant_id", "idempotency_key", name="uq_session_tenant_idempotency"
-        ),
+        UniqueConstraint("tenant_id", "idempotency_key", name="uq_session_tenant_idempotency"),
         Index("ix_session_tenant_id", "tenant_id"),
     )
 
@@ -24,12 +22,8 @@ class VerificationSessionRecord(Base):
     idempotency_key: Mapped[str | None] = mapped_column(String(256))
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     assurance_level: Mapped[str] = mapped_column(String(32), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
-    expires_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     @classmethod

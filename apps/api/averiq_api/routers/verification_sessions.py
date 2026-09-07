@@ -77,9 +77,7 @@ async def get_session(
     try:
         session = await service.get(session_id=session_id, tenant_id=tenant_id)
     except SessionNotFoundError as exc:
-        raise HTTPException(
-            status_code=404, detail="Verification session not found"
-        ) from exc
+        raise HTTPException(status_code=404, detail="Verification session not found") from exc
     await audit_service.record(
         tenant_id=tenant_id,
         session_id=session.id,
@@ -115,13 +113,9 @@ async def cancel_session(
     try:
         session = await service.cancel(session_id=session_id, tenant_id=tenant_id)
     except SessionNotFoundError as exc:
-        raise HTTPException(
-            status_code=404, detail="Verification session not found"
-        ) from exc
+        raise HTTPException(status_code=404, detail="Verification session not found") from exc
     except SessionExpiredError as exc:
-        raise HTTPException(
-            status_code=409, detail="Verification session has expired"
-        ) from exc
+        raise HTTPException(status_code=409, detail="Verification session has expired") from exc
     await audit_service.record(
         tenant_id=tenant_id,
         session_id=session.id,

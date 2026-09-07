@@ -44,37 +44,23 @@ app.include_router(evidence_router, prefix=settings.api_prefix)
 app.include_router(audit_router, prefix=settings.api_prefix)
 
 
-def error_response(
-    request: Request, code: str, message: str, status_code: int
-) -> JSONResponse:
+def error_response(request: Request, code: str, message: str, status_code: int) -> JSONResponse:
     body = ErrorEnvelope(
         error=ErrorBody(code=code, message=message),
-        meta=ResponseMeta(
-            request_id=request.headers.get("X-Request-ID", "req_unknown")
-        ),
+        meta=ResponseMeta(request_id=request.headers.get("X-Request-ID", "req_unknown")),
     )
     return JSONResponse(status_code=status_code, content=body.model_dump(mode="json"))
 
 
 @app.exception_handler(HTTPException)
-async def http_exception_handler(
-    request: Request, exception: HTTPException
-) -> JSONResponse:
-    code = (
-        "VERIFICATION_SESSION_NOT_FOUND"
-        if exception.status_code == 404
-        else "REQUEST_ERROR"
-    )
+async def http_exception_handler(request: Request, exception: HTTPException) -> JSONResponse:
+    code = "VERIFICATION_SESSION_NOT_FOUND" if exception.status_code == 404 else "REQUEST_ERROR"
     return error_response(request, code, str(exception.detail), exception.status_code)
 
 
 @app.exception_handler(RequestValidationError)
-async def validation_exception_handler(
-    request: Request, _: RequestValidationError
-) -> JSONResponse:
-    return error_response(
-        request, "INVALID_REQUEST", "The request payload is invalid.", 422
-    )
+async def validation_exception_handler(request: Request, _: RequestValidationError) -> JSONResponse:
+    return error_response(request, "INVALID_REQUEST", "The request payload is invalid.", 422)
 
 
 @app.exception_handler(AuditPersistenceError)
@@ -100,7 +86,5 @@ async def readiness() -> dict[str, str]:
         async with engine.connect() as connection:
             await connection.execute(text("SELECT 1"))
     except Exception as exception:
-        raise HTTPException(
-            status_code=503, detail="Database is unavailable"
-        ) from exception
+        raise HTTPException(status_code=503, detail="Database is unavailable") from exception
     return {"status": "ready"}

@@ -29,9 +29,7 @@ class VerificationSessionService:
         idempotency_key: str | None = None,
     ) -> VerificationSession:
         if idempotency_key:
-            existing = await self.repository.get_by_idempotency_key(
-                tenant_id, idempotency_key
-            )
+            existing = await self.repository.get_by_idempotency_key(tenant_id, idempotency_key)
             if existing is not None:
                 return existing
         session = VerificationSession.create(

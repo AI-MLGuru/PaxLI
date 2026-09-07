@@ -58,13 +58,9 @@ async def store_upload(
             idempotency_key=idempotency_key,
         )
     except SessionNotFoundError as exc:
-        raise HTTPException(
-            status_code=404, detail="Verification session not found"
-        ) from exc
+        raise HTTPException(status_code=404, detail="Verification session not found") from exc
     except SessionExpiredError as exc:
-        raise HTTPException(
-            status_code=409, detail="Verification session is not active"
-        ) from exc
+        raise HTTPException(status_code=409, detail="Verification session is not active") from exc
     await audit_service.record(
         tenant_id=tenant_id,
         session_id=session_id,
@@ -172,9 +168,7 @@ async def list_evidence(
     try:
         evidence = await service.list(session_id=session_id, tenant_id=tenant_id)
     except SessionNotFoundError as exc:
-        raise HTTPException(
-            status_code=404, detail="Verification session not found"
-        ) from exc
+        raise HTTPException(status_code=404, detail="Verification session not found") from exc
     await audit_service.record(
         tenant_id=tenant_id,
         session_id=session_id,

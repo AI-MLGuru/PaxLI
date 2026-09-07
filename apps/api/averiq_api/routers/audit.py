@@ -26,12 +26,8 @@ async def list_audit_events(
     try:
         await session_service.get(session_id=session_id, tenant_id=tenant_id)
     except SessionNotFoundError as exc:
-        raise HTTPException(
-            status_code=404, detail="Verification session not found"
-        ) from exc
-    events = await audit_service.list_for_session(
-        session_id=session_id, tenant_id=tenant_id
-    )
+        raise HTTPException(status_code=404, detail="Verification session not found") from exc
+    events = await audit_service.list_for_session(session_id=session_id, tenant_id=tenant_id)
     return AuditEventListEnvelope(
         data=[AuditEventResponse.model_validate(event) for event in events],
         meta=ResponseMeta(request_id=request_id(request)),
