@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from apps.api.averiq_api.config import get_settings
+from apps.api.averiq_api.routers.evidence import router as evidence_router
 from apps.api.averiq_api.routers.verification_sessions import router as verification_sessions_router
 from apps.api.averiq_api.schemas.verification import ErrorBody, ErrorEnvelope, ResponseMeta
 from infrastructure.database import models  # noqa: F401
@@ -29,7 +30,9 @@ app = FastAPI(
     version=settings.app_version,
     lifespan=lifespan,
 )
+app.state.settings = settings
 app.include_router(verification_sessions_router, prefix=settings.api_prefix)
+app.include_router(evidence_router, prefix=settings.api_prefix)
 
 
 def error_response(request: Request, code: str, message: str, status_code: int) -> JSONResponse:
