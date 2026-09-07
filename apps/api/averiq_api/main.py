@@ -7,9 +7,11 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from apps.api.averiq_api.config import get_settings
+from apps.api.averiq_api.routers.audit import router as audit_router
 from apps.api.averiq_api.routers.evidence import router as evidence_router
 from apps.api.averiq_api.routers.verification_sessions import router as verification_sessions_router
 from apps.api.averiq_api.schemas.verification import ErrorBody, ErrorEnvelope, ResponseMeta
+from core.audit.service import AuditPersistenceError
 from infrastructure.database import models  # noqa: F401
 from infrastructure.database.base import Base
 from infrastructure.database.session import engine
@@ -33,6 +35,7 @@ app = FastAPI(
 app.state.settings = settings
 app.include_router(verification_sessions_router, prefix=settings.api_prefix)
 app.include_router(evidence_router, prefix=settings.api_prefix)
+app.include_router(audit_router, prefix=settings.api_prefix)
 
 
 def error_response(request: Request, code: str, message: str, status_code: int) -> JSONResponse:
@@ -52,6 +55,18 @@ async def http_exception_handler(request: Request, exception: HTTPException) -> 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, _: RequestValidationError) -> JSONResponse:
     return error_response(request, "INVALID_REQUEST", "The request payload is invalid.", 422)
+
+
+@app.exception_handler(AuditPersistenceError)
+async def audit_persistence_exception_handler(
+    request: Request, _: AuditPersistenceError
+) -> JSONResponse:
+    return error_response(
+        request,
+        "AUDIT_PERSISTENCE_FAILED",
+        "The security audit record could not be persisted.",
+        503,
+    )
 
 
 @app.get("/health", tags=["system"])

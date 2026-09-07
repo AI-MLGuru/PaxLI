@@ -3,6 +3,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from core.audit.enums import AuditActorType, AuditEventType, AuditStatus
 from core.evidence.enums import EvidenceSource, EvidenceType
 from core.verification.enums import AssuranceLevel, VerificationStatus
 
@@ -59,4 +60,26 @@ class EvidenceResponse(BaseModel):
 
 class EvidenceListEnvelope(BaseModel):
     data: list[EvidenceResponse]
+    meta: ResponseMeta
+
+
+class AuditEventResponse(BaseModel):
+    event_id: UUID
+    tenant_id: str
+    session_id: UUID | None
+    event_type: AuditEventType
+    actor_type: AuditActorType
+    actor_id: str | None
+    occurred_at: datetime
+    request_id: str | None
+    correlation_id: str | None
+    component: str
+    action: str
+    status: AuditStatus
+    reason_code: str | None
+    metadata: dict[str, object]
+
+
+class AuditEventListEnvelope(BaseModel):
+    data: list[AuditEventResponse]
     meta: ResponseMeta

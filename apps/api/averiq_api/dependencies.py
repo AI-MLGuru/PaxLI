@@ -4,8 +4,10 @@ from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.averiq_api.config import Settings, get_settings
+from core.audit.service import AuditService
 from core.evidence.service import EvidenceService
 from core.verification.service import VerificationSessionService
+from infrastructure.database.repositories.audit_event import SqlAlchemyAuditEventRepository
 from infrastructure.database.repositories.evidence import SqlAlchemyEvidenceRepository
 from infrastructure.database.repositories.verification_session import (
     SqlAlchemyVerificationSessionRepository,
@@ -37,3 +39,9 @@ async def get_evidence_service(
         ),
         MinioObjectStorage(settings),
     )
+
+
+async def get_audit_service(
+    db_session: AsyncSession = Depends(get_db_session),  # noqa: B008
+) -> AsyncIterator[AuditService]:
+    yield AuditService(SqlAlchemyAuditEventRepository(db_session))

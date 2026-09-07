@@ -1,0 +1,26 @@
+from enum import StrEnum
+
+
+class AuditEventType(StrEnum):
+    SESSION_CREATED = "SESSION_CREATED"
+    SESSION_RETRIEVED = "SESSION_RETRIEVED"
+    EVIDENCE_UPLOADED = "EVIDENCE_UPLOADED"
+    EVIDENCE_RETRIEVED = "EVIDENCE_RETRIEVED"
+    SESSION_CANCELLED = "SESSION_CANCELLED"
+    SESSION_EXPIRED = "SESSION_EXPIRED"
+
+
+class AuditActorType(StrEnum):
+    CLIENT = "CLIENT"
+    SYSTEM = "SYSTEM"
+    WORKER = "WORKER"
+
+
+class AuditStatus(StrEnum):
+    SUCCESS = "SUCCESS"
+    FAILURE = "FAILURE"
+
+
+class AuditDurability(StrEnum):
+    REQUIRED = "REQUIRED"
+    BEST_EFFORT = "BEST_EFFORT"

@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 
 @dataclass(frozen=True)
@@ -11,4 +11,4 @@ class AuditEvent:
 
     @classmethod
     def now(cls, event_type: str, actor: str, resource_id: str) -> "AuditEvent":
-        return cls(event_type, actor, datetime.now(timezone.utc), resource_id)
+        return cls(event_type, actor, datetime.now(UTC), resource_id)
