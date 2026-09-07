@@ -1,0 +1,18 @@
+from enum import StrEnum
+
+
+class VerificationStatus(StrEnum):
+    CREATED = "CREATED"
+    PROCESSING = "PROCESSING"
+    VERIFIED = "VERIFIED"
+    REJECTED = "REJECTED"
+    REVIEW_REQUIRED = "REVIEW_REQUIRED"
+    INCONCLUSIVE = "INCONCLUSIVE"
+    EXPIRED = "EXPIRED"
+    CANCELLED = "CANCELLED"
+
+
+class AssuranceLevel(StrEnum):
+    STANDARD = "STANDARD"
+    HIGH = "HIGH"
+    ENHANCED = "ENHANCED"

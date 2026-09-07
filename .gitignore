@@ -1,0 +1,56 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+ENV/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build
+build/
+dist/
+*.egg-info/
+
+# Research / generated artifacts
+research/**/outputs/
+research/**/artifacts/
+benchmarks/**/outputs/
+
+# Model artifacts and sensitive captures
+models/runtime/*
+models/registry/*.local.*
+*.onnx
+*.pt
+*.pth
+*.safetensors
+*.bin
+*.jpg
+*.jpeg
+*.png
+*.webp
+*.mp4
+
+# Secrets / certificates
+*.pem
+*.key
+*.crt
