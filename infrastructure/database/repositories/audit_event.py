@@ -29,7 +29,9 @@ class SqlAlchemyAuditEventRepository:
         record = (await self.session.execute(statement)).scalar_one_or_none()
         return record.to_domain() if record else None
 
-    async def list_for_session(self, session_id: UUID, tenant_id: str) -> Sequence[AuditEvent]:
+    async def list_for_session(
+        self, session_id: UUID, tenant_id: str
+    ) -> Sequence[AuditEvent]:
         statement = (
             select(AuditEventRecord)
             .where(

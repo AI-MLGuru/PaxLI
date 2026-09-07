@@ -5,7 +5,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.verification.models import VerificationSession
-from infrastructure.database.models.verification_session import VerificationSessionRecord
+from infrastructure.database.models.verification_session import (
+    VerificationSessionRecord,
+)
 
 
 class SqlAlchemyVerificationSessionRepository:

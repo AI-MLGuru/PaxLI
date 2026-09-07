@@ -38,7 +38,9 @@ class FakeAuditRepository:
             None,
         )
 
-    async def list_for_session(self, session_id: UUID, tenant_id: str) -> list[AuditEvent]:
+    async def list_for_session(
+        self, session_id: UUID, tenant_id: str
+    ) -> list[AuditEvent]:
         return sorted(
             [
                 event

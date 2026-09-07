@@ -3,7 +3,11 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
 
-from core.verification.enums import VALID_STATUS_TRANSITIONS, AssuranceLevel, VerificationStatus
+from core.verification.enums import (
+    VALID_STATUS_TRANSITIONS,
+    AssuranceLevel,
+    VerificationStatus,
+)
 
 
 class VerificationSession(BaseModel):
@@ -13,7 +17,9 @@ class VerificationSession(BaseModel):
     status: VerificationStatus = VerificationStatus.CREATED
     assurance_level: AssuranceLevel = AssuranceLevel.STANDARD
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    expires_at: datetime = Field(default_factory=lambda: datetime.now(UTC) + timedelta(minutes=30))
+    expires_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC) + timedelta(minutes=30)
+    )
     completed_at: datetime | None = None
 
     def transition_to(self, status: VerificationStatus) -> None:

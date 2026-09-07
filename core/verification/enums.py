@@ -14,7 +14,11 @@ class VerificationStatus(StrEnum):
 
 VALID_STATUS_TRANSITIONS: dict[VerificationStatus, frozenset[VerificationStatus]] = {
     VerificationStatus.CREATED: frozenset(
-        {VerificationStatus.PROCESSING, VerificationStatus.EXPIRED, VerificationStatus.CANCELLED}
+        {
+            VerificationStatus.PROCESSING,
+            VerificationStatus.EXPIRED,
+            VerificationStatus.CANCELLED,
+        }
     ),
     VerificationStatus.PROCESSING: frozenset(
         {

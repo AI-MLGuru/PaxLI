@@ -19,7 +19,9 @@ class AuditEventRecord(Base):
             "dedupe_key",
             name="uq_audit_tenant_session_dedupe",
         ),
-        Index("ix_audit_tenant_session_occurred", "tenant_id", "session_id", "occurred_at"),
+        Index(
+            "ix_audit_tenant_session_occurred", "tenant_id", "session_id", "occurred_at"
+        ),
     )
 
     event_id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -30,18 +32,24 @@ class AuditEventRecord(Base):
     event_type: Mapped[str] = mapped_column(String(64), nullable=False)
     actor_type: Mapped[str] = mapped_column(String(32), nullable=False)
     actor_id: Mapped[str | None] = mapped_column(String(256))
-    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
     request_id: Mapped[str | None] = mapped_column(String(256))
     correlation_id: Mapped[str | None] = mapped_column(String(256))
     component: Mapped[str] = mapped_column(String(128), nullable=False)
     action: Mapped[str] = mapped_column(String(128), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     reason_code: Mapped[str | None] = mapped_column(String(128))
-    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
     dedupe_key: Mapped[str | None] = mapped_column(String(256))
 
     @classmethod
-    def from_domain(cls, event: AuditEvent, dedupe_key: str | None = None) -> "AuditEventRecord":
+    def from_domain(
+        cls, event: AuditEvent, dedupe_key: str | None = None
+    ) -> "AuditEventRecord":
         return cls(
             event_id=str(event.event_id),
             tenant_id=event.tenant_id,

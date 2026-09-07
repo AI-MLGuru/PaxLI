@@ -7,7 +7,9 @@ from apps.api.averiq_api.config import Settings, get_settings
 from core.audit.service import AuditService
 from core.evidence.service import EvidenceService
 from core.verification.service import VerificationSessionService
-from infrastructure.database.repositories.audit_event import SqlAlchemyAuditEventRepository
+from infrastructure.database.repositories.audit_event import (
+    SqlAlchemyAuditEventRepository,
+)
 from infrastructure.database.repositories.evidence import SqlAlchemyEvidenceRepository
 from infrastructure.database.repositories.verification_session import (
     SqlAlchemyVerificationSessionRepository,

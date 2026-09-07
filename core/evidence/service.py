@@ -37,7 +37,9 @@ class EvidenceService:
         metadata: dict[str, Any],
         idempotency_key: str | None = None,
     ) -> Evidence:
-        session = await self.session_service.get(session_id=session_id, tenant_id=tenant_id)
+        session = await self.session_service.get(
+            session_id=session_id, tenant_id=tenant_id
+        )
         if session.status.value in {"EXPIRED", "CANCELLED"}:
             raise SessionExpiredError
         if idempotency_key:
@@ -47,7 +49,9 @@ class EvidenceService:
             if existing is not None:
                 return existing
 
-        object_key = f"{tenant_id}/{session_id}/{evidence_type.value.lower()}/{checksum}"
+        object_key = (
+            f"{tenant_id}/{session_id}/{evidence_type.value.lower()}/{checksum}"
+        )
         await self.storage.put(object_key, content, mime_type)
         evidence = Evidence(
             session_id=session_id,

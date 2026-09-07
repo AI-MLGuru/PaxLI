@@ -2,7 +2,16 @@ from hashlib import sha256
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Header, HTTPException, Request, UploadFile, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Header,
+    HTTPException,
+    Request,
+    UploadFile,
+    status,
+)
 
 from apps.api.averiq_api.dependencies import get_audit_service, get_evidence_service
 from apps.api.averiq_api.routers.verification_sessions import request_id, tenant_header
@@ -49,9 +58,13 @@ async def store_upload(
             idempotency_key=idempotency_key,
         )
     except SessionNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="Verification session not found") from exc
+        raise HTTPException(
+            status_code=404, detail="Verification session not found"
+        ) from exc
     except SessionExpiredError as exc:
-        raise HTTPException(status_code=409, detail="Verification session is not active") from exc
+        raise HTTPException(
+            status_code=409, detail="Verification session is not active"
+        ) from exc
     await audit_service.record(
         tenant_id=tenant_id,
         session_id=session_id,
@@ -61,7 +74,10 @@ async def store_upload(
         status=AuditStatus.SUCCESS,
         request_id=request_id(request),
         correlation_id=request.headers.get("X-Correlation-ID"),
-        metadata={"evidence_type": evidence_type.value, "size_bytes": evidence.size_bytes},
+        metadata={
+            "evidence_type": evidence_type.value,
+            "size_bytes": evidence.size_bytes,
+        },
         dedupe_key=f"evidence-upload:{evidence.id}",
     )
     return EvidenceResponse.model_validate(evidence)
@@ -156,7 +172,9 @@ async def list_evidence(
     try:
         evidence = await service.list(session_id=session_id, tenant_id=tenant_id)
     except SessionNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="Verification session not found") from exc
+        raise HTTPException(
+            status_code=404, detail="Verification session not found"
+        ) from exc
     await audit_service.record(
         tenant_id=tenant_id,
         session_id=session_id,
