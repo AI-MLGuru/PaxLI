@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     api_prefix: str = "/v1"
     session_ttl_minutes: int = 30
+    database_url: str = "postgresql+asyncpg://averiq:averiq@localhost:5432/averiq"
 
 
 @lru_cache
