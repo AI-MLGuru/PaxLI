@@ -7,6 +7,7 @@ from core.reliability.enums import ComponentOutcome, FailureCategory
 from core.reliability.metrics import ReliabilityMetrics
 from core.reliability.models import ComponentResult, FailureReason
 from core.reliability.policies import RetryPolicy
+from core.security.classification import safe_exception_message
 
 
 async def execute_with_reliability[T](
@@ -89,7 +90,7 @@ async def execute_with_reliability[T](
                     reason=FailureReason(
                         "DEPENDENCY_NON_RETRYABLE_FAILURE",
                         category,
-                        str(exception)[:512],
+                        safe_exception_message(exception, fallback="Dependency operation failed"),
                         retryable=False,
                     ),
                     attempts=attempt,

@@ -4,6 +4,7 @@ from time import monotonic
 
 from core.reliability.enums import ComponentOutcome
 from core.reliability.models import DependencyHealth
+from core.security.classification import safe_exception_message
 
 logger = logging.getLogger(__name__)
 
@@ -27,14 +28,17 @@ async def check_dependency(
     except Exception as exception:
         logger.warning(
             "dependency_health_failed",
-            extra={"component": component, "error": str(exception)},
+            extra={
+                "component": component,
+                "error": safe_exception_message(exception, fallback="Dependency check failed"),
+            },
         )
         return DependencyHealth(
             component,
             ComponentOutcome.UNAVAILABLE,
             started,
             (monotonic() - started) * 1000,
-            str(exception)[:256],
+            safe_exception_message(exception, fallback="Dependency check failed"),
         )
     return DependencyHealth(
         component, ComponentOutcome.SUCCESS, started, (monotonic() - started) * 1000

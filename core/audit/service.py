@@ -11,46 +11,13 @@ from core.audit.enums import (
 )
 from core.audit.models import AuditEvent
 from core.audit.repository import AuditEventRepository
+from core.security.classification import sanitize_metadata
 
 logger = logging.getLogger(__name__)
-
-_SENSITIVE_KEYS = {
-    "authorization",
-    "access_token",
-    "api_key",
-    "cookie",
-    "document",
-    "embedding",
-    "image",
-    "password",
-    "secret",
-    "token",
-}
-_MAX_STRING_LENGTH = 512
-_MAX_METADATA_ITEMS = 50
 
 
 class AuditPersistenceError(RuntimeError):
     pass
-
-
-def sanitize_metadata(value: Any, *, key: str | None = None) -> Any:
-    if key and any(sensitive in key.lower() for sensitive in _SENSITIVE_KEYS):
-        return "[REDACTED]"
-    if isinstance(value, Mapping):
-        return {
-            str(item_key): sanitize_metadata(item_value, key=str(item_key))
-            for item_key, item_value in list(value.items())[:_MAX_METADATA_ITEMS]
-        }
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        return [sanitize_metadata(item) for item in list(value)[:_MAX_METADATA_ITEMS]]
-    if isinstance(value, (bytes, bytearray)):
-        return "[REDACTED]"
-    if isinstance(value, str):
-        return value[:_MAX_STRING_LENGTH]
-    if value is None or isinstance(value, (bool, int, float)):
-        return value
-    return str(value)[:_MAX_STRING_LENGTH]
 
 
 class AuditService:
@@ -98,7 +65,7 @@ class AuditService:
                     return existing
             return await self.repository.add(event, dedupe_key)
         except Exception as exception:
-            logger.exception(
+            logger.error(
                 "audit_event_persistence_failed",
                 extra={"event_type": event_type.value, "session_id": str(session_id)},
             )

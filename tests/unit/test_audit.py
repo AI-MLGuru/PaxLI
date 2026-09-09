@@ -5,7 +5,8 @@ import pytest
 
 from core.audit.enums import AuditDurability, AuditEventType, AuditStatus
 from core.audit.models import AuditEvent
-from core.audit.service import AuditPersistenceError, AuditService, sanitize_metadata
+from core.audit.service import AuditPersistenceError, AuditService
+from core.security.classification import sanitize_metadata
 
 
 class FakeAuditRepository:
@@ -58,9 +59,9 @@ def test_sanitize_metadata_redacts_sensitive_values_and_binary_payloads() -> Non
             "long": "x" * 600,
         }
     )
-    assert result["access_token"] == "[REDACTED]"
-    assert result["document_image"] == "[REDACTED]"
-    assert result["nested"]["password"] == "[REDACTED]"
+    assert result["access_token"] == "[REDACTED:HIGHLY_SENSITIVE]"
+    assert result["document_image"] == "[REDACTED:HIGHLY_SENSITIVE]"
+    assert result["nested"]["password"] == "[REDACTED:HIGHLY_SENSITIVE]"
     assert result["nested"]["safe"] == "value"
     assert len(result["long"]) == 512
 
