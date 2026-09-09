@@ -23,7 +23,7 @@ The specification defines the behavioral guarantees, security boundaries, eviden
 | VII | Security and Governance | Normative |
 | VIII | Conformance | Normative |
 | IX | Deferred Architecture | Normative |
-| X | Reliability & Operations | Planned |
+| X | Reliability & Operations | Normative |
 | XI | Data Protection & Privacy | Planned |
 
 ## Current normative artifact
@@ -43,6 +43,8 @@ The specification defines the behavioral guarantees, security boundaries, eviden
 [Part VIII - Conformance](part-08-conformance.md) defines the normative requirement traceability, objective evidence, contract testing, failure and security conformance, release gates, exceptions, deferred requirements, and production-readiness model.
 
 [Part IX - Deferred Architecture](part-09-deferred-architecture.md) defines the normative states, register, activation governance, v1.0 boundaries, future-capability dependencies, and safeguards preventing deferred architecture from weakening the active contract.
+
+[Part X - Reliability & Operations](part-10-reliability-and-operations.md) defines the normative reliability model, timeouts, retries, degradation, dependency health, recovery, incident management, observability, disaster recovery, operational readiness, and production release gates.
 
 ## Authority and change control
 

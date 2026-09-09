@@ -54,3 +54,5 @@ models/registry/*.local.*
 *.pem
 *.key
 *.crt
+
+tatus --short
