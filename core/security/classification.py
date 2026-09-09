@@ -119,13 +119,17 @@ def sanitize_value(
     _depth: int = 0,
 ) -> Any:
     classification = classify_field(field_name)
-    is_structured_document = (
-        _normalize_field_name(field_name or "") == "document" and isinstance(value, Mapping)
+    is_structured_document = _normalize_field_name(field_name or "") == "document" and isinstance(
+        value, Mapping
     )
-    if classification in {
-        DataClassification.SENSITIVE,
-        DataClassification.HIGHLY_SENSITIVE,
-    } and not is_structured_document:
+    if (
+        classification
+        in {
+            DataClassification.SENSITIVE,
+            DataClassification.HIGHLY_SENSITIVE,
+        }
+        and not is_structured_document
+    ):
         return _redaction_for(classification)
     if isinstance(value, (bytes, bytearray, memoryview)):
         return REDACTED_BINARY
