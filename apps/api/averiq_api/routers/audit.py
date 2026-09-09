@@ -3,7 +3,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from apps.api.averiq_api.dependencies import get_audit_service, get_session_service
-from apps.api.averiq_api.routers.verification_sessions import request_id, tenant_header
+from apps.api.averiq_api.routers.verification_sessions import request_id, tenant_from_principal
 from apps.api.averiq_api.schemas.verification import (
     AuditEventListEnvelope,
     AuditEventResponse,
@@ -21,7 +21,7 @@ async def list_audit_events(
     request: Request,
     audit_service: AuditService = Depends(get_audit_service),  # noqa: B008
     session_service: VerificationSessionService = Depends(get_session_service),
-    tenant_id: str = Depends(tenant_header),  # noqa: B008
+    tenant_id: str = Depends(tenant_from_principal),  # noqa: B008
 ) -> AuditEventListEnvelope:
     try:
         await session_service.get(session_id=session_id, tenant_id=tenant_id)

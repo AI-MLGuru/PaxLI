@@ -14,7 +14,7 @@ from fastapi import (
 )
 
 from apps.api.averiq_api.dependencies import get_audit_service, get_evidence_service
-from apps.api.averiq_api.routers.verification_sessions import request_id, tenant_header
+from apps.api.averiq_api.routers.verification_sessions import request_id, tenant_from_principal
 from apps.api.averiq_api.schemas.verification import (
     EvidenceListEnvelope,
     EvidenceResponse,
@@ -89,7 +89,7 @@ async def upload_selfie(
     request: Request,
     file: Annotated[UploadFile, File(...)],
     service: EvidenceService = Depends(get_evidence_service),  # noqa: B008
-    tenant_id: str = Depends(tenant_header),  # noqa: B008
+    tenant_id: str = Depends(tenant_from_principal),  # noqa: B008
     audit_service: AuditService = Depends(get_audit_service),  # noqa: B008
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> EvidenceResponse:
@@ -115,7 +115,7 @@ async def upload_document(
     request: Request,
     file: Annotated[UploadFile, File(...)],
     service: EvidenceService = Depends(get_evidence_service),  # noqa: B008
-    tenant_id: str = Depends(tenant_header),  # noqa: B008
+    tenant_id: str = Depends(tenant_from_principal),  # noqa: B008
     audit_service: AuditService = Depends(get_audit_service),  # noqa: B008
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> EvidenceResponse:
@@ -141,7 +141,7 @@ async def upload_liveness(
     request: Request,
     file: Annotated[UploadFile, File(...)],
     service: EvidenceService = Depends(get_evidence_service),  # noqa: B008
-    tenant_id: str = Depends(tenant_header),  # noqa: B008
+    tenant_id: str = Depends(tenant_from_principal),  # noqa: B008
     audit_service: AuditService = Depends(get_audit_service),  # noqa: B008
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> EvidenceResponse:
@@ -162,7 +162,7 @@ async def list_evidence(
     session_id: UUID,
     request: Request,
     service: EvidenceService = Depends(get_evidence_service),  # noqa: B008
-    tenant_id: str = Depends(tenant_header),  # noqa: B008
+    tenant_id: str = Depends(tenant_from_principal),  # noqa: B008
     audit_service: AuditService = Depends(get_audit_service),  # noqa: B008
 ) -> EvidenceListEnvelope:
     try:

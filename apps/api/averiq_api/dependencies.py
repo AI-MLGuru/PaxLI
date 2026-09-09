@@ -1,20 +1,25 @@
 from collections.abc import AsyncIterator
 
-from fastapi import Depends
+from fastapi import Depends, Header
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.averiq_api.config import Settings, get_settings
 from core.audit.service import AuditService
 from core.evidence.service import EvidenceService
+from core.security.authentication import AuthenticatedPrincipal, authenticate_bearer
+from core.security.credentials import CredentialService
+from core.security.exceptions import AuthenticationError
 from core.verification.service import VerificationSessionService
 from infrastructure.database.repositories.audit_event import (
     SqlAlchemyAuditEventRepository,
 )
+from infrastructure.database.repositories.credential import SqlAlchemyCredentialStore
 from infrastructure.database.repositories.evidence import SqlAlchemyEvidenceRepository
 from infrastructure.database.repositories.verification_session import (
     SqlAlchemyVerificationSessionRepository,
 )
 from infrastructure.database.session import get_db_session
+from infrastructure.security.hashing import ScryptSecretHasher
 from infrastructure.storage.minio import MinioObjectStorage
 
 
@@ -47,3 +52,19 @@ async def get_audit_service(
     db_session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> AsyncIterator[AuditService]:
     yield AuditService(SqlAlchemyAuditEventRepository(db_session))
+
+
+async def get_credential_service(
+    db_session: AsyncSession = Depends(get_db_session),  # noqa: B008
+) -> AsyncIterator[CredentialService]:
+    yield CredentialService(SqlAlchemyCredentialStore(db_session), ScryptSecretHasher())
+
+
+async def get_principal(
+    authorization: str | None = Header(default=None),
+    credential_service: CredentialService = Depends(get_credential_service),  # noqa: B008
+) -> AuthenticatedPrincipal:
+    try:
+        return await authenticate_bearer(authorization, credential_service)
+    except AuthenticationError:
+        raise

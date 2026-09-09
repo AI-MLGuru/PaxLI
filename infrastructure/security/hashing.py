@@ -25,9 +25,7 @@ class ScryptSecretHasher:
 
 def hash_secret(secret: str) -> str:
     salt = os.urandom(_SALT_BYTES)
-    derived = hashlib.scrypt(
-        secret.encode("utf-8"), salt=salt, n=_N, r=_R, p=_P, dklen=_KEY_BYTES
-    )
+    derived = hashlib.scrypt(secret.encode("utf-8"), salt=salt, n=_N, r=_R, p=_P, dklen=_KEY_BYTES)
     return f"{_SCHEME}${_N}${_R}${_P}${_encode(salt)}${_encode(derived)}"
 
 

@@ -2,7 +2,7 @@ from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 
-from apps.api.averiq_api.dependencies import get_audit_service, get_session_service
+from apps.api.averiq_api.dependencies import get_audit_service, get_principal, get_session_service
 from apps.api.averiq_api.schemas.verification import (
     CreateVerificationSessionRequest,
     ErrorEnvelope,
@@ -12,6 +12,7 @@ from apps.api.averiq_api.schemas.verification import (
 )
 from core.audit.enums import AuditEventType, AuditStatus
 from core.audit.service import AuditService
+from core.security.authentication import AuthenticatedPrincipal
 from core.verification.service import (
     SessionExpiredError,
     SessionNotFoundError,
@@ -25,8 +26,8 @@ def request_id(request: Request) -> str:
     return request.headers.get("X-Request-ID", f"req_{uuid4().hex}")
 
 
-def tenant_header(x_tenant_id: str = Header(..., min_length=1, max_length=128)) -> str:
-    return x_tenant_id
+def tenant_from_principal(principal: AuthenticatedPrincipal = Depends(get_principal)) -> str:
+    return principal.tenant_id
 
 
 @router.post("", response_model=SessionEnvelope, status_code=status.HTTP_201_CREATED)
@@ -35,7 +36,7 @@ async def create_session(
     request: Request,
     service: VerificationSessionService = Depends(get_session_service),  # noqa: B008
     audit_service: AuditService = Depends(get_audit_service),  # noqa: B008
-    tenant_id: str = Depends(tenant_header),  # noqa: B008
+    tenant_id: str = Depends(tenant_from_principal),  # noqa: B008
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> SessionEnvelope:
     session = await service.create(
@@ -72,7 +73,7 @@ async def get_session(
     request: Request,
     service: VerificationSessionService = Depends(get_session_service),  # noqa: B008
     audit_service: AuditService = Depends(get_audit_service),  # noqa: B008
-    tenant_id: str = Depends(tenant_header),  # noqa: B008
+    tenant_id: str = Depends(tenant_from_principal),  # noqa: B008
 ) -> SessionEnvelope:
     try:
         session = await service.get(session_id=session_id, tenant_id=tenant_id)
@@ -108,7 +109,7 @@ async def cancel_session(
     request: Request,
     service: VerificationSessionService = Depends(get_session_service),  # noqa: B008
     audit_service: AuditService = Depends(get_audit_service),  # noqa: B008
-    tenant_id: str = Depends(tenant_header),  # noqa: B008
+    tenant_id: str = Depends(tenant_from_principal),  # noqa: B008
 ) -> SessionEnvelope:
     try:
         session = await service.cancel(session_id=session_id, tenant_id=tenant_id)

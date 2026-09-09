@@ -20,6 +20,8 @@ class CredentialStore(Protocol):
 
     async def get(self, credential_id: UUID, tenant_id: str) -> CredentialRecord | None: ...
 
+    async def get_by_id(self, credential_id: UUID) -> CredentialRecord | None: ...
+
     async def update(self, credential: CredentialRecord) -> CredentialRecord: ...
 
 
@@ -56,6 +58,16 @@ class CredentialService:
         self, *, credential_id: UUID, tenant_id: str, secret: str
     ) -> CredentialRecord:
         credential = await self.store.get(credential_id, tenant_id)
+        if credential is None or not self.hasher.verify(secret, credential.secret_verifier):
+            raise AuthenticationError("Invalid credentials")
+        if not credential.is_active():
+            await self.store.update(credential)
+            raise AuthenticationError("Invalid credentials")
+        credential.last_used_at = datetime.now(UTC)
+        return await self.store.update(credential)
+
+    async def authenticate_by_id(self, *, credential_id: UUID, secret: str) -> CredentialRecord:
+        credential = await self.store.get_by_id(credential_id)
         if credential is None or not self.hasher.verify(secret, credential.secret_verifier):
             raise AuthenticationError("Invalid credentials")
         if not credential.is_active():

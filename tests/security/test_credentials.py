@@ -4,7 +4,7 @@ from uuid import UUID
 import pytest
 
 from core.security.credentials import CredentialService, CredentialStore
-from core.security.exceptions import AuthenticationError, CredentialStateError
+from core.security.exceptions import AuthenticationError
 from core.security.models import CredentialRecord, CredentialStatus
 from infrastructure.security.hashing import ScryptSecretHasher, hash_secret
 
@@ -20,6 +20,9 @@ class MemoryCredentialStore(CredentialStore):
     async def get(self, credential_id: UUID, tenant_id: str) -> CredentialRecord | None:
         credential = self.records.get(credential_id)
         return credential if credential and credential.tenant_id == tenant_id else None
+
+    async def get_by_id(self, credential_id: UUID) -> CredentialRecord | None:
+        return self.records.get(credential_id)
 
     async def update(self, credential: CredentialRecord) -> CredentialRecord:
         self.records[credential.credential_id] = credential

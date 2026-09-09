@@ -18,6 +18,7 @@ from apps.api.averiq_api.schemas.verification import (
     ResponseMeta,
 )
 from core.audit.service import AuditPersistenceError
+from core.security.exceptions import AuthenticationError
 from infrastructure.database import models  # noqa: F401
 from infrastructure.database.base import Base
 from infrastructure.database.session import engine
@@ -73,6 +74,13 @@ async def audit_persistence_exception_handler(
         "The security audit record could not be persisted.",
         503,
     )
+
+
+@app.exception_handler(AuthenticationError)
+async def authentication_exception_handler(
+    request: Request, _: AuthenticationError
+) -> JSONResponse:
+    return error_response(request, "AUTHENTICATION_FAILED", "Invalid credentials", 401)
 
 
 @app.get("/health", tags=["system"])
