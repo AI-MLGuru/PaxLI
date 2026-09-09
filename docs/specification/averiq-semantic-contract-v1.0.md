@@ -20,7 +20,7 @@ The specification defines the behavioral guarantees, security boundaries, eviden
 | IV | Verification Workflow | Normative |
 | V | Decision Engine | Normative |
 | VI | API Contract | Normative |
-| VII | Security and Governance | Planned |
+| VII | Security and Governance | Normative |
 | VIII | Conformance | Planned |
 | IX | Deferred Architecture | Planned |
 
@@ -35,6 +35,8 @@ The specification defines the behavioral guarantees, security boundaries, eviden
 [Part V - Decision Engine](part-05-decision-engine.md) defines the normative decision authority, policy evaluation, declarative conditions, gates, rules, safe failure, determinism, provenance, persistence, retrieval, and auditability contract.
 
 [Part VI - API Contract](part-06-api-contract.md) defines the normative external API boundary, resource semantics, authentication and authorization, tenant isolation, errors, idempotency, webhooks, Management API, privacy, observability, and compatibility contract.
+
+[Part VII - Security and Governance](part-07-security-and-governance.md) defines the normative security boundaries, authentication, authorization, tenant isolation, credentials, cryptography, key management, biometric protection, policy governance, incident handling, abuse prevention, security testing, and exceptions contract.
 
 ## Authority and change control
 
