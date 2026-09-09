@@ -16,7 +16,7 @@ The specification defines the behavioral guarantees, security boundaries, eviden
 |---|---|---|
 | I | Scope and Governance | Planned |
 | II | Architectural Invariants | Normative |
-| III | Evidence Semantics | Planned |
+| III | Evidence Semantics | Normative |
 | IV | Verification Workflow | Planned |
 | V | Decision Engine | Planned |
 | VI | API Contract | Planned |
@@ -27,6 +27,8 @@ The specification defines the behavioral guarantees, security boundaries, eviden
 ## Current normative artifact
 
 [Part II - Architectural Invariants](part-02-architectural-invariants.md) establishes the architectural constitution for v1.0. It defines twelve stable invariants covering verdict authority, safe decision failure, evidence semantics, durable results, webhook independence, evidence integrity, policy immutability, tenant isolation, credential separation, bounded policy evaluation, result accessibility, and audit completeness.
+
+[Part III - Evidence Semantics](part-03-evidence-semantics.md) defines the normative meaning, lifecycle, status and absence semantics, provenance, integrity, immutability, deletion, access boundaries, and Decision Engine contract for evidence.
 
 ## Authority and change control
 
