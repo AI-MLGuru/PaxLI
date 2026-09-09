@@ -128,7 +128,7 @@ The system MUST prevent unsafe verdicts, produce `INCONCLUSIVE`, record a reason
 
 **Status: PREREQUISITE: v1.0**
 
-Evidence absence, non-requirement, failure, unavailability, and inconclusiveness are distinct semantic states and MUST NOT be implicitly conflated. The closed evidence vocabulary includes `PASS`, `FAIL`, `INCONCLUSIVE`, `NOT_REQUIRED`, `NOT_SUBMITTED`, `UNAVAILABLE`, and `NOT_RUN` as defined by Part III.
+Evidence absence, non-requirement, failure, unavailability, and inconclusiveness are distinct semantic states and MUST NOT be implicitly conflated. The closed evidence vocabulary includes `PASS`, `FAIL`, `INCONCLUSIVE`, `NOT_REQUIRED`, `NOT_SUBMITTED`, and `UNAVAILABLE` as defined by Part III. `NOT_RUN` is reserved for internal processing execution state and is not an evidence status.
 
 ### Requirements
 

@@ -129,6 +129,8 @@ FAIL
 
 Evidence types MAY use domain-specific terminal result labels, such as `MATCH`/`MISMATCH` or `VALID`/`INVALID`, where those labels have materially different semantics. The common semantic rules MUST remain preserved.
 
+Internal execution states such as `NOT_RUN` are not evidence statuses and MUST be mapped to an explicit evidence state before evidence is accepted by the Decision Engine.
+
 ### Requirements
 
 - **EVD-3.6.1** Every evidence type MUST define a closed set of valid statuses or results.
