@@ -22,7 +22,7 @@ The specification defines the behavioral guarantees, security boundaries, eviden
 | VI | API Contract | Normative |
 | VII | Security and Governance | Normative |
 | VIII | Conformance | Normative |
-| IX | Deferred Architecture | Planned |
+| IX | Deferred Architecture | Normative |
 | X | Reliability & Operations | Planned |
 | XI | Data Protection & Privacy | Planned |
 
@@ -41,6 +41,8 @@ The specification defines the behavioral guarantees, security boundaries, eviden
 [Part VII - Security and Governance](part-07-security-and-governance.md) defines the normative security boundaries, authentication, authorization, tenant isolation, credentials, cryptography, key management, biometric protection, policy governance, incident handling, abuse prevention, security testing, and exceptions contract.
 
 [Part VIII - Conformance](part-08-conformance.md) defines the normative requirement traceability, objective evidence, contract testing, failure and security conformance, release gates, exceptions, deferred requirements, and production-readiness model.
+
+[Part IX - Deferred Architecture](part-09-deferred-architecture.md) defines the normative states, register, activation governance, v1.0 boundaries, future-capability dependencies, and safeguards preventing deferred architecture from weakening the active contract.
 
 ## Authority and change control
 

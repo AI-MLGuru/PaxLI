@@ -282,7 +282,7 @@ Exceptions follow Part II governance and MUST include unique ID, requirement, re
 
 ## 8.24 Deferred Requirements
 
-A governed deferred capability is distinct from a failed implementation. It is deferred only when explicitly identified, not exposed as active, not mandatory for the release, not falsely claimed, and governed under Part II. Deferred functionality MUST NOT become an architectural loophole.
+A governed deferred capability is distinct from a failed implementation. It is deferred only when explicitly identified, not exposed as active, not mandatory for the release, not falsely claimed, and governed under Part II. Capability-scope labels such as `TARGET` and `FUTURE` map to the reportable `DEFERRED` state when outside the active release; they are not additional conformance states. Deferred functionality MUST NOT become an architectural loophole.
 
 ### Requirements
 
