@@ -31,8 +31,13 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
+    # Production/staging schema is owned by Alembic (`alembic upgrade head`,
+    # run as an explicit deploy step) so the app never silently mutates a
+    # real database's schema on startup. create_all() remains only as a
+    # local development convenience for a throwaway database.
+    if settings.app_env == "development":
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
     yield
 
 

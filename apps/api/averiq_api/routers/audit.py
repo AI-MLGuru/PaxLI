@@ -25,7 +25,7 @@ async def list_audit_events(
     session_service: VerificationSessionService = Depends(get_session_service),
     principal: AuthenticatedPrincipal = Depends(get_principal),  # noqa: B008
 ) -> AuditEventListEnvelope:
-    require_permission(principal.permissions, Permission.AUDIT_READ)
+    require_permission(principal, Permission.AUDIT_READ, session_id=str(session_id))
     tenant_id = principal.tenant_id
     try:
         await session_service.get(session_id=session_id, tenant_id=tenant_id)

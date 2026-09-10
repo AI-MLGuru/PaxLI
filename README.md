@@ -72,6 +72,23 @@ GET /health
 GET /ready
 ```
 
+## Database migrations
+
+Production and staging schema changes are applied through Alembic, not
+`Base.metadata.create_all()`. The app only auto-creates tables when
+`APP_ENV=development` (the default), as a local-dev convenience.
+
+```bash
+alembic upgrade head          # apply all pending migrations
+alembic revision --autogenerate -m "describe the change"   # after editing a model
+alembic current                # show the applied revision
+alembic downgrade -1           # roll back one revision
+```
+
+`migrations/env.py` reads the database URL from the application's own
+`Settings` (env vars / `.env`), so migrations always target whatever
+database the app itself would connect to.
+
 ## Verification states
 
 - `VERIFIED`

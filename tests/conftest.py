@@ -97,10 +97,13 @@ def api_client(session_factory, raw_storage):
 
     app.dependency_overrides[get_db_session] = override_get_db_session
     app.dependency_overrides[get_evidence_service] = override_get_evidence_service
+    original_db_session_factory = app.state.db_session_factory
+    app.state.db_session_factory = session_factory
     try:
         yield TestClient(app)
     finally:
         app.dependency_overrides.clear()
+        app.state.db_session_factory = original_db_session_factory
 
 
 @pytest_asyncio.fixture

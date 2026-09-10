@@ -40,7 +40,7 @@ async def create_session(
     principal: AuthenticatedPrincipal = Depends(get_principal),  # noqa: B008
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> SessionEnvelope:
-    require_permission(principal.permissions, Permission.VERIFICATION_CREATE)
+    require_permission(principal, Permission.VERIFICATION_CREATE)
     session = await service.create(
         tenant_id=principal.tenant_id,
         external_reference=payload.external_reference,
@@ -79,7 +79,7 @@ async def get_session(
     audit_service: AuditService = Depends(get_audit_service),  # noqa: B008
     principal: AuthenticatedPrincipal = Depends(get_principal),  # noqa: B008
 ) -> SessionEnvelope:
-    require_permission(principal.permissions, Permission.VERIFICATION_READ)
+    require_permission(principal, Permission.VERIFICATION_READ, session_id=str(session_id))
     try:
         session = await service.get(session_id=session_id, tenant_id=principal.tenant_id)
     except SessionNotFoundError as exc:
@@ -118,7 +118,7 @@ async def cancel_session(
     audit_service: AuditService = Depends(get_audit_service),  # noqa: B008
     principal: AuthenticatedPrincipal = Depends(get_principal),  # noqa: B008
 ) -> SessionEnvelope:
-    require_permission(principal.permissions, Permission.VERIFICATION_CANCEL)
+    require_permission(principal, Permission.VERIFICATION_CANCEL, session_id=str(session_id))
     try:
         session = await service.cancel(session_id=session_id, tenant_id=principal.tenant_id)
     except SessionNotFoundError as exc:

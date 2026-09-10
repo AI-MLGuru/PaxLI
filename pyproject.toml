@@ -21,6 +21,7 @@ dependencies = [
   "minio>=7.2,<8.0",
   "python-multipart>=0.0.20,<1.0",
   "cryptography>=43,<44",
+  "alembic>=1.13,<2.0",
 ]
 
 [project.optional-dependencies]

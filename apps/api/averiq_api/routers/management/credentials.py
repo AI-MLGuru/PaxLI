@@ -34,7 +34,7 @@ async def issue_credential(
     audit_service: AuditService = Depends(get_audit_service),  # noqa: B008
     principal: AuthenticatedPrincipal = Depends(get_principal),  # noqa: B008
 ) -> IssuedCredentialEnvelope:
-    require_permission(principal.permissions, Permission.CREDENTIAL_MANAGE)
+    require_permission(principal, Permission.CREDENTIAL_MANAGE)
     expires_in = timedelta(days=payload.expires_in_days) if payload.expires_in_days else None
     issued = await service.issue(
         tenant_id=principal.tenant_id,
@@ -69,7 +69,7 @@ async def rotate_credential(
     audit_service: AuditService = Depends(get_audit_service),  # noqa: B008
     principal: AuthenticatedPrincipal = Depends(get_principal),  # noqa: B008
 ) -> IssuedCredentialEnvelope:
-    require_permission(principal.permissions, Permission.CREDENTIAL_MANAGE)
+    require_permission(principal, Permission.CREDENTIAL_MANAGE)
     expires_in = timedelta(days=payload.expires_in_days) if payload.expires_in_days else None
     try:
         rotated = await service.rotate(
@@ -109,7 +109,7 @@ async def revoke_credential(
     audit_service: AuditService = Depends(get_audit_service),  # noqa: B008
     principal: AuthenticatedPrincipal = Depends(get_principal),  # noqa: B008
 ) -> None:
-    require_permission(principal.permissions, Permission.CREDENTIAL_MANAGE)
+    require_permission(principal, Permission.CREDENTIAL_MANAGE)
     try:
         await service.revoke(credential_id=credential_id, tenant_id=principal.tenant_id)
     except AuthenticationError as exc:

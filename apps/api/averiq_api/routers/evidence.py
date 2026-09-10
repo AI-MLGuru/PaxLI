@@ -42,7 +42,7 @@ async def store_upload(
     idempotency_key: str | None,
     audit_service: AuditService,
 ) -> EvidenceResponse:
-    require_permission(principal.permissions, Permission.EVIDENCE_SUBMIT)
+    require_permission(principal, Permission.EVIDENCE_SUBMIT, session_id=str(session_id))
     tenant_id = principal.tenant_id
     settings = request.app.state.settings
     content = await file.read(settings.evidence_max_bytes + 1)
@@ -171,7 +171,7 @@ async def list_evidence(
     principal: AuthenticatedPrincipal = Depends(get_principal),  # noqa: B008
     audit_service: AuditService = Depends(get_audit_service),  # noqa: B008
 ) -> EvidenceListEnvelope:
-    require_permission(principal.permissions, Permission.EVIDENCE_READ)
+    require_permission(principal, Permission.EVIDENCE_READ, session_id=str(session_id))
     try:
         evidence = await service.list(session_id=session_id, tenant_id=principal.tenant_id)
     except SessionNotFoundError as exc:
