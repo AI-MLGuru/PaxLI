@@ -23,6 +23,25 @@ class Settings(BaseSettings):
     evidence_encryption_key_id: str = "evidence-v1"
     evidence_encryption_key: str | None = None
 
+    # Foundation-010: static, environment-driven rate limit configuration --
+    # deliberately not tenant-configurable (Foundation-010 discovery
+    # decision #10: avoids building a second policy-governance layer for
+    # what is an operational admission-control concern).
+    rate_limit_auth_attempts_per_window: int = 20
+    rate_limit_auth_window_seconds: int = 60
+    rate_limit_verification_create_per_window: int = 60
+    rate_limit_verification_create_window_seconds: int = 60
+    rate_limit_evidence_submit_per_window: int = 120
+    rate_limit_evidence_submit_window_seconds: int = 60
+    rate_limit_credential_manage_per_window: int = 10
+    rate_limit_credential_manage_window_seconds: int = 60
+    rate_limit_window_retention_hours: int = 24
+    # Dedicated to network-source hashing only -- never the credential
+    # secret-hashing key, never the evidence-encryption key (Foundation-010
+    # review guardrail #4).
+    rate_limit_network_source_hmac_key_id: str = "rate-limit-source-v1"
+    rate_limit_network_source_hmac_key: str | None = None
+
 
 @lru_cache
 def get_settings() -> Settings:

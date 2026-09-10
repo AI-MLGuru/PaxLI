@@ -2,7 +2,14 @@ from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 
-from apps.api.averiq_api.dependencies import get_audit_service, get_principal, get_session_service
+from apps.api.averiq_api.config import Settings, get_settings
+from apps.api.averiq_api.dependencies import (
+    enforce_rate_limit,
+    get_audit_service,
+    get_principal,
+    get_rate_limiter,
+    get_session_service,
+)
 from apps.api.averiq_api.schemas.verification import (
     CreateVerificationSessionRequest,
     ErrorEnvelope,
@@ -12,6 +19,7 @@ from apps.api.averiq_api.schemas.verification import (
 )
 from core.audit.enums import AuditActorType, AuditEventType, AuditStatus
 from core.audit.service import AuditService
+from core.rate_limit.limiter import RateLimiterProtocol
 from core.security.authentication import AuthenticatedPrincipal
 from core.security.authorization import Permission, require_permission
 from core.verification.service import (
@@ -38,9 +46,23 @@ async def create_session(
     service: VerificationSessionService = Depends(get_session_service),  # noqa: B008
     audit_service: AuditService = Depends(get_audit_service),  # noqa: B008
     principal: AuthenticatedPrincipal = Depends(get_principal),  # noqa: B008
+    settings: Settings = Depends(get_settings),  # noqa: B008
+    limiter: RateLimiterProtocol = Depends(get_rate_limiter),  # noqa: B008
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> SessionEnvelope:
     require_permission(principal, Permission.VERIFICATION_CREATE)
+    # Operational endpoint class -> fail_mode="open": a limiter outage must
+    # not itself take down verification-session creation (SEC-7.32.2,
+    # Foundation-010 review guardrail #2 -- this bypasses the limiter only,
+    # never authentication/authorization, which already ran above).
+    await enforce_rate_limit(
+        principal,
+        operation="verification_create",
+        limit=settings.rate_limit_verification_create_per_window,
+        window_seconds=settings.rate_limit_verification_create_window_seconds,
+        fail_mode="open",
+        limiter=limiter,
+    )
     session = await service.create(
         tenant_id=principal.tenant_id,
         external_reference=payload.external_reference,

@@ -13,7 +13,13 @@ from fastapi import (
     status,
 )
 
-from apps.api.averiq_api.dependencies import get_audit_service, get_evidence_service, get_principal
+from apps.api.averiq_api.dependencies import (
+    enforce_rate_limit,
+    get_audit_service,
+    get_evidence_service,
+    get_principal,
+    get_rate_limiter,
+)
 from apps.api.averiq_api.routers.verification_sessions import request_id
 from apps.api.averiq_api.schemas.verification import (
     EvidenceListEnvelope,
@@ -25,6 +31,7 @@ from core.audit.service import AuditService
 from core.evidence.enums import EvidenceType
 from core.evidence.media_validation import UnsupportedMediaError
 from core.evidence.service import EvidenceService
+from core.rate_limit.limiter import RateLimiterProtocol
 from core.security.authentication import AuthenticatedPrincipal
 from core.security.authorization import Permission, require_permission
 from core.verification.service import SessionExpiredError, SessionNotFoundError
@@ -42,10 +49,22 @@ async def store_upload(
     principal: AuthenticatedPrincipal,
     idempotency_key: str | None,
     audit_service: AuditService,
+    limiter: RateLimiterProtocol,
 ) -> EvidenceResponse:
     require_permission(principal, Permission.EVIDENCE_SUBMIT, session_id=str(session_id))
     tenant_id = principal.tenant_id
     settings = request.app.state.settings
+    # Operational endpoint class -> fail_mode="open" (Foundation-010 review
+    # guardrail #2: bypasses the limiter only, never authentication/
+    # authorization, which already ran above).
+    await enforce_rate_limit(
+        principal,
+        operation="evidence_submit",
+        limit=settings.rate_limit_evidence_submit_per_window,
+        window_seconds=settings.rate_limit_evidence_submit_window_seconds,
+        fail_mode="open",
+        limiter=limiter,
+    )
     content = await file.read(settings.evidence_max_bytes + 1)
     if len(content) > settings.evidence_max_bytes:
         raise HTTPException(status_code=413, detail="Evidence file is too large")
@@ -101,6 +120,7 @@ async def upload_selfie(
     service: EvidenceService = Depends(get_evidence_service),  # noqa: B008
     principal: AuthenticatedPrincipal = Depends(get_principal),  # noqa: B008
     audit_service: AuditService = Depends(get_audit_service),  # noqa: B008
+    limiter: RateLimiterProtocol = Depends(get_rate_limiter),  # noqa: B008
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> EvidenceResponse:
     return await store_upload(
@@ -112,6 +132,7 @@ async def upload_selfie(
         principal=principal,
         idempotency_key=idempotency_key,
         audit_service=audit_service,
+        limiter=limiter,
     )
 
 
@@ -127,6 +148,7 @@ async def upload_document(
     service: EvidenceService = Depends(get_evidence_service),  # noqa: B008
     principal: AuthenticatedPrincipal = Depends(get_principal),  # noqa: B008
     audit_service: AuditService = Depends(get_audit_service),  # noqa: B008
+    limiter: RateLimiterProtocol = Depends(get_rate_limiter),  # noqa: B008
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> EvidenceResponse:
     return await store_upload(
@@ -138,6 +160,7 @@ async def upload_document(
         principal=principal,
         idempotency_key=idempotency_key,
         audit_service=audit_service,
+        limiter=limiter,
     )
 
 
@@ -153,6 +176,7 @@ async def upload_liveness(
     service: EvidenceService = Depends(get_evidence_service),  # noqa: B008
     principal: AuthenticatedPrincipal = Depends(get_principal),  # noqa: B008
     audit_service: AuditService = Depends(get_audit_service),  # noqa: B008
+    limiter: RateLimiterProtocol = Depends(get_rate_limiter),  # noqa: B008
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> EvidenceResponse:
     return await store_upload(
@@ -164,6 +188,7 @@ async def upload_liveness(
         principal=principal,
         idempotency_key=idempotency_key,
         audit_service=audit_service,
+        limiter=limiter,
     )
 
 

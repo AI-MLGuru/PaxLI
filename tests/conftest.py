@@ -9,9 +9,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import StaticPool
 
 from apps.api.averiq_api.config import Settings, get_settings
-from apps.api.averiq_api.dependencies import get_evidence_service
+from apps.api.averiq_api.dependencies import get_evidence_service, get_rate_limiter
 from apps.api.averiq_api.main import app
 from core.evidence.service import EvidenceService
+from core.rate_limit.models import RateLimitDecision, RateLimitRule
 from core.security.credentials import CredentialService
 from core.security.models import CredentialScope
 from core.verification.service import VerificationSessionService
@@ -48,6 +49,18 @@ class FakeObjectStorage:
 
     async def delete(self, object_key: str) -> None:
         self.blobs.pop(object_key, None)
+
+
+class AlwaysAllowRateLimiter:
+    """Default `api_client` override: unrelated tests share the TestClient's
+    single fake IP/credential set, so a real limiter would let the request
+    count accumulate across the whole test suite and eventually reject
+    tests that have nothing to do with Foundation-010. Tests that actually
+    exercise rate-limiting behavior override get_rate_limiter again
+    themselves, within the test, with a more controlled fake."""
+
+    async def check_and_consume(self, scope_key: str, rule: RateLimitRule) -> RateLimitDecision:
+        return RateLimitDecision(allowed=True, remaining=rule.limit, retry_after_seconds=0)
 
 
 @pytest_asyncio.fixture
@@ -102,6 +115,7 @@ def api_client(session_factory, raw_storage):
 
     app.dependency_overrides[get_db_session] = override_get_db_session
     app.dependency_overrides[get_evidence_service] = override_get_evidence_service
+    app.dependency_overrides[get_rate_limiter] = lambda: AlwaysAllowRateLimiter()
     original_db_session_factory = app.state.db_session_factory
     app.state.db_session_factory = session_factory
     try:

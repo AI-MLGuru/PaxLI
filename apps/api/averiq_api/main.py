@@ -32,6 +32,7 @@ from core.audit.enums import (
     AuditStatus,
 )
 from core.audit.service import AuditPersistenceError, AuditService
+from core.rate_limit.exceptions import RateLimitExceededError
 from core.reliability.health import check_dependency
 from core.security.exceptions import AuthenticationError, AuthorizationError
 from infrastructure.database import models  # noqa: F401
@@ -234,6 +235,26 @@ async def authorization_exception_handler(
             503,
         )
     return error_response(request, "AUTHORIZATION_DENIED", "Operation not permitted", 403)
+
+
+@app.exception_handler(RateLimitExceededError)
+async def rate_limit_exceeded_exception_handler(
+    request: Request, exception: RateLimitExceededError
+) -> JSONResponse:
+    # API-6.23.1-6.23.4: 429, stable RATE_LIMITED code, Retry-After header,
+    # no limiter internals in the message (which scope tripped stays out of
+    # the response body -- it's only in the exception object for logging).
+    # Built directly rather than through error_response(): that helper has
+    # no header parameter, and this is the only call site that needs one.
+    body = ErrorEnvelope(
+        error=ErrorBody(code="RATE_LIMITED", message="Rate limit exceeded"),
+        meta=ResponseMeta(request_id=request.headers.get("X-Request-ID", "req_unknown")),
+    )
+    return JSONResponse(
+        status_code=429,
+        content=body.model_dump(mode="json"),
+        headers={"Retry-After": str(exception.retry_after_seconds)},
+    )
 
 
 @app.exception_handler(PostgresOperationError)

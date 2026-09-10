@@ -3,10 +3,13 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
+from apps.api.averiq_api.config import Settings, get_settings
 from apps.api.averiq_api.dependencies import (
+    enforce_rate_limit,
     get_audit_service,
     get_credential_service,
     get_principal,
+    get_rate_limiter,
 )
 from apps.api.averiq_api.routers.verification_sessions import request_id
 from apps.api.averiq_api.schemas.security import (
@@ -18,6 +21,7 @@ from apps.api.averiq_api.schemas.security import (
 from apps.api.averiq_api.schemas.verification import ResponseMeta
 from core.audit.enums import AuditActorType, AuditEventType, AuditStatus
 from core.audit.service import AuditService
+from core.rate_limit.limiter import RateLimiterProtocol
 from core.security.authentication import AuthenticatedPrincipal
 from core.security.authorization import Permission, require_permission
 from core.security.credentials import CredentialService
@@ -33,8 +37,21 @@ async def issue_credential(
     service: CredentialService = Depends(get_credential_service),  # noqa: B008
     audit_service: AuditService = Depends(get_audit_service),  # noqa: B008
     principal: AuthenticatedPrincipal = Depends(get_principal),  # noqa: B008
+    settings: Settings = Depends(get_settings),  # noqa: B008
+    limiter: RateLimiterProtocol = Depends(get_rate_limiter),  # noqa: B008
 ) -> IssuedCredentialEnvelope:
     require_permission(principal, Permission.CREDENTIAL_MANAGE)
+    # Security-critical endpoint class -> fail_mode="closed" (Foundation-010
+    # review guardrail #2/#3): a limiter outage rejects rather than silently
+    # admitting unbounded credential-management traffic.
+    await enforce_rate_limit(
+        principal,
+        operation="credential_manage",
+        limit=settings.rate_limit_credential_manage_per_window,
+        window_seconds=settings.rate_limit_credential_manage_window_seconds,
+        fail_mode="closed",
+        limiter=limiter,
+    )
     expires_in = timedelta(days=payload.expires_in_days) if payload.expires_in_days else None
     issued = await service.issue(
         tenant_id=principal.tenant_id,
@@ -68,8 +85,18 @@ async def rotate_credential(
     service: CredentialService = Depends(get_credential_service),  # noqa: B008
     audit_service: AuditService = Depends(get_audit_service),  # noqa: B008
     principal: AuthenticatedPrincipal = Depends(get_principal),  # noqa: B008
+    settings: Settings = Depends(get_settings),  # noqa: B008
+    limiter: RateLimiterProtocol = Depends(get_rate_limiter),  # noqa: B008
 ) -> IssuedCredentialEnvelope:
     require_permission(principal, Permission.CREDENTIAL_MANAGE)
+    await enforce_rate_limit(
+        principal,
+        operation="credential_manage",
+        limit=settings.rate_limit_credential_manage_per_window,
+        window_seconds=settings.rate_limit_credential_manage_window_seconds,
+        fail_mode="closed",
+        limiter=limiter,
+    )
     expires_in = timedelta(days=payload.expires_in_days) if payload.expires_in_days else None
     try:
         rotated = await service.rotate(
@@ -108,8 +135,18 @@ async def revoke_credential(
     service: CredentialService = Depends(get_credential_service),  # noqa: B008
     audit_service: AuditService = Depends(get_audit_service),  # noqa: B008
     principal: AuthenticatedPrincipal = Depends(get_principal),  # noqa: B008
+    settings: Settings = Depends(get_settings),  # noqa: B008
+    limiter: RateLimiterProtocol = Depends(get_rate_limiter),  # noqa: B008
 ) -> None:
     require_permission(principal, Permission.CREDENTIAL_MANAGE)
+    await enforce_rate_limit(
+        principal,
+        operation="credential_manage",
+        limit=settings.rate_limit_credential_manage_per_window,
+        window_seconds=settings.rate_limit_credential_manage_window_seconds,
+        fail_mode="closed",
+        limiter=limiter,
+    )
     try:
         await service.revoke(credential_id=credential_id, tenant_id=principal.tenant_id)
     except AuthenticationError as exc:
