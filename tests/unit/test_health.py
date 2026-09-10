@@ -14,7 +14,9 @@ def test_health() -> None:
 def test_readiness() -> None:
     response = client.get("/ready")
     assert response.status_code in {200, 503}
+    body = response.json()
+    assert "dependencies" in body
     if response.status_code == 200:
-        assert response.json()["status"] == "ready"
+        assert body["status"] == "ready"
     else:
-        assert response.json()["error"]["code"] == "REQUEST_ERROR"
+        assert body["status"] == "not_ready"

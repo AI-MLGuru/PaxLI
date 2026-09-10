@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from uuid import UUID
@@ -31,14 +32,69 @@ from core.audit.enums import (
     AuditStatus,
 )
 from core.audit.service import AuditPersistenceError, AuditService
+from core.reliability.health import check_dependency
 from core.security.exceptions import AuthenticationError, AuthorizationError
 from infrastructure.database import models  # noqa: F401
 from infrastructure.database.base import Base
 from infrastructure.database.repositories.audit_event import SqlAlchemyAuditEventRepository
 from infrastructure.database.session import engine, session_factory
+from infrastructure.observability.logging import configure_logging
+from infrastructure.observability.reliability_logging import log_reliability_metrics
+from infrastructure.reliability.dependency_health import (
+    READY_STATES,
+    classify,
+)
+from infrastructure.reliability.minio_policies import BREAKER as MINIO_BREAKER
+from infrastructure.reliability.minio_policies import METRICS as MINIO_METRICS
+from infrastructure.reliability.minio_policies import MinioOperationError
+from infrastructure.reliability.postgres_policies import BREAKER as POSTGRES_BREAKER
+from infrastructure.reliability.postgres_policies import METRICS as POSTGRES_METRICS
+from infrastructure.reliability.postgres_policies import PostgresOperationError, guarded_commit
 
 settings = get_settings()
 validate_production_transport_security(settings)
+configure_logging(settings)
+
+_health_minio_client: object | None = None
+
+
+def _get_health_minio_client() -> object:
+    global _health_minio_client
+    if _health_minio_client is None:
+        from minio import Minio
+
+        _health_minio_client = Minio(
+            settings.storage_endpoint,
+            access_key=settings.storage_access_key,
+            secret_key=settings.storage_secret_key,
+            secure=settings.storage_secure,
+        )
+    return _health_minio_client
+
+
+async def _check_postgres() -> None:
+    async with engine.connect() as connection:
+        await connection.execute(text("SELECT 1"))
+
+
+async def _check_minio() -> None:
+    client = _get_health_minio_client()
+    await asyncio.to_thread(client.bucket_exists, settings.storage_bucket)  # type: ignore[attr-defined]
+
+
+async def _report_reliability_metrics_periodically() -> None:
+    while True:
+        await asyncio.sleep(60)
+        log_reliability_metrics(
+            dependency="postgres",
+            snapshot=POSTGRES_METRICS.snapshot(),
+            circuit_state=POSTGRES_BREAKER.state.value,
+        )
+        log_reliability_metrics(
+            dependency="minio",
+            snapshot=MINIO_METRICS.snapshot(),
+            circuit_state=MINIO_BREAKER.state.value,
+        )
 
 
 @asynccontextmanager
@@ -50,7 +106,11 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     if settings.app_env == "development":
         async with engine.begin() as connection:
             await connection.run_sync(Base.metadata.create_all)
-    yield
+    metrics_task = asyncio.create_task(_report_reliability_metrics_periodically())
+    try:
+        yield
+    finally:
+        metrics_task.cancel()
 
 
 app = FastAPI(
@@ -124,7 +184,7 @@ async def authentication_exception_handler(
                 correlation_id=request.headers.get("X-Correlation-ID"),
                 durability=AuditDurability.REQUIRED,
             )
-            await session.commit()
+            await guarded_commit(session)
     except Exception:
         return error_response(
             request,
@@ -161,7 +221,7 @@ async def authorization_exception_handler(
                 metadata={"required_permission": exception.required_permission},
                 durability=AuditDurability.REQUIRED,
             )
-            await session.commit()
+            await guarded_commit(session)
     except Exception:
         # Any failure recording the required denial audit (a wrapped
         # AuditPersistenceError, or the underlying database being
@@ -176,16 +236,46 @@ async def authorization_exception_handler(
     return error_response(request, "AUTHORIZATION_DENIED", "Operation not permitted", 403)
 
 
+@app.exception_handler(PostgresOperationError)
+async def postgres_operation_exception_handler(
+    request: Request, _: PostgresOperationError
+) -> JSONResponse:
+    return error_response(
+        request, "POSTGRES_OPERATION_FAILED", "The database operation could not be completed.", 503
+    )
+
+
+@app.exception_handler(MinioOperationError)
+async def minio_operation_exception_handler(
+    request: Request, _: MinioOperationError
+) -> JSONResponse:
+    return error_response(
+        request, "STORAGE_OPERATION_FAILED", "The storage operation could not be completed.", 503
+    )
+
+
 @app.get("/health", tags=["system"])
 async def health() -> dict[str, str]:
     return {"status": "ok", "service": "averiq-api", "version": settings.app_version}
 
 
 @app.get("/ready", tags=["system"])
-async def readiness() -> dict[str, str]:
-    try:
-        async with engine.connect() as connection:
-            await connection.execute(text("SELECT 1"))
-    except Exception as exception:
-        raise HTTPException(status_code=503, detail="Database is unavailable") from exception
-    return {"status": "ready"}
+async def readiness() -> JSONResponse:
+    postgres_health = await check_dependency("postgres", _check_postgres, timeout_seconds=2.0)
+    storage_health = await check_dependency("storage", _check_minio, timeout_seconds=2.0)
+
+    dependencies = {
+        "postgres": classify(postgres_health).value,
+        "storage": classify(storage_health).value,
+    }
+    ready_values = {state.value for state in READY_STATES}
+    is_ready = all(
+        classify(h).value in ready_values for h in (postgres_health, storage_health)
+    )
+    return JSONResponse(
+        status_code=200 if is_ready else 503,
+        content={
+            "status": "ready" if is_ready else "not_ready",
+            "dependencies": dependencies,
+        },
+    )

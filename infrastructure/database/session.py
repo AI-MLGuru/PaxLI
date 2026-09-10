@@ -3,6 +3,7 @@ from collections.abc import AsyncIterator
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from apps.api.averiq_api.config import get_settings
+from infrastructure.reliability.postgres_policies import guarded_commit
 
 engine = create_async_engine(get_settings().database_url, pool_pre_ping=True)
 session_factory = async_sessionmaker(engine, expire_on_commit=False)
@@ -17,11 +18,16 @@ async def get_db_session() -> AsyncIterator[AsyncSession]:
     together atomically: if anything in the request raises (including a
     required-audit failure), everything staged on this session is rolled
     back and no partial governed effect is ever externally observable.
+
+    The commit itself goes through `guarded_commit`: bounded timeout, but
+    deliberately never auto-retried (see infrastructure/reliability/
+    postgres_policies.py) -- an uncertain COMMIT outcome must not be
+    silently resubmitted by this layer.
     """
     async with session_factory() as session:
         try:
             yield session
-            await session.commit()
+            await guarded_commit(session)
         except Exception:
             await session.rollback()
             raise
