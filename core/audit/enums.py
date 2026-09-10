@@ -29,3 +29,10 @@ class AuditStatus(StrEnum):
 class AuditDurability(StrEnum):
     REQUIRED = "REQUIRED"
     BEST_EFFORT = "BEST_EFFORT"
+
+
+UNATTRIBUTED_TENANT_ID = "_unattributed"
+"""Sentinel `tenant_id` for a required audit event whose action never
+resolved to a real tenant (e.g. an authentication attempt with no parseable
+or existing credential) -- `audit_events.tenant_id` is non-nullable, and
+there is no real tenant to attribute the event to."""

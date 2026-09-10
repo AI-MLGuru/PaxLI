@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from core.evidence.enums import EvidenceSource, EvidenceType
+from core.evidence.media_validation import verify_evidence_media
 from core.evidence.models import Evidence
 from core.evidence.repository import EvidenceRepository
 from core.verification.service import SessionExpiredError, VerificationSessionService
@@ -32,7 +33,6 @@ class EvidenceService:
         tenant_id: str,
         evidence_type: EvidenceType,
         content: bytes,
-        mime_type: str,
         checksum: str,
         metadata: dict[str, Any],
         idempotency_key: str | None = None,
@@ -47,8 +47,11 @@ class EvidenceService:
             if existing is not None:
                 return existing
 
+        # The client-supplied mime_type is never trusted for storage/response
+        # purposes (SEC-7.22.2); the actual bytes establish the media type.
+        verified_mime_type = verify_evidence_media(content)
         object_key = f"{tenant_id}/{session_id}/{evidence_type.value.lower()}/{checksum}"
-        await self.storage.put(object_key, content, mime_type)
+        await self.storage.put(object_key, content, verified_mime_type)
         evidence = Evidence(
             session_id=session_id,
             tenant_id=tenant_id,
@@ -56,7 +59,7 @@ class EvidenceService:
             source=EvidenceSource.CLIENT,
             object_key=object_key,
             checksum=checksum,
-            mime_type=mime_type,
+            mime_type=verified_mime_type,
             size_bytes=len(content),
             metadata=metadata,
             retention_until=session.created_at + timedelta(days=self.retention_days),

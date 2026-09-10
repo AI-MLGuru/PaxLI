@@ -1,5 +1,17 @@
 class AuthenticationError(Exception):
-    """Raised without revealing whether an identifier or secret was invalid."""
+    """Raised without revealing whether an identifier or secret was invalid.
+
+    Carries whatever denial context is actually known (SEC-7.29.1) so the
+    exception boundary can produce the required AUTHENTICATION_FAILED audit
+    event without re-deriving it. Both fields are None when the request
+    never resolved to a parseable credential identifier at all (malformed
+    or missing bearer token), since there is nothing to attribute yet.
+    """
+
+    def __init__(self, *, credential_id: str | None = None, tenant_id: str | None = None) -> None:
+        super().__init__("Invalid credentials")
+        self.credential_id = credential_id
+        self.tenant_id = tenant_id
 
 
 class AuthorizationError(Exception):

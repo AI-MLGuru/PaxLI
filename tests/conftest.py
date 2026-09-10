@@ -26,6 +26,11 @@ from infrastructure.security.hashing import ScryptSecretHasher
 from infrastructure.security.local_key_provider import LocalAesGcmKeyProvider
 from infrastructure.storage.encrypted import EncryptedObjectStorage
 
+# A minimal, structurally valid JPEG (real signature bytes) so evidence-upload
+# tests pass server-side media validation (SEC-7.22.2) while still letting
+# tests append distinguishing/canary payload after the signature.
+MINIMAL_JPEG_BYTES = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"
+
 
 class FakeObjectStorage:
     """In-memory `ObjectStorage` so tests never require a live MinIO server."""

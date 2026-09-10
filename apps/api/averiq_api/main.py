@@ -22,7 +22,14 @@ from apps.api.averiq_api.schemas.verification import (
     ErrorEnvelope,
     ResponseMeta,
 )
-from core.audit.enums import AuditActorType, AuditDurability, AuditEventType, AuditStatus
+from apps.api.averiq_api.transport_security import validate_production_transport_security
+from core.audit.enums import (
+    UNATTRIBUTED_TENANT_ID,
+    AuditActorType,
+    AuditDurability,
+    AuditEventType,
+    AuditStatus,
+)
 from core.audit.service import AuditPersistenceError, AuditService
 from core.security.exceptions import AuthenticationError, AuthorizationError
 from infrastructure.database import models  # noqa: F401
@@ -31,6 +38,7 @@ from infrastructure.database.repositories.audit_event import SqlAlchemyAuditEven
 from infrastructure.database.session import engine, session_factory
 
 settings = get_settings()
+validate_production_transport_security(settings)
 
 
 @asynccontextmanager
@@ -95,8 +103,35 @@ async def audit_persistence_exception_handler(
 
 @app.exception_handler(AuthenticationError)
 async def authentication_exception_handler(
-    request: Request, _: AuthenticationError
+    request: Request, exception: AuthenticationError
 ) -> JSONResponse:
+    # A failed authentication attempt is security-relevant (SEC-7.29.1) and
+    # gets its own required, durable audit event, for the same reason and in
+    # the same shape as authorization denial: no governed effect exists to
+    # gate here, so this is its own independent unit of work.
+    try:
+        async with request.app.state.db_session_factory() as session:
+            audit_service = AuditService(SqlAlchemyAuditEventRepository(session))
+            await audit_service.record(
+                tenant_id=exception.tenant_id or UNATTRIBUTED_TENANT_ID,
+                event_type=AuditEventType.AUTHENTICATION_FAILED,
+                component="authentication",
+                action="authenticate_bearer",
+                status=AuditStatus.FAILURE,
+                actor_type=AuditActorType.CLIENT,
+                actor_id=exception.credential_id,
+                request_id=request_id(request),
+                correlation_id=request.headers.get("X-Correlation-ID"),
+                durability=AuditDurability.REQUIRED,
+            )
+            await session.commit()
+    except Exception:
+        return error_response(
+            request,
+            "AUDIT_PERSISTENCE_FAILED",
+            "The security audit record could not be persisted.",
+            503,
+        )
     return error_response(request, "AUTHENTICATION_FAILED", "Invalid credentials", 401)
 
 

@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     storage_secret_key: str = "change-me"
     storage_bucket: str = "verification-evidence"
     storage_secure: bool = False
+    internal_transport_trusted: bool = False
     evidence_max_bytes: int = 10 * 1024 * 1024
     evidence_encryption_key_id: str = "evidence-v1"
     evidence_encryption_key: str | None = None

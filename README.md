@@ -89,6 +89,22 @@ alembic downgrade -1           # roll back one revision
 `Settings` (env vars / `.env`), so migrations always target whatever
 database the app itself would connect to.
 
+## Production transport security
+
+`APP_ENV=production` fails closed at startup unless the app's two outbound
+hops (object storage, database) have an established transport-security
+guarantee:
+
+- `STORAGE_SECURE=true` -- TLS to object storage, **or**
+- `INTERNAL_TRANSPORT_TRUSTED=true` -- an explicit attestation that the path
+  is a private network (e.g. Docker-internal, VPC-only)
+
+and `DATABASE_URL` must request SSL (`sslmode=require`/`sslmode=verify-*`/
+`ssl=true`) unless `INTERNAL_TRANSPORT_TRUSTED=true` is also set.
+
+External client -> Averiq TLS is the reverse proxy's job (Webuzo or
+equivalent) and isn't checked here, since this process doesn't terminate it.
+
 ## Verification states
 
 - `VERIFIED`

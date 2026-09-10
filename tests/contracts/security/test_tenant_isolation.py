@@ -1,5 +1,7 @@
 """Requirement traceability: SEC-7.5.*, PRV-11.11.*, PRV-11.19.*, Invariant 08."""
 
+from tests.conftest import MINIMAL_JPEG_BYTES
+
 
 def _create_session(api_client, token: str) -> str:
     response = api_client.post(
@@ -25,11 +27,12 @@ def test_cross_tenant_session_access_is_denied(api_client, issued_credentials) -
 def test_cross_tenant_evidence_access_is_denied(api_client, issued_credentials) -> None:
     """SEC-7.5.5 / PRV-11.19.2: Tenant A must not access Tenant B's evidence."""
     session_id = _create_session(api_client, issued_credentials["tenant_b_operational"])
-    api_client.post(
+    upload_response = api_client.post(
         f"/v1/verification-sessions/{session_id}/selfie",
-        files={"file": ("selfie.jpg", b"CANARY_SELFIE_BYTES", "image/jpeg")},
+        files={"file": ("selfie.jpg", MINIMAL_JPEG_BYTES + b"CANARY_SELFIE_BYTES", "image/jpeg")},
         headers={"Authorization": issued_credentials["tenant_b_operational"]},
     )
+    assert upload_response.status_code == 201
 
     response = api_client.get(
         f"/v1/verification-sessions/{session_id}/evidence",

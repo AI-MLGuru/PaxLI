@@ -23,6 +23,7 @@ from apps.api.averiq_api.schemas.verification import (
 from core.audit.enums import AuditActorType, AuditEventType, AuditStatus
 from core.audit.service import AuditService
 from core.evidence.enums import EvidenceType
+from core.evidence.media_validation import UnsupportedMediaError
 from core.evidence.service import EvidenceService
 from core.security.authentication import AuthenticatedPrincipal
 from core.security.authorization import Permission, require_permission
@@ -56,7 +57,6 @@ async def store_upload(
             tenant_id=tenant_id,
             evidence_type=evidence_type,
             content=content,
-            mime_type=file.content_type or "application/octet-stream",
             checksum=sha256(content).hexdigest(),
             metadata={"filename": file.filename} if file.filename else {},
             idempotency_key=idempotency_key,
@@ -65,6 +65,10 @@ async def store_upload(
         raise HTTPException(status_code=404, detail="Verification session not found") from exc
     except SessionExpiredError as exc:
         raise HTTPException(status_code=409, detail="Verification session is not active") from exc
+    except UnsupportedMediaError as exc:
+        raise HTTPException(
+            status_code=415, detail="Unsupported or unrecognized file format"
+        ) from exc
     await audit_service.record(
         tenant_id=tenant_id,
         session_id=session_id,

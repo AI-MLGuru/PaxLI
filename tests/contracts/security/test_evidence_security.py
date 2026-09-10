@@ -1,4 +1,6 @@
-"""Requirement traceability: SEC-7.14.2, SEC-7.16.*, SEC-7.17.5, PRV-11.6.*, PRV-11.23.*."""
+"""Requirement traceability: SEC-7.14.2, SEC-7.16.*, SEC-7.17.5, SEC-7.22.2, PRV-11.6.*, 11.23.*."""
+
+from tests.conftest import MINIMAL_JPEG_BYTES
 
 
 def test_uploaded_selfie_is_encrypted_before_reaching_storage(
@@ -13,7 +15,7 @@ def test_uploaded_selfie_is_encrypted_before_reaching_storage(
     )
     session_id = create_response.json()["data"]["id"]
 
-    plaintext = b"CANARY_RAW_SELFIE_BYTES_SHOULD_NEVER_BE_STORED_VERBATIM"
+    plaintext = MINIMAL_JPEG_BYTES + b"CANARY_RAW_SELFIE_BYTES_SHOULD_NEVER_BE_STORED_VERBATIM"
     upload_response = api_client.post(
         f"/v1/verification-sessions/{session_id}/selfie",
         files={"file": ("selfie.jpg", plaintext, "image/jpeg")},
@@ -38,9 +40,10 @@ def test_evidence_response_never_includes_raw_content(api_client, issued_credent
 
     upload_response = api_client.post(
         f"/v1/verification-sessions/{session_id}/document",
-        files={"file": ("doc.jpg", b"CANARY_DOCUMENT_BYTES", "image/jpeg")},
+        files={"file": ("doc.jpg", MINIMAL_JPEG_BYTES + b"CANARY_DOCUMENT_BYTES", "image/jpeg")},
         headers={"Authorization": issued_credentials["tenant_a_operational"]},
     )
+    assert upload_response.status_code == 201
     body = upload_response.json()
     assert set(body.keys()) == {
         "id",

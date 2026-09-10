@@ -72,29 +72,34 @@ class CredentialService:
         self, *, credential_id: UUID, tenant_id: str, secret: str
     ) -> CredentialRecord:
         credential = await self.store.get(credential_id, tenant_id)
-        return await self._verify_and_touch(credential, secret)
+        return await self._verify_and_touch(credential, secret, credential_id=credential_id)
 
     async def authenticate_by_id(self, *, credential_id: UUID, secret: str) -> CredentialRecord:
         credential = await self.store.get_by_id(credential_id)
-        return await self._verify_and_touch(credential, secret)
+        return await self._verify_and_touch(credential, secret, credential_id=credential_id)
 
     async def _verify_and_touch(
-        self, credential: CredentialRecord | None, secret: str
+        self, credential: CredentialRecord | None, secret: str, *, credential_id: UUID
     ) -> CredentialRecord:
         verifier = credential.secret_verifier if credential else self._timing_guard_verifier
         valid = self.hasher.verify(secret, verifier)
         if credential is None or not valid:
-            raise AuthenticationError("Invalid credentials")
+            raise AuthenticationError(
+                credential_id=str(credential_id),
+                tenant_id=credential.tenant_id if credential else None,
+            )
         if not credential.is_active():
             await self.store.update(credential)
-            raise AuthenticationError("Invalid credentials")
+            raise AuthenticationError(
+                credential_id=str(credential_id), tenant_id=credential.tenant_id
+            )
         credential.last_used_at = datetime.now(UTC)
         return await self.store.update(credential)
 
     async def revoke(self, *, credential_id: UUID, tenant_id: str) -> None:
         credential = await self.store.get(credential_id, tenant_id)
         if credential is None:
-            raise AuthenticationError("Invalid credentials")
+            raise AuthenticationError(credential_id=str(credential_id), tenant_id=tenant_id)
         if credential.status == CredentialStatus.REVOKED:
             return
         if not credential.is_active():
@@ -113,7 +118,7 @@ class CredentialService:
     ) -> IssuedCredential:
         existing = await self.store.get(credential_id, tenant_id)
         if existing is None:
-            raise AuthenticationError("Invalid credentials")
+            raise AuthenticationError(credential_id=str(credential_id), tenant_id=tenant_id)
         await self.revoke(credential_id=credential_id, tenant_id=tenant_id)
         return await self.issue(
             tenant_id=tenant_id, name=name, scope=existing.scope, expires_in=expires_in

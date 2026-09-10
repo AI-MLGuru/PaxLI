@@ -20,15 +20,15 @@ async def authenticate_bearer(
     authorization: str | None, credential_service: CredentialService
 ) -> AuthenticatedPrincipal:
     if not authorization or not authorization.startswith("Bearer "):
-        raise AuthenticationError("Invalid credentials")
+        raise AuthenticationError()
     token = authorization.removeprefix("Bearer ")
     credential_id_text, separator, secret = token.partition(".")
     if not separator or not secret:
-        raise AuthenticationError("Invalid credentials")
+        raise AuthenticationError()
     try:
         credential_id = UUID(credential_id_text)
     except ValueError as exception:
-        raise AuthenticationError("Invalid credentials") from exception
+        raise AuthenticationError() from exception
     credential = await credential_service.authenticate_by_id(
         credential_id=credential_id, secret=secret
     )
