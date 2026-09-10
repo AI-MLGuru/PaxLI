@@ -16,6 +16,7 @@ class Permission(StrEnum):
     EVIDENCE_READ = "evidence:read"
     AUDIT_READ = "audit:read"
     CREDENTIAL_MANAGE = "credential:manage"
+    POLICY_MANAGE = "policy:manage"
 
 
 _OPERATIONAL_PERMISSIONS: frozenset[Permission] = frozenset(
@@ -29,7 +30,9 @@ _OPERATIONAL_PERMISSIONS: frozenset[Permission] = frozenset(
     }
 )
 
-_ADMINISTRATIVE_ONLY_PERMISSIONS: frozenset[Permission] = frozenset({Permission.CREDENTIAL_MANAGE})
+_ADMINISTRATIVE_ONLY_PERMISSIONS: frozenset[Permission] = frozenset(
+    {Permission.CREDENTIAL_MANAGE, Permission.POLICY_MANAGE}
+)
 
 
 def permissions_for_scope(scope: CredentialScope) -> frozenset[Permission]:
