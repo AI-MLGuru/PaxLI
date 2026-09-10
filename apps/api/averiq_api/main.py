@@ -1,5 +1,6 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from uuid import UUID
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -12,6 +13,7 @@ from apps.api.averiq_api.routers.evidence import router as evidence_router
 from apps.api.averiq_api.routers.management.credentials import (
     router as management_credentials_router,
 )
+from apps.api.averiq_api.routers.verification_sessions import request_id
 from apps.api.averiq_api.routers.verification_sessions import (
     router as verification_sessions_router,
 )
@@ -20,11 +22,13 @@ from apps.api.averiq_api.schemas.verification import (
     ErrorEnvelope,
     ResponseMeta,
 )
-from core.audit.service import AuditPersistenceError
+from core.audit.enums import AuditActorType, AuditDurability, AuditEventType, AuditStatus
+from core.audit.service import AuditPersistenceError, AuditService
 from core.security.exceptions import AuthenticationError, AuthorizationError
 from infrastructure.database import models  # noqa: F401
 from infrastructure.database.base import Base
-from infrastructure.database.session import engine
+from infrastructure.database.repositories.audit_event import SqlAlchemyAuditEventRepository
+from infrastructure.database.session import engine, session_factory
 
 settings = get_settings()
 
@@ -48,6 +52,10 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.state.settings = settings
+# Overridable so tests can point authorization-denial auditing at their own
+# isolated database, the same way `app.dependency_overrides` redirects
+# request-scoped dependencies.
+app.state.db_session_factory = session_factory
 app.include_router(verification_sessions_router, prefix=settings.api_prefix)
 app.include_router(evidence_router, prefix=settings.api_prefix)
 app.include_router(audit_router, prefix=settings.api_prefix)
@@ -93,7 +101,43 @@ async def authentication_exception_handler(
 
 
 @app.exception_handler(AuthorizationError)
-async def authorization_exception_handler(request: Request, _: AuthorizationError) -> JSONResponse:
+async def authorization_exception_handler(
+    request: Request, exception: AuthorizationError
+) -> JSONResponse:
+    # Authorization denial is a security-relevant action (SEC-7.29.1,
+    # Invariant 12.9.46) and gets its own required, durable audit event.
+    # There is no governed effect to gate here (the request was already
+    # denied), so this is its own independent unit of work rather than
+    # sharing the request's (rolled-back) session.
+    try:
+        async with request.app.state.db_session_factory() as session:
+            audit_service = AuditService(SqlAlchemyAuditEventRepository(session))
+            await audit_service.record(
+                tenant_id=exception.tenant_id,
+                session_id=UUID(exception.session_id) if exception.session_id else None,
+                event_type=AuditEventType.AUTHORIZATION_DENIED,
+                component="authorization",
+                action="require_permission",
+                status=AuditStatus.FAILURE,
+                actor_type=AuditActorType.CLIENT,
+                actor_id=exception.actor_id,
+                request_id=request_id(request),
+                correlation_id=request.headers.get("X-Correlation-ID"),
+                metadata={"required_permission": exception.required_permission},
+                durability=AuditDurability.REQUIRED,
+            )
+            await session.commit()
+    except Exception:
+        # Any failure recording the required denial audit (a wrapped
+        # AuditPersistenceError, or the underlying database being
+        # unreachable) must not be silently discarded (Invariant 12.15) or
+        # reported as an ordinary, fully-audited 403 (12.9/12.65).
+        return error_response(
+            request,
+            "AUDIT_PERSISTENCE_FAILED",
+            "The security audit record could not be persisted.",
+            503,
+        )
     return error_response(request, "AUTHORIZATION_DENIED", "Operation not permitted", 403)
 
 
