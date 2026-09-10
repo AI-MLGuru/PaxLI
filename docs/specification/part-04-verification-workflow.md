@@ -118,7 +118,7 @@ CREATED/CAPTURING/SUBMITTED -> EXPIRED
 PROCESSING -> COMPLETED with final INCONCLUSIVE when the expiration deadline is reached during processing
 ```
 
-If the expiration deadline is reached while processing, the session MUST terminalize as `COMPLETED` with final `INCONCLUSIVE` and a stable expiration reason code. Work completing after the deadline MUST NOT produce `VERIFIED` or `REJECTED`. The transition and result MUST have the required audit events.
+If the expiration deadline is reached while processing, the workflow MUST request a Decision Engine evaluation under the applicable policy. The Decision Engine MUST produce final `INCONCLUSIVE` with a stable expiration reason code before the session terminalizes as `COMPLETED`. Work completing after the deadline MUST NOT produce `VERIFIED` or `REJECTED`. If the Decision Engine cannot execute, its governed safe-failure path applies and the transition/result MUST retain the appropriate failure reason and required audit events.
 
 A terminal session MUST NOT silently return to an earlier state.
 
