@@ -33,6 +33,14 @@ class MinioObjectStorage:
             content_type,
         )
 
+    async def get(self, object_key: str) -> bytes:
+        response = await asyncio.to_thread(self.client.get_object, self.bucket, object_key)
+        try:
+            return await asyncio.to_thread(response.read)
+        finally:
+            response.close()
+            response.release_conn()
+
     async def delete(self, object_key: str) -> None:
         try:
             await asyncio.to_thread(self.client.remove_object, self.bucket, object_key)

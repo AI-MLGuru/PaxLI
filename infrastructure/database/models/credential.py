@@ -4,7 +4,7 @@ from uuid import UUID
 from sqlalchemy import DateTime, Index, String
 from sqlalchemy.orm import Mapped, mapped_column
 
-from core.security.models import CredentialRecord, CredentialStatus
+from core.security.models import CredentialRecord, CredentialScope, CredentialStatus
 from infrastructure.database.base import Base
 
 
@@ -16,6 +16,9 @@ class CredentialRecordModel(Base):
     tenant_id: Mapped[str] = mapped_column(String(128), nullable=False)
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     secret_verifier: Mapped[str] = mapped_column(String(512), nullable=False)
+    scope: Mapped[str] = mapped_column(
+        String(32), nullable=False, default=CredentialScope.OPERATIONAL.value
+    )
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -29,6 +32,7 @@ class CredentialRecordModel(Base):
             tenant_id=credential.tenant_id,
             name=credential.name,
             secret_verifier=credential.secret_verifier,
+            scope=credential.scope.value,
             status=credential.status.value,
             created_at=credential.created_at,
             expires_at=credential.expires_at,
@@ -42,6 +46,7 @@ class CredentialRecordModel(Base):
             tenant_id=self.tenant_id,
             name=self.name,
             secret_verifier=self.secret_verifier,
+            scope=CredentialScope(self.scope),
             status=CredentialStatus(self.status),
             created_at=self.created_at,
             expires_at=self.expires_at,

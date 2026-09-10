@@ -12,7 +12,7 @@ class SqlAlchemyCredentialStore:
 
     async def save(self, credential: CredentialRecord) -> CredentialRecord:
         self.session.add(CredentialRecordModel.from_domain(credential))
-        await self.session.commit()
+        await self.session.flush()
         return credential
 
     async def get(self, credential_id: UUID, tenant_id: str) -> CredentialRecord | None:
@@ -30,5 +30,5 @@ class SqlAlchemyCredentialStore:
         if record is None or record.tenant_id != credential.tenant_id:
             raise LookupError("Credential does not exist")
         record.update_from_domain(credential)
-        await self.session.commit()
+        await self.session.flush()
         return record.to_domain()

@@ -8,7 +8,6 @@ from core.audit.service import AuditService
 from core.evidence.service import EvidenceService
 from core.security.authentication import AuthenticatedPrincipal, authenticate_bearer
 from core.security.credentials import CredentialService
-from core.security.exceptions import AuthenticationError
 from core.verification.service import VerificationSessionService
 from infrastructure.database.repositories.audit_event import (
     SqlAlchemyAuditEventRepository,
@@ -20,6 +19,8 @@ from infrastructure.database.repositories.verification_session import (
 )
 from infrastructure.database.session import get_db_session
 from infrastructure.security.hashing import ScryptSecretHasher
+from infrastructure.security.local_key_provider import get_local_key_provider
+from infrastructure.storage.encrypted import EncryptedObjectStorage
 from infrastructure.storage.minio import MinioObjectStorage
 
 
@@ -38,13 +39,20 @@ async def get_evidence_service(
     settings: Settings = Depends(get_settings),  # noqa: B008
 ) -> AsyncIterator[EvidenceService]:
     session_repository = SqlAlchemyVerificationSessionRepository(db_session)
+    key_provider = get_local_key_provider(
+        key_id=settings.evidence_encryption_key_id,
+        encoded_key=settings.evidence_encryption_key,
+    )
+    storage = EncryptedObjectStorage(
+        MinioObjectStorage(settings), key_provider, settings.evidence_encryption_key_id
+    )
     yield EvidenceService(
         SqlAlchemyEvidenceRepository(db_session),
         VerificationSessionService(
             session_repository,
             session_ttl_minutes=settings.session_ttl_minutes,
         ),
-        MinioObjectStorage(settings),
+        storage,
     )
 
 
@@ -64,7 +72,4 @@ async def get_principal(
     authorization: str | None = Header(default=None),
     credential_service: CredentialService = Depends(get_credential_service),  # noqa: B008
 ) -> AuthenticatedPrincipal:
-    try:
-        return await authenticate_bearer(authorization, credential_service)
-    except AuthenticationError:
-        raise
+    return await authenticate_bearer(authorization, credential_service)

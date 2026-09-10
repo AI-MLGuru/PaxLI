@@ -13,17 +13,19 @@ from fastapi import (
     status,
 )
 
-from apps.api.averiq_api.dependencies import get_audit_service, get_evidence_service
-from apps.api.averiq_api.routers.verification_sessions import request_id, tenant_from_principal
+from apps.api.averiq_api.dependencies import get_audit_service, get_evidence_service, get_principal
+from apps.api.averiq_api.routers.verification_sessions import request_id
 from apps.api.averiq_api.schemas.verification import (
     EvidenceListEnvelope,
     EvidenceResponse,
     ResponseMeta,
 )
-from core.audit.enums import AuditEventType, AuditStatus
+from core.audit.enums import AuditActorType, AuditEventType, AuditStatus
 from core.audit.service import AuditService
 from core.evidence.enums import EvidenceType
 from core.evidence.service import EvidenceService
+from core.security.authentication import AuthenticatedPrincipal
+from core.security.authorization import Permission, require_permission
 from core.verification.service import SessionExpiredError, SessionNotFoundError
 
 router = APIRouter(prefix="/verification-sessions", tags=["evidence"])
@@ -36,10 +38,12 @@ async def store_upload(
     request: Request,
     file: UploadFile,
     service: EvidenceService,
-    tenant_id: str,
+    principal: AuthenticatedPrincipal,
     idempotency_key: str | None,
     audit_service: AuditService,
 ) -> EvidenceResponse:
+    require_permission(principal.permissions, Permission.EVIDENCE_SUBMIT)
+    tenant_id = principal.tenant_id
     settings = request.app.state.settings
     content = await file.read(settings.evidence_max_bytes + 1)
     if len(content) > settings.evidence_max_bytes:
@@ -68,6 +72,8 @@ async def store_upload(
         component="evidence_api",
         action="upload_evidence",
         status=AuditStatus.SUCCESS,
+        actor_type=AuditActorType.CLIENT,
+        actor_id=str(principal.credential_id),
         request_id=request_id(request),
         correlation_id=request.headers.get("X-Correlation-ID"),
         metadata={
@@ -89,7 +95,7 @@ async def upload_selfie(
     request: Request,
     file: Annotated[UploadFile, File(...)],
     service: EvidenceService = Depends(get_evidence_service),  # noqa: B008
-    tenant_id: str = Depends(tenant_from_principal),  # noqa: B008
+    principal: AuthenticatedPrincipal = Depends(get_principal),  # noqa: B008
     audit_service: AuditService = Depends(get_audit_service),  # noqa: B008
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> EvidenceResponse:
@@ -99,7 +105,7 @@ async def upload_selfie(
         request=request,
         file=file,
         service=service,
-        tenant_id=tenant_id,
+        principal=principal,
         idempotency_key=idempotency_key,
         audit_service=audit_service,
     )
@@ -115,7 +121,7 @@ async def upload_document(
     request: Request,
     file: Annotated[UploadFile, File(...)],
     service: EvidenceService = Depends(get_evidence_service),  # noqa: B008
-    tenant_id: str = Depends(tenant_from_principal),  # noqa: B008
+    principal: AuthenticatedPrincipal = Depends(get_principal),  # noqa: B008
     audit_service: AuditService = Depends(get_audit_service),  # noqa: B008
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> EvidenceResponse:
@@ -125,7 +131,7 @@ async def upload_document(
         request=request,
         file=file,
         service=service,
-        tenant_id=tenant_id,
+        principal=principal,
         idempotency_key=idempotency_key,
         audit_service=audit_service,
     )
@@ -141,7 +147,7 @@ async def upload_liveness(
     request: Request,
     file: Annotated[UploadFile, File(...)],
     service: EvidenceService = Depends(get_evidence_service),  # noqa: B008
-    tenant_id: str = Depends(tenant_from_principal),  # noqa: B008
+    principal: AuthenticatedPrincipal = Depends(get_principal),  # noqa: B008
     audit_service: AuditService = Depends(get_audit_service),  # noqa: B008
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> EvidenceResponse:
@@ -151,7 +157,7 @@ async def upload_liveness(
         request=request,
         file=file,
         service=service,
-        tenant_id=tenant_id,
+        principal=principal,
         idempotency_key=idempotency_key,
         audit_service=audit_service,
     )
@@ -162,20 +168,23 @@ async def list_evidence(
     session_id: UUID,
     request: Request,
     service: EvidenceService = Depends(get_evidence_service),  # noqa: B008
-    tenant_id: str = Depends(tenant_from_principal),  # noqa: B008
+    principal: AuthenticatedPrincipal = Depends(get_principal),  # noqa: B008
     audit_service: AuditService = Depends(get_audit_service),  # noqa: B008
 ) -> EvidenceListEnvelope:
+    require_permission(principal.permissions, Permission.EVIDENCE_READ)
     try:
-        evidence = await service.list(session_id=session_id, tenant_id=tenant_id)
+        evidence = await service.list(session_id=session_id, tenant_id=principal.tenant_id)
     except SessionNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Verification session not found") from exc
     await audit_service.record(
-        tenant_id=tenant_id,
+        tenant_id=principal.tenant_id,
         session_id=session_id,
         event_type=AuditEventType.EVIDENCE_RETRIEVED,
         component="evidence_api",
         action="list_evidence",
         status=AuditStatus.SUCCESS,
+        actor_type=AuditActorType.CLIENT,
+        actor_id=str(principal.credential_id),
         request_id=request_id(request),
         correlation_id=request.headers.get("X-Correlation-ID"),
         metadata={"count": len(evidence)},

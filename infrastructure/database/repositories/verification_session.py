@@ -19,7 +19,7 @@ class SqlAlchemyVerificationSessionRepository:
     ) -> VerificationSession:
         record = VerificationSessionRecord.from_domain(session, idempotency_key)
         self.session.add(record)
-        await self.session.commit()
+        await self.session.flush()
         return record.to_domain()
 
     async def get(self, session_id: UUID, tenant_id: str) -> VerificationSession | None:
@@ -52,5 +52,5 @@ class SqlAlchemyVerificationSessionRepository:
         if record is None or record.tenant_id != session.tenant_id:
             raise LookupError("Verification session does not exist")
         record.update_from_domain(session)
-        await self.session.commit()
+        await self.session.flush()
         return record.to_domain()

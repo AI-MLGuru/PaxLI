@@ -15,7 +15,7 @@ class SqlAlchemyAuditEventRepository:
     async def add(self, event: AuditEvent, dedupe_key: str | None = None) -> AuditEvent:
         record = AuditEventRecord.from_domain(event, dedupe_key)
         self.session.add(record)
-        await self.session.commit()
+        await self.session.flush()
         return record.to_domain()
 
     async def get_by_dedupe_key(

@@ -10,9 +10,10 @@ from apps.api.averiq_api.schemas.verification import (
     SessionEnvelope,
     VerificationSessionResponse,
 )
-from core.audit.enums import AuditEventType, AuditStatus
+from core.audit.enums import AuditActorType, AuditEventType, AuditStatus
 from core.audit.service import AuditService
 from core.security.authentication import AuthenticatedPrincipal
+from core.security.authorization import Permission, require_permission
 from core.verification.service import (
     SessionExpiredError,
     SessionNotFoundError,
@@ -36,22 +37,25 @@ async def create_session(
     request: Request,
     service: VerificationSessionService = Depends(get_session_service),  # noqa: B008
     audit_service: AuditService = Depends(get_audit_service),  # noqa: B008
-    tenant_id: str = Depends(tenant_from_principal),  # noqa: B008
+    principal: AuthenticatedPrincipal = Depends(get_principal),  # noqa: B008
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> SessionEnvelope:
+    require_permission(principal.permissions, Permission.VERIFICATION_CREATE)
     session = await service.create(
-        tenant_id=tenant_id,
+        tenant_id=principal.tenant_id,
         external_reference=payload.external_reference,
         assurance_level=payload.assurance_level,
         idempotency_key=idempotency_key,
     )
     await audit_service.record(
-        tenant_id=tenant_id,
+        tenant_id=principal.tenant_id,
         session_id=session.id,
         event_type=AuditEventType.SESSION_CREATED,
         component="verification_session_api",
         action="create_session",
         status=AuditStatus.SUCCESS,
+        actor_type=AuditActorType.CLIENT,
+        actor_id=str(principal.credential_id),
         request_id=request_id(request),
         correlation_id=request.headers.get("X-Correlation-ID"),
         metadata={"assurance_level": session.assurance_level.value},
@@ -73,14 +77,15 @@ async def get_session(
     request: Request,
     service: VerificationSessionService = Depends(get_session_service),  # noqa: B008
     audit_service: AuditService = Depends(get_audit_service),  # noqa: B008
-    tenant_id: str = Depends(tenant_from_principal),  # noqa: B008
+    principal: AuthenticatedPrincipal = Depends(get_principal),  # noqa: B008
 ) -> SessionEnvelope:
+    require_permission(principal.permissions, Permission.VERIFICATION_READ)
     try:
-        session = await service.get(session_id=session_id, tenant_id=tenant_id)
+        session = await service.get(session_id=session_id, tenant_id=principal.tenant_id)
     except SessionNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Verification session not found") from exc
     await audit_service.record(
-        tenant_id=tenant_id,
+        tenant_id=principal.tenant_id,
         session_id=session.id,
         event_type=(
             AuditEventType.SESSION_EXPIRED
@@ -90,6 +95,8 @@ async def get_session(
         component="verification_session_api",
         action="retrieve_session",
         status=AuditStatus.SUCCESS,
+        actor_type=AuditActorType.CLIENT,
+        actor_id=str(principal.credential_id),
         request_id=request_id(request),
         correlation_id=request.headers.get("X-Correlation-ID"),
     )
@@ -109,21 +116,24 @@ async def cancel_session(
     request: Request,
     service: VerificationSessionService = Depends(get_session_service),  # noqa: B008
     audit_service: AuditService = Depends(get_audit_service),  # noqa: B008
-    tenant_id: str = Depends(tenant_from_principal),  # noqa: B008
+    principal: AuthenticatedPrincipal = Depends(get_principal),  # noqa: B008
 ) -> SessionEnvelope:
+    require_permission(principal.permissions, Permission.VERIFICATION_CANCEL)
     try:
-        session = await service.cancel(session_id=session_id, tenant_id=tenant_id)
+        session = await service.cancel(session_id=session_id, tenant_id=principal.tenant_id)
     except SessionNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Verification session not found") from exc
     except SessionExpiredError as exc:
         raise HTTPException(status_code=409, detail="Verification session has expired") from exc
     await audit_service.record(
-        tenant_id=tenant_id,
+        tenant_id=principal.tenant_id,
         session_id=session.id,
         event_type=AuditEventType.SESSION_CANCELLED,
         component="verification_session_api",
         action="cancel_session",
         status=AuditStatus.SUCCESS,
+        actor_type=AuditActorType.CLIENT,
+        actor_id=str(principal.credential_id),
         request_id=request_id(request),
         correlation_id=request.headers.get("X-Correlation-ID"),
         dedupe_key=f"session-cancelled:{session.id}",

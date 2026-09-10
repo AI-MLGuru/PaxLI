@@ -15,7 +15,7 @@ class SqlAlchemyEvidenceRepository:
     async def add(self, evidence: Evidence, idempotency_key: str | None = None) -> Evidence:
         record = EvidenceRecord.from_domain(evidence, idempotency_key)
         self.session.add(record)
-        await self.session.commit()
+        await self.session.flush()
         return record.to_domain()
 
     async def get_by_idempotency_key(

@@ -46,6 +46,8 @@ class ErrorEnvelope(BaseModel):
 
 
 class EvidenceResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: UUID
     session_id: UUID
     evidence_type: EvidenceType
@@ -64,6 +66,8 @@ class EvidenceListEnvelope(BaseModel):
 
 
 class AuditEventResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     event_id: UUID
     tenant_id: str
     session_id: UUID | None

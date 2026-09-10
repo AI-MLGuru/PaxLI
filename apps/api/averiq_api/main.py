@@ -9,6 +9,9 @@ from sqlalchemy import text
 from apps.api.averiq_api.config import get_settings
 from apps.api.averiq_api.routers.audit import router as audit_router
 from apps.api.averiq_api.routers.evidence import router as evidence_router
+from apps.api.averiq_api.routers.management.credentials import (
+    router as management_credentials_router,
+)
 from apps.api.averiq_api.routers.verification_sessions import (
     router as verification_sessions_router,
 )
@@ -18,7 +21,7 @@ from apps.api.averiq_api.schemas.verification import (
     ResponseMeta,
 )
 from core.audit.service import AuditPersistenceError
-from core.security.exceptions import AuthenticationError
+from core.security.exceptions import AuthenticationError, AuthorizationError
 from infrastructure.database import models  # noqa: F401
 from infrastructure.database.base import Base
 from infrastructure.database.session import engine
@@ -43,6 +46,7 @@ app.state.settings = settings
 app.include_router(verification_sessions_router, prefix=settings.api_prefix)
 app.include_router(evidence_router, prefix=settings.api_prefix)
 app.include_router(audit_router, prefix=settings.api_prefix)
+app.include_router(management_credentials_router, prefix=settings.api_prefix)
 
 
 def error_response(request: Request, code: str, message: str, status_code: int) -> JSONResponse:
@@ -81,6 +85,11 @@ async def authentication_exception_handler(
     request: Request, _: AuthenticationError
 ) -> JSONResponse:
     return error_response(request, "AUTHENTICATION_FAILED", "Invalid credentials", 401)
+
+
+@app.exception_handler(AuthorizationError)
+async def authorization_exception_handler(request: Request, _: AuthorizationError) -> JSONResponse:
+    return error_response(request, "AUTHORIZATION_DENIED", "Operation not permitted", 403)
 
 
 @app.get("/health", tags=["system"])
