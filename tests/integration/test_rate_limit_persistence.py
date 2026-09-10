@@ -227,10 +227,19 @@ async def test_concurrent_contention_admits_at_most_the_limit() -> None:
     infrastructure/database/session.py). A first version of this test used
     concurrency=20 and produced a genuine finding, not a flaky test: tasks
     queued behind pool exhaustion exceeded CHECK_TIMEOUT_SECONDS waiting for
-    a connection, which is pool-sizing/backpressure behavior -- a real
-    concern, but a different one from the atomicity invariant this test
-    exists to prove. 8 concurrent attempts against a limit of 3 is enough
-    genuine overlap to prove the invariant without that confound.
+    a connection -- pool-sizing/backpressure behavior, a real concern but a
+    different one from the atomicity invariant this test exists to prove.
+
+    Note for anyone debugging a failure here: a transient host/Docker
+    environment slowdown unrelated to this code can also trip
+    CHECK_TIMEOUT_SECONDS=2.0 -- confirmed once by observing even a single,
+    non-concurrent check_and_consume() call (test_single_check_and_consume_
+    allows_and_increments) time out at the same moment `docker ps` and a
+    bare `SELECT 1` were themselves abnormally slow, coincident with an
+    unrelated container starting on the host. That is host-environment
+    noise, not evidence of a concurrency defect -- rule it out the same way
+    (check whether an uncontended single call is also slow right now)
+    before suspecting the atomic-upsert logic itself.
     """
     scope_key = f"test|concurrency|{uuid4()}"
     limiter = PostgresRateLimiter(session_factory)
