@@ -16,6 +16,16 @@ class DecisionOutcome(StrEnum):
     INCONCLUSIVE = "INCONCLUSIVE"
 
 
+class EvaluationReason(StrEnum):
+    """Why the engine was invoked (DE-003 §12). EXPIRATION is a *workflow*
+    invariant, never a policy input: once the engine is entered with this
+    reason, WF-4.6 makes INCONCLUSIVE unconditional and no gate, rule or
+    default_outcome is consulted at all (DE-003 §14)."""
+
+    NORMAL = "NORMAL"
+    EXPIRATION = "EXPIRATION"
+
+
 class EngineReasonCode(StrEnum):
     """DE-003 §8: the closed, engine-controlled reason-code namespace.
     Never policy-authored -- see core.policy.reason_codes for the POLICY:
