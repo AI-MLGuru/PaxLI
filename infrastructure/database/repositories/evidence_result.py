@@ -86,6 +86,44 @@ class SqlAlchemyEvidenceResultRepository:
         records = (await self.session.execute(statement)).scalars().all()
         return [await self._to_domain(record) for record in records]
 
+    async def list_effective_for_session(
+        self, session_id: UUID, tenant_id: str
+    ) -> Sequence[EvidenceResult]:
+        statement = (
+            select(EvidenceResultRecord)
+            .where(
+                EvidenceResultRecord.session_id == str(session_id),
+                EvidenceResultRecord.tenant_id == tenant_id,
+                EvidenceResultRecord.is_effective.is_(True),
+            )
+            .order_by(EvidenceResultRecord.produced_at)
+        )
+        records = (await self.session.execute(statement)).scalars().all()
+        return [await self._to_domain(record) for record in records]
+
+    async def list_effective_for_session_by_type(
+        self, session_id: UUID, tenant_id: str, evidence_type: EvidenceResultType
+    ) -> Sequence[EvidenceResult]:
+        statement = (
+            select(EvidenceResultRecord)
+            .where(
+                EvidenceResultRecord.session_id == str(session_id),
+                EvidenceResultRecord.tenant_id == tenant_id,
+                EvidenceResultRecord.evidence_type == evidence_type.value,
+                EvidenceResultRecord.is_effective.is_(True),
+            )
+            .order_by(EvidenceResultRecord.produced_at)
+        )
+        records = (await self.session.execute(statement)).scalars().all()
+        return [await self._to_domain(record) for record in records]
+
+    async def mark_not_effective(self, evidence_result_id: UUID, tenant_id: str) -> None:
+        record = await self.session.get(EvidenceResultRecord, str(evidence_result_id))
+        if record is None or record.tenant_id != tenant_id:
+            return
+        record.is_effective = False
+        await self.session.flush()
+
     async def list_expired(self, tenant_id: str, as_of: datetime) -> Sequence[EvidenceResult]:
         already_tombstoned = select(EvidenceResultTombstoneRecord.evidence_result_id).where(
             EvidenceResultTombstoneRecord.evidence_result_id == EvidenceResultRecord.id

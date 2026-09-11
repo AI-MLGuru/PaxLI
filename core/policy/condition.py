@@ -11,9 +11,30 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 
-_UNIVERSAL_FIELDS = frozenset({"status", "score", "quality"})
+# "_present" is universal like status/score/quality, but with a different
+# origin: it isn't a payload field at all, it's whether any effective
+# evidence result of this type exists for the session (DE-003 §2/§9). It is
+# also the ONLY field legal against a PROHIBITED-level evidence_type
+# (core.policy.validation) -- prohibited evidence can be observed, never
+# otherwise inspected.
+_UNIVERSAL_FIELDS = frozenset({"status", "score", "quality", "_present"})
 
 ConditionOperator = Literal["==", "!=", ">=", "<=", ">", "<"]
+
+
+class ThresholdRef(BaseModel):
+    """References a policy-level ThresholdDefinition by name instead of
+    embedding a literal (DE-003 §2/§6, the fix for landmine 3: a bare float
+    in a condition has no model/calibration binding and cannot satisfy
+    DEC-5.20.2's "must not be silently reused across incompatible models").
+    Semantic validation cross-checks the referenced definition's
+    applicable_evidence_type against this condition's own evidence_type."""
+
+    type: Literal["threshold_ref"] = "threshold_ref"
+    name: str
+
+
+ConditionOperand = bool | int | float | str | ThresholdRef
 
 
 class EvidenceCondition(BaseModel):
@@ -26,7 +47,7 @@ class EvidenceCondition(BaseModel):
     evidence_type: str
     field: str
     operator: ConditionOperator
-    expected_value: bool | int | float | str
+    expected_value: ConditionOperand
 
 
 class AllOf(BaseModel):
@@ -102,9 +123,11 @@ __all__ = [
     "AllOf",
     "AnyOf",
     "Condition",
+    "ConditionOperand",
     "ConditionOperator",
     "EvidenceCondition",
     "Not",
+    "ThresholdRef",
     "condition_depth",
     "condition_node_count",
     "iter_evidence_conditions",

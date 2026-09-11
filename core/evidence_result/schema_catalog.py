@@ -8,7 +8,7 @@ direction implicit rather than a hard import coupling in either direction.
 from core.evidence_result.enums import EvidenceResultType
 from core.evidence_result.schemas import SCHEMA_REGISTRY
 
-_UNIVERSAL_FIELDS = frozenset({"status", "score", "quality"})
+_UNIVERSAL_FIELDS = frozenset({"status", "score", "quality", "_present"})
 
 
 class EvidenceResultSchemaCatalog:

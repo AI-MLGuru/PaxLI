@@ -57,8 +57,8 @@ class PolicyRecord(Base):
     assurance_level: Mapped[str] = mapped_column(String(32), nullable=False)
     schema_version: Mapped[str] = mapped_column(String(16), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
-    evidence_requirements_json: Mapped[dict[str, Any]] = mapped_column(
-        JSON(none_as_null=True), nullable=False, default=dict
+    evidence_requirements_json: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON(none_as_null=True), nullable=False, default=list
     )
     conditions_json: Mapped[dict[str, Any] | None] = mapped_column(
         JSON(none_as_null=True), nullable=True
@@ -69,12 +69,10 @@ class PolicyRecord(Base):
     rules_json: Mapped[list[dict[str, Any]]] = mapped_column(
         JSON(none_as_null=True), nullable=False, default=list
     )
-    thresholds_json: Mapped[dict[str, float]] = mapped_column(
-        JSON(none_as_null=True), nullable=False, default=dict
+    thresholds_json: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON(none_as_null=True), nullable=False, default=list
     )
-    conflict_resolution_json: Mapped[dict[str, Any] | None] = mapped_column(
-        JSON(none_as_null=True), nullable=True
-    )
+    default_outcome: Mapped[str | None] = mapped_column(String(32), nullable=True)
     metadata_json: Mapped[dict[str, Any]] = mapped_column(
         JSON(none_as_null=True), nullable=False, default=dict
     )

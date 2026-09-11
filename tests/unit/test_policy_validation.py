@@ -1,14 +1,22 @@
 import pytest
 
+from core.decision.enums import DecisionOutcome
 from core.evidence_result.schema_catalog import EvidenceResultSchemaCatalog
-from core.policy.condition import AllOf, EvidenceCondition
+from core.policy.condition import AllOf, EvidenceCondition, ThresholdRef
 from core.policy.exceptions import InvalidPolicyError
+from core.policy.gates import Gate, GateKind
+from core.policy.requirements import EvidenceRequirement, EvidenceRequirementLevel
+from core.policy.rules import Rule
+from core.policy.thresholds import ThresholdDefinition
 from core.policy.validation import (
     MAX_CONDITION_NODES,
     validate_condition_complexity,
     validate_condition_semantics,
-    validate_envelopes,
+    validate_evidence_requirements,
+    validate_gates,
     validate_policy_content,
+    validate_rules,
+    validate_thresholds,
 )
 
 _real_catalog = EvidenceResultSchemaCatalog()
@@ -65,29 +73,185 @@ def test_complexity_bound_accepts_a_reasonably_sized_tree() -> None:
     validate_condition_complexity(reasonable)  # must not raise
 
 
-@pytest.mark.parametrize("forbidden_key", ["code", "eval", "exec", "script", "__import__"])
-def test_gate_envelope_rejects_executable_shaped_keys(forbidden_key: str) -> None:
-    with pytest.raises(InvalidPolicyError):
-        validate_envelopes(gates=({forbidden_key: "print(1)"},), rules=(), conflict_resolution=None)
-
-
-def test_gate_envelope_accepts_ordinary_data_only_shapes() -> None:
-    validate_envelopes(
-        gates=({"id": "gate-1", "outcome": "REVIEW_REQUIRED"},),
-        rules=({"id": "rule-1", "weight": 0.5},),
-        conflict_resolution={"strategy": "most_restrictive"},
-    )  # must not raise
-
-
 def test_validate_policy_content_runs_the_full_pipeline() -> None:
     condition = EvidenceCondition(
         evidence_type="FACE_MATCH", field="similarity", operator=">=", expected_value=0.9
     )
     validate_policy_content(
+        evidence_requirements=(),
         conditions=condition,
         gates=(),
         rules=(),
-        thresholds={"pass": 0.9},
-        conflict_resolution=None,
+        thresholds=(),
         catalog=_real_catalog,
     )  # must not raise
+
+
+def test_duplicate_gate_ids_are_rejected() -> None:
+    condition = EvidenceCondition(
+        evidence_type="FACE_MATCH", field="status", operator="==", expected_value="FAIL"
+    )
+    gate = Gate(
+        id="dup",
+        kind=GateKind.BLOCKING,
+        condition=condition,
+        priority=1,
+        on_failure_outcome=DecisionOutcome.REJECTED,
+        failure_reason_code="POLICY:FACE_MATCH_FAILED",
+    )
+    duplicate = gate.model_copy(update={"priority": 2})
+    with pytest.raises(InvalidPolicyError):
+        validate_gates((gate, duplicate))
+
+
+def test_duplicate_gate_priorities_are_rejected() -> None:
+    condition = EvidenceCondition(
+        evidence_type="FACE_MATCH", field="status", operator="==", expected_value="FAIL"
+    )
+    gate_a = Gate(
+        id="a",
+        kind=GateKind.BLOCKING,
+        condition=condition,
+        priority=1,
+        on_failure_outcome=DecisionOutcome.REJECTED,
+        failure_reason_code="POLICY:GATE_A_FAILED",
+    )
+    gate_b = gate_a.model_copy(update={"id": "b"})
+    with pytest.raises(InvalidPolicyError):
+        validate_gates((gate_a, gate_b))
+
+
+def test_duplicate_rule_priorities_are_rejected() -> None:
+    condition = EvidenceCondition(
+        evidence_type="FACE_MATCH", field="status", operator="==", expected_value="PASS"
+    )
+    rule_a = Rule(
+        id="a", condition=condition, outcome=DecisionOutcome.VERIFIED, priority=1,
+        reason_code="POLICY:VERIFIED_A",
+    )
+    rule_b = rule_a.model_copy(update={"id": "b"})
+    with pytest.raises(InvalidPolicyError):
+        validate_rules((rule_a, rule_b))
+
+
+def test_duplicate_threshold_names_are_rejected() -> None:
+    threshold = ThresholdDefinition(
+        name="dup", value=0.5, model_id="m", model_version="v1",
+        calibration_reference="c1", applicable_evidence_type="FACE_MATCH",
+    )
+    with pytest.raises(InvalidPolicyError):
+        validate_thresholds((threshold, threshold.model_copy()))
+
+
+def test_duplicate_evidence_requirement_types_are_rejected() -> None:
+    requirement = EvidenceRequirement(
+        evidence_type="FACE_MATCH", level=EvidenceRequirementLevel.REQUIRED
+    )
+    with pytest.raises(InvalidPolicyError):
+        validate_evidence_requirements(
+            (requirement, requirement.model_copy()), catalog=_real_catalog
+        )
+
+
+def test_prohibited_evidence_type_rejects_non_present_field_reference() -> None:
+    """DE-003 §3/§9: PROHIBITED evidence's only legal condition field is
+    _present -- referencing any other field must fail policy validation."""
+    prohibited = EvidenceRequirement(
+        evidence_type="EXTERNAL_IDENTITY_PROVIDER", level=EvidenceRequirementLevel.PROHIBITED
+    )
+    condition = EvidenceCondition(
+        evidence_type="EXTERNAL_IDENTITY_PROVIDER",
+        field="matched",
+        operator="==",
+        expected_value=True,
+    )
+    with pytest.raises(InvalidPolicyError):
+        validate_policy_content(
+            evidence_requirements=(prohibited,),
+            conditions=condition,
+            gates=(),
+            rules=(),
+            thresholds=(),
+            catalog=_real_catalog,
+        )
+
+
+def test_prohibited_evidence_type_accepts_present_field_reference() -> None:
+    prohibited = EvidenceRequirement(
+        evidence_type="EXTERNAL_IDENTITY_PROVIDER", level=EvidenceRequirementLevel.PROHIBITED
+    )
+    condition = EvidenceCondition(
+        evidence_type="EXTERNAL_IDENTITY_PROVIDER",
+        field="_present",
+        operator="==",
+        expected_value=True,
+    )
+    validate_policy_content(
+        evidence_requirements=(prohibited,),
+        conditions=condition,
+        gates=(),
+        rules=(),
+        thresholds=(),
+        catalog=_real_catalog,
+    )  # must not raise
+
+
+def test_threshold_ref_cross_checked_against_definitions() -> None:
+    threshold = ThresholdDefinition(
+        name="face_match_pass", value=0.55, model_id="insightface", model_version="v1",
+        calibration_reference="cal-1", applicable_evidence_type="FACE_MATCH",
+    )
+    condition = EvidenceCondition(
+        evidence_type="FACE_MATCH",
+        field="similarity",
+        operator=">=",
+        expected_value=ThresholdRef(name="face_match_pass"),
+    )
+    validate_policy_content(
+        evidence_requirements=(),
+        conditions=condition,
+        gates=(),
+        rules=(),
+        thresholds=(threshold,),
+        catalog=_real_catalog,
+    )  # must not raise
+
+
+def test_threshold_ref_to_unknown_threshold_is_rejected() -> None:
+    condition = EvidenceCondition(
+        evidence_type="FACE_MATCH",
+        field="similarity",
+        operator=">=",
+        expected_value=ThresholdRef(name="does_not_exist"),
+    )
+    with pytest.raises(InvalidPolicyError):
+        validate_policy_content(
+            evidence_requirements=(),
+            conditions=condition,
+            gates=(),
+            rules=(),
+            thresholds=(),
+            catalog=_real_catalog,
+        )
+
+
+def test_threshold_ref_to_mismatched_evidence_type_is_rejected() -> None:
+    threshold = ThresholdDefinition(
+        name="doc_quality", value=0.5, model_id="m", model_version="v1",
+        calibration_reference="c1", applicable_evidence_type="DOCUMENT_QUALITY",
+    )
+    condition = EvidenceCondition(
+        evidence_type="FACE_MATCH",
+        field="similarity",
+        operator=">=",
+        expected_value=ThresholdRef(name="doc_quality"),
+    )
+    with pytest.raises(InvalidPolicyError):
+        validate_policy_content(
+            evidence_requirements=(),
+            conditions=condition,
+            gates=(),
+            rules=(),
+            thresholds=(threshold,),
+            catalog=_real_catalog,
+        )

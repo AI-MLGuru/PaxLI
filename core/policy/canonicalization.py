@@ -1,22 +1,32 @@
-"""Canonical normalization (DEC-5.11) and integrity hashing (Foundation-009
-discovery question 9), reusing Foundation-008's exact technique
-(sort_keys=True JSON + SHA-256) rather than inventing a second scheme.
+"""Canonical normalization (DEC-5.11) and integrity hashing, reusing
+Foundation-008's exact technique (sort_keys=True JSON + SHA-256) rather
+than inventing a second scheme.
 
 The hash is computed over policy CONTENT only -- evidence_requirements,
-conditions, gates, rules, thresholds, conflict_resolution, schema_version --
+conditions, gates, rules, thresholds, default_outcome, schema_version --
 never policy_id, version, tenant_id, status, or any timestamp. This is a
 deliberate property: two versions with content-identical bodies (e.g. an
 ACTIVE version and a later rollback that reproduces it) hash identically,
-which is what makes rollback's provenance proof possible (Foundation-009
-discovery: "Policy v3 content equivalent to v1"). Two structurally
+which is what makes rollback's provenance proof possible. Two structurally
 different bodies always hash differently.
+
+DE-003 extended policy content to typed Gate/Rule/EvidenceRequirement/
+ThresholdDefinition collections; `model_dump(mode="json")` on each gives a
+deterministic dict representation to feed into the same sort_keys=True
+JSON scheme -- no per-field hand-canonicalization needed for these, unlike
+the condition tree's commutative AllOf/AnyOf children (below).
 """
 
 import hashlib
 import json
 from typing import Any
 
+from core.decision.enums import DecisionOutcome
 from core.policy.condition import AllOf, AnyOf, Condition, EvidenceCondition, Not
+from core.policy.gates import Gate
+from core.policy.requirements import EvidenceRequirement
+from core.policy.rules import Rule
+from core.policy.thresholds import ThresholdDefinition
 
 
 def _canonicalize_condition(condition: Condition | None) -> dict[str, Any] | None:
@@ -33,7 +43,9 @@ def _canonicalize_condition(condition: Condition | None) -> dict[str, Any] | Non
             "evidence_type": condition.evidence_type,
             "field": condition.field,
             "operator": condition.operator,
-            "expected_value": condition.expected_value,
+            "expected_value": condition.expected_value.model_dump(mode="json")
+            if hasattr(condition.expected_value, "model_dump")
+            else condition.expected_value,
         }
     if isinstance(condition, AllOf):
         children = [_canonicalize_condition(child) for child in condition.all_of]
@@ -51,12 +63,12 @@ def _canonicalize_condition(condition: Condition | None) -> dict[str, Any] | Non
 def canonicalize_policy_content(
     *,
     schema_version: str,
-    evidence_requirements: dict[str, Any],
+    evidence_requirements: tuple[EvidenceRequirement, ...],
     conditions: Condition | None,
-    gates: tuple[dict[str, Any], ...],
-    rules: tuple[dict[str, Any], ...],
-    thresholds: dict[str, float],
-    conflict_resolution: dict[str, Any] | None,
+    gates: tuple[Gate, ...],
+    rules: tuple[Rule, ...],
+    thresholds: tuple[ThresholdDefinition, ...],
+    default_outcome: DecisionOutcome | None,
 ) -> str:
     """Deterministic JSON string for content-hashing. Not itself the hash --
     callers pass this to compute_canonical_hash, or compare two calls'
@@ -64,12 +76,26 @@ def canonicalize_policy_content(
     return json.dumps(
         {
             "schema_version": schema_version,
-            "evidence_requirements": evidence_requirements,
+            "evidence_requirements": [
+                req.model_dump(mode="json") for req in evidence_requirements
+            ],
             "conditions": _canonicalize_condition(conditions),
-            "gates": list(gates),
-            "rules": list(rules),
-            "thresholds": thresholds,
-            "conflict_resolution": conflict_resolution,
+            "gates": [
+                {
+                    **gate.model_dump(mode="json"),
+                    "condition": _canonicalize_condition(gate.condition),
+                }
+                for gate in gates
+            ],
+            "rules": [
+                {
+                    **rule.model_dump(mode="json"),
+                    "condition": _canonicalize_condition(rule.condition),
+                }
+                for rule in rules
+            ],
+            "thresholds": [t.model_dump(mode="json") for t in thresholds],
+            "default_outcome": default_outcome.value if default_outcome is not None else None,
         },
         sort_keys=True,
         default=str,
@@ -79,12 +105,12 @@ def canonicalize_policy_content(
 def compute_canonical_hash(
     *,
     schema_version: str,
-    evidence_requirements: dict[str, Any],
+    evidence_requirements: tuple[EvidenceRequirement, ...],
     conditions: Condition | None,
-    gates: tuple[dict[str, Any], ...],
-    rules: tuple[dict[str, Any], ...],
-    thresholds: dict[str, float],
-    conflict_resolution: dict[str, Any] | None,
+    gates: tuple[Gate, ...],
+    rules: tuple[Rule, ...],
+    thresholds: tuple[ThresholdDefinition, ...],
+    default_outcome: DecisionOutcome | None,
 ) -> str:
     canonical = canonicalize_policy_content(
         schema_version=schema_version,
@@ -93,6 +119,6 @@ def compute_canonical_hash(
         gates=gates,
         rules=rules,
         thresholds=thresholds,
-        conflict_resolution=conflict_resolution,
+        default_outcome=default_outcome,
     )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()

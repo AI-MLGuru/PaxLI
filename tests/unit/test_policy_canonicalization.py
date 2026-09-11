@@ -1,5 +1,6 @@
 from core.policy.canonicalization import compute_canonical_hash
 from core.policy.condition import AllOf, EvidenceCondition
+from core.policy.thresholds import ThresholdDefinition
 
 _leaf_a = EvidenceCondition(
     evidence_type="FACE_MATCH", field="similarity", operator=">=", expected_value=0.9
@@ -9,15 +10,15 @@ _leaf_b = EvidenceCondition(
 )
 
 
-def _hash(conditions, thresholds=None):
+def _hash(conditions, thresholds=()):
     return compute_canonical_hash(
         schema_version="1.0",
-        evidence_requirements={},
+        evidence_requirements=(),
         conditions=conditions,
         gates=(),
         rules=(),
-        thresholds=thresholds or {},
-        conflict_resolution=None,
+        thresholds=thresholds,
+        default_outcome=None,
     )
 
 
@@ -42,7 +43,12 @@ def test_hash_is_deterministic_across_repeated_calls() -> None:
 
 
 def test_different_thresholds_hash_differently() -> None:
-    assert _hash(None, {"pass": 0.9}) != _hash(None, {"pass": 0.5})
+    threshold_a = ThresholdDefinition(
+        name="pass", value=0.9, model_id="m", model_version="v1",
+        calibration_reference="c1", applicable_evidence_type="FACE_MATCH",
+    )
+    threshold_b = threshold_a.model_copy(update={"value": 0.5})
+    assert _hash(None, (threshold_a,)) != _hash(None, (threshold_b,))
 
 
 def test_no_conditions_is_a_stable_hashable_state() -> None:

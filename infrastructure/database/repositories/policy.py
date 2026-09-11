@@ -7,10 +7,15 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.decision.enums import DecisionOutcome
 from core.policy.condition import Condition
 from core.policy.enums import PolicyStatus
 from core.policy.exceptions import PolicyActivationConflictError
+from core.policy.gates import Gate
 from core.policy.models import VerificationPolicy
+from core.policy.requirements import EvidenceRequirement
+from core.policy.rules import Rule
+from core.policy.thresholds import ThresholdDefinition
 from core.verification.enums import AssuranceLevel
 from infrastructure.database.models.policy import PolicyRecord
 
@@ -114,14 +119,18 @@ class SqlAlchemyVerificationPolicyRepository:
             assurance_level=policy.assurance_level.value,
             schema_version=policy.schema_version,
             status=policy.status.value,
-            evidence_requirements_json=policy.evidence_requirements,
+            evidence_requirements_json=[
+                req.model_dump(mode="json") for req in policy.evidence_requirements
+            ],
             conditions_json=(
                 policy.conditions.model_dump() if policy.conditions is not None else None
             ),
-            gates_json=list(policy.gates),
-            rules_json=list(policy.rules),
-            thresholds_json=policy.thresholds,
-            conflict_resolution_json=policy.conflict_resolution,
+            gates_json=[gate.model_dump(mode="json") for gate in policy.gates],
+            rules_json=[rule.model_dump(mode="json") for rule in policy.rules],
+            thresholds_json=[t.model_dump(mode="json") for t in policy.thresholds],
+            default_outcome=(
+                policy.default_outcome.value if policy.default_outcome is not None else None
+            ),
             metadata_json=policy.metadata,
             canonical_hash=policy.canonical_hash,
             created_at=policy.created_at,
@@ -145,12 +154,19 @@ class SqlAlchemyVerificationPolicyRepository:
             assurance_level=AssuranceLevel(record.assurance_level),
             schema_version=record.schema_version,
             status=PolicyStatus(record.status),
-            evidence_requirements=record.evidence_requirements_json,
+            evidence_requirements=tuple(
+                EvidenceRequirement.model_validate(item)
+                for item in record.evidence_requirements_json
+            ),
             conditions=conditions,
-            gates=tuple(record.gates_json),
-            rules=tuple(record.rules_json),
-            thresholds=record.thresholds_json,
-            conflict_resolution=record.conflict_resolution_json,
+            gates=tuple(Gate.model_validate(item) for item in record.gates_json),
+            rules=tuple(Rule.model_validate(item) for item in record.rules_json),
+            thresholds=tuple(
+                ThresholdDefinition.model_validate(item) for item in record.thresholds_json
+            ),
+            default_outcome=(
+                DecisionOutcome(record.default_outcome) if record.default_outcome else None
+            ),
             metadata=record.metadata_json,
             canonical_hash=record.canonical_hash,
             created_at=record.created_at,

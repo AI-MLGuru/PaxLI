@@ -37,6 +37,28 @@ class EvidenceResultRepository(Protocol):
         self, session_id: UUID, tenant_id: str, evidence_type: EvidenceResultType
     ) -> Sequence[EvidenceResult]: ...
 
+    async def list_effective_for_session(
+        self, session_id: UUID, tenant_id: str
+    ) -> Sequence[EvidenceResult]:
+        """DE-003 §2/§11: only non-superseded (is_effective=true) results --
+        the query-time filter the Decision Engine's effective-evidence
+        resolver depends on. At most one row per evidence_type is possible
+        here when ix_evidence_results_one_effective_per_type holds."""
+        ...
+
+    async def list_effective_for_session_by_type(
+        self, session_id: UUID, tenant_id: str, evidence_type: EvidenceResultType
+    ) -> Sequence[EvidenceResult]: ...
+
+    async def mark_not_effective(self, evidence_result_id: UUID, tenant_id: str) -> None:
+        """Narrow transition: flips is_effective to False on an existing
+        row. Deliberately not a generic update() -- the only mutation this
+        method performs. Called by supersede() on the row being superseded,
+        in the same transaction as the new row's insert, so the partial
+        unique index never observes two effective rows for the same type
+        even momentarily."""
+        ...
+
     async def list_expired(self, tenant_id: str, as_of: datetime) -> Sequence[EvidenceResult]:
         """Evidence results whose retention_until has passed and that have
         not already been requested for deletion (Invariant-06 remediation:

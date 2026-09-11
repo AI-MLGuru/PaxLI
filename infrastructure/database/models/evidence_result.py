@@ -3,6 +3,7 @@ from typing import Any
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     CheckConstraint,
     DateTime,
     Float,
@@ -11,6 +12,7 @@ from sqlalchemy import (
     LargeBinary,
     String,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -26,6 +28,18 @@ class EvidenceResultRecord(Base):
     protects is `(result_json IS NOT NULL) XOR (result_ciphertext IS NOT
     NULL)` for results that carry a payload at all. `result_key_id` is
     NULL if and only if `result_ciphertext` is NULL, enforced the same way.
+
+    `is_effective` + `ix_evidence_results_one_effective_per_type` (DE-003
+    §11's duplicate-evidence-type finding): a session must have at most one
+    non-superseded EvidenceResult per evidence_type. Nothing previously
+    enforced this -- `supersede()` only ever added a new row, never marked
+    the old one, so two independent create() calls for the same type could
+    both remain "effective" simultaneously. `is_effective` is the same
+    narrow-transition pattern as PolicyRecord's ACTIVE/SUPERSEDED partial
+    unique index: superseding an existing result flips its `is_effective`
+    to False in the same transaction that inserts the new (implicitly
+    effective) row, and the partial unique index makes the database, not
+    application logic, the final authority.
     """
 
     __tablename__ = "evidence_results"
@@ -47,6 +61,15 @@ class EvidenceResultRecord(Base):
         Index("ix_evidence_results_tenant_session", "tenant_id", "session_id"),
         Index(
             "ix_evidence_results_tenant_session_type", "tenant_id", "session_id", "evidence_type"
+        ),
+        Index(
+            "ix_evidence_results_one_effective_per_type",
+            "tenant_id",
+            "session_id",
+            "evidence_type",
+            unique=True,
+            postgresql_where=text("is_effective = true"),
+            sqlite_where=text("is_effective = true"),
         ),
     )
 
@@ -89,3 +112,4 @@ class EvidenceResultRecord(Base):
     integrity_reference: Mapped[str] = mapped_column(String(128), nullable=False)
     retention_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     idempotency_key: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    is_effective: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)

@@ -17,7 +17,21 @@ from core.policy.exceptions import (
 )
 from core.policy.models import VerificationPolicy
 from core.policy.service import PolicyService
+from core.policy.thresholds import ThresholdDefinition
 from core.verification.enums import AssuranceLevel
+
+
+def _threshold(value: float, *, name: str = "pass") -> tuple[ThresholdDefinition, ...]:
+    return (
+        ThresholdDefinition(
+            name=name,
+            value=value,
+            model_id="test-model",
+            model_version="v1",
+            calibration_reference="cal-1",
+            applicable_evidence_type="FACE_MATCH",
+        ),
+    )
 
 
 class FakePolicyRepository:
@@ -172,7 +186,7 @@ async def test_create_and_activate_persists_and_audits(service) -> None:
         policy_id="kyc-standard",
         assurance_level=AssuranceLevel.STANDARD,
         created_by="admin-1",
-        thresholds={"pass": 0.9},
+        thresholds=_threshold(0.9),
     )
 
     assert policy.status == PolicyStatus.ACTIVE
@@ -199,7 +213,7 @@ async def test_repeated_idempotency_key_resolves_to_the_same_version_not_a_new_o
         policy_id="kyc-standard",
         assurance_level=AssuranceLevel.STANDARD,
         created_by="admin-1",
-        thresholds={"pass": 0.9},
+        thresholds=_threshold(0.9),
         idempotency_key="req-abc",
     )
     second = await svc.create_and_activate(
@@ -207,7 +221,7 @@ async def test_repeated_idempotency_key_resolves_to_the_same_version_not_a_new_o
         policy_id="kyc-standard",
         assurance_level=AssuranceLevel.STANDARD,
         created_by="admin-1",
-        thresholds={"pass": 0.9},
+        thresholds=_threshold(0.9),
         idempotency_key="req-abc",
     )
 
@@ -231,7 +245,7 @@ async def test_same_raw_idempotency_key_does_not_collide_across_activate_and_rol
         policy_id="kyc-standard",
         assurance_level=AssuranceLevel.STANDARD,
         created_by="admin-1",
-        thresholds={"pass": 0.9},
+        thresholds=_threshold(0.9),
         idempotency_key="same-raw-key",
     )
     rolled_back = await svc.rollback(
@@ -282,7 +296,7 @@ async def test_second_activation_for_same_applicability_supersedes_the_first(ser
         policy_id="kyc-standard",
         assurance_level=AssuranceLevel.STANDARD,
         created_by="admin-1",
-        thresholds={"pass": 0.99},
+        thresholds=_threshold(0.99),
     )
 
     assert repo.records[first.id].status == PolicyStatus.SUPERSEDED
@@ -325,14 +339,14 @@ async def test_rollback_creates_a_new_version_content_identical_to_the_target(se
         policy_id="kyc-standard",
         assurance_level=AssuranceLevel.STANDARD,
         created_by="admin-1",
-        thresholds={"pass": 0.9},
+        thresholds=_threshold(0.9),
     )
     await svc.create_and_activate(
         tenant_id="tenant-a",
         policy_id="kyc-standard",
         assurance_level=AssuranceLevel.STANDARD,
         created_by="admin-1",
-        thresholds={"pass": 0.99},
+        thresholds=_threshold(0.99),
     )
 
     v3 = await svc.rollback(

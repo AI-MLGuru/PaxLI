@@ -18,6 +18,8 @@ class FakeEvidenceResultRepository:
         self.records: dict[UUID, EvidenceResult] = {}
         self.idempotency_keys: dict[tuple[str, UUID, str], UUID] = {}
         self.add_calls = 0
+        self.not_effective: set[UUID] = set()
+        self.mark_not_effective_calls = 0
 
     async def add(
         self, evidence_result: EvidenceResult, idempotency_key: str | None = None
@@ -54,6 +56,28 @@ class FakeEvidenceResultRepository:
             for r in await self.list_for_session(session_id, tenant_id)
             if r.evidence_type == evidence_type
         ]
+
+    async def list_effective_for_session(
+        self, session_id: UUID, tenant_id: str
+    ) -> list[EvidenceResult]:
+        return [
+            r
+            for r in await self.list_for_session(session_id, tenant_id)
+            if r.id not in self.not_effective
+        ]
+
+    async def list_effective_for_session_by_type(
+        self, session_id: UUID, tenant_id: str, evidence_type: EvidenceResultType
+    ) -> list[EvidenceResult]:
+        return [
+            r
+            for r in await self.list_effective_for_session(session_id, tenant_id)
+            if r.evidence_type == evidence_type
+        ]
+
+    async def mark_not_effective(self, evidence_result_id: UUID, tenant_id: str) -> None:
+        self.mark_not_effective_calls += 1
+        self.not_effective.add(evidence_result_id)
 
 
 class FakeAuditRepository:

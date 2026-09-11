@@ -6,13 +6,18 @@ from uuid import UUID, uuid4
 
 from core.audit.enums import AuditActorType, AuditDurability, AuditEventType, AuditStatus
 from core.audit.service import AuditService
+from core.decision.enums import DecisionOutcome
 from core.policy.canonicalization import compute_canonical_hash
 from core.policy.condition import Condition
 from core.policy.enums import PolicyStatus
 from core.policy.exceptions import PolicyActivationConflictError, PolicyVersionNotFoundError
+from core.policy.gates import Gate
 from core.policy.models import VerificationPolicy
 from core.policy.repository import VerificationPolicyRepository
+from core.policy.requirements import EvidenceRequirement
+from core.policy.rules import Rule
 from core.policy.schema_catalog import EvidenceSchemaCatalog
+from core.policy.thresholds import ThresholdDefinition
 from core.policy.validation import validate_policy_content
 from core.verification.enums import AssuranceLevel
 
@@ -109,12 +114,12 @@ class PolicyService:
         policy_id: str,
         assurance_level: AssuranceLevel,
         created_by: str,
-        evidence_requirements: dict[str, Any] | None = None,
+        evidence_requirements: tuple[EvidenceRequirement, ...] = (),
         conditions: Condition | None = None,
-        gates: tuple[dict[str, Any], ...] = (),
-        rules: tuple[dict[str, Any], ...] = (),
-        thresholds: dict[str, float] | None = None,
-        conflict_resolution: dict[str, Any] | None = None,
+        gates: tuple[Gate, ...] = (),
+        rules: tuple[Rule, ...] = (),
+        thresholds: tuple[ThresholdDefinition, ...] = (),
+        default_outcome: DecisionOutcome | None = None,
         metadata: dict[str, Any] | None = None,
         idempotency_key: str | None = None,
         request_id: str | None = None,
@@ -130,8 +135,6 @@ class PolicyService:
         activation -- Invariant-12 remediation: policy activation is a
         trust boundary, and an ambiguous-outcome retry must not silently
         produce two authoritative versions from one logical request."""
-        evidence_requirements = evidence_requirements or {}
-        thresholds = thresholds or {}
         return await self._activate(
             tenant_id=tenant_id,
             policy_id=policy_id,
@@ -142,7 +145,7 @@ class PolicyService:
             gates=gates,
             rules=rules,
             thresholds=thresholds,
-            conflict_resolution=conflict_resolution,
+            default_outcome=default_outcome,
             metadata=metadata or {},
             activation_type="INITIAL",
             rollback_source_id=None,
@@ -181,7 +184,7 @@ class PolicyService:
             gates=target.gates,
             rules=target.rules,
             thresholds=target.thresholds,
-            conflict_resolution=target.conflict_resolution,
+            default_outcome=target.default_outcome,
             metadata=target.metadata,
             activation_type="ROLLBACK",
             rollback_source_id=target.id,
@@ -197,12 +200,12 @@ class PolicyService:
         policy_id: str,
         assurance_level: AssuranceLevel,
         created_by: str,
-        evidence_requirements: dict[str, Any],
+        evidence_requirements: tuple[EvidenceRequirement, ...],
         conditions: Condition | None,
-        gates: tuple[dict[str, Any], ...],
-        rules: tuple[dict[str, Any], ...],
-        thresholds: dict[str, float],
-        conflict_resolution: dict[str, Any] | None,
+        gates: tuple[Gate, ...],
+        rules: tuple[Rule, ...],
+        thresholds: tuple[ThresholdDefinition, ...],
+        default_outcome: DecisionOutcome | None,
         metadata: dict[str, Any],
         activation_type: ActivationType,
         rollback_source_id: UUID | None,
@@ -250,11 +253,11 @@ class PolicyService:
                 return existing
 
         validate_policy_content(
+            evidence_requirements=evidence_requirements,
             conditions=conditions,
             gates=gates,
             rules=rules,
             thresholds=thresholds,
-            conflict_resolution=conflict_resolution,
             catalog=self.schema_catalog,
         )
 
@@ -265,7 +268,7 @@ class PolicyService:
             gates=gates,
             rules=rules,
             thresholds=thresholds,
-            conflict_resolution=conflict_resolution,
+            default_outcome=default_outcome,
         )
 
         now = datetime.now(UTC)
@@ -286,7 +289,7 @@ class PolicyService:
             gates=gates,
             rules=rules,
             thresholds=thresholds,
-            conflict_resolution=conflict_resolution,
+            default_outcome=default_outcome,
             metadata=metadata,
             canonical_hash=canonical_hash,
             created_at=now,

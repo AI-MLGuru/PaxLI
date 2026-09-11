@@ -72,7 +72,7 @@ async def test_repeated_idempotency_key_against_real_postgres_creates_one_versio
             policy_id="kyc-standard",
             assurance_level=AssuranceLevel.STANDARD,
             created_by="admin-1",
-            thresholds={"pass": 0.9},
+            thresholds=(),
             idempotency_key="req-xyz",
         )
         await session.commit()
@@ -84,7 +84,7 @@ async def test_repeated_idempotency_key_against_real_postgres_creates_one_versio
             policy_id="kyc-standard",
             assurance_level=AssuranceLevel.STANDARD,
             created_by="admin-1",
-            thresholds={"pass": 0.9},
+            thresholds=(),
             idempotency_key="req-xyz",
         )
         await session.commit()
@@ -127,10 +127,10 @@ async def test_partial_unique_index_rejects_two_active_rows_direct_insert() -> N
                 assurance_level="STANDARD",
                 schema_version="1.0",
                 status="ACTIVE",
-                evidence_requirements_json={},
+                evidence_requirements_json=[],
                 gates_json=[],
                 rules_json=[],
-                thresholds_json={},
+                thresholds_json=[],
                 metadata_json={},
                 canonical_hash="hash-1",
                 created_at=datetime.now(UTC),
@@ -148,10 +148,10 @@ async def test_partial_unique_index_rejects_two_active_rows_direct_insert() -> N
                 assurance_level="STANDARD",
                 schema_version="1.0",
                 status="ACTIVE",
-                evidence_requirements_json={},
+                evidence_requirements_json=[],
                 gates_json=[],
                 rules_json=[],
-                thresholds_json={},
+                thresholds_json=[],
                 metadata_json={},
                 canonical_hash="hash-2",
                 created_at=datetime.now(UTC),
@@ -172,7 +172,7 @@ async def test_create_and_activate_persists_and_audits() -> None:
             policy_id="kyc-standard",
             assurance_level=AssuranceLevel.STANDARD,
             created_by="admin-1",
-            thresholds={"pass": 0.9},
+            thresholds=(),
         )
         await session.commit()
 
@@ -226,7 +226,7 @@ async def test_second_activation_supersedes_the_first_against_real_postgres() ->
             policy_id="kyc-standard",
             assurance_level=AssuranceLevel.STANDARD,
             created_by="admin-1",
-            thresholds={"pass": 0.99},
+            thresholds=(),
         )
         await session.commit()
 
@@ -251,7 +251,7 @@ async def test_rollback_creates_a_new_version_original_untouched() -> None:
             policy_id="kyc-standard",
             assurance_level=AssuranceLevel.STANDARD,
             created_by="admin-1",
-            thresholds={"pass": 0.9},
+            thresholds=(),
         )
         await session.commit()
 
@@ -260,7 +260,7 @@ async def test_rollback_creates_a_new_version_original_untouched() -> None:
             policy_id="kyc-standard",
             assurance_level=AssuranceLevel.STANDARD,
             created_by="admin-1",
-            thresholds={"pass": 0.99},
+            thresholds=(),
         )
         await session.commit()
 
@@ -316,10 +316,10 @@ async def test_concurrent_activation_for_the_same_applicability_one_wins_one_con
                     assurance_level=assurance_level,
                     schema_version="1.0",
                     status="ACTIVE",
-                    evidence_requirements_json={},
+                    evidence_requirements_json=[],
                     gates_json=[],
                     rules_json=[],
-                    thresholds_json={},
+                    thresholds_json=[],
                     metadata_json={},
                     canonical_hash=f"hash-{policy_id}",
                     created_at=datetime.now(UTC),

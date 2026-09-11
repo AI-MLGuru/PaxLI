@@ -212,7 +212,16 @@ class EvidenceResultService:
         correlation_id: str | None = None,
     ) -> EvidenceResult:
         """Creates a NEW evidence result that supersedes an existing one
-        (EVD-3.10.3) -- never mutates the original row."""
+        (EVD-3.10.3) -- never mutates the original row's content.
+
+        `mark_not_effective` on the original happens BEFORE `add()` of the
+        new row, not after: PostgreSQL's partial unique index
+        (ix_evidence_results_one_effective_per_type) is checked
+        per-statement and cannot be deferred, so inserting the new
+        effective row while the old one is still marked effective would
+        violate the constraint immediately, even mid-transaction -- the
+        exact ordering lesson already proven by PolicyService.mark_superseded
+        preceding its own ACTIVE-row insert."""
         validate_result_payload(evidence_type, result)
 
         now = datetime.now(UTC)
@@ -240,6 +249,7 @@ class EvidenceResultService:
                 producer_version=producer_version,
             ),
         )
+        await self.repository.mark_not_effective(evidence_result_id, tenant_id)
         saved = await self.repository.add(evidence_result)
         await self.audit_service.record(
             tenant_id=tenant_id,

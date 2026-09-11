@@ -257,3 +257,59 @@ async def test_supersede_against_real_postgres_creates_new_row_original_untouche
         superseding_record = await repo.get(superseding.id, "tenant-supersede")
         assert superseding_record is not None
         assert superseding_record.supersedes_id == original.id
+
+        # DE-003 §11: superseding must flip the original out of the
+        # effective set -- list_effective_for_session returns only the
+        # new row, not both.
+        effective = await repo.list_effective_for_session(UUID(session_id), "tenant-supersede")
+        assert {r.id for r in effective} == {superseding.id}
+
+
+async def test_one_effective_per_type_index_rejects_two_effective_rows_direct_insert() -> None:
+    """Direct proof against real PostgreSQL that
+    ix_evidence_results_one_effective_per_type is enforced at the database
+    level: two independent, non-superseding rows of the same evidence_type
+    for one session cannot both be is_effective=true (DE-003 §11 finding
+    -- nothing previously prevented this)."""
+    async with session_factory() as session:
+        session_id = await _create_session(session, "tenant-effective-index-test")
+        session.add(
+            EvidenceResultRecord(
+                id=str(uuid4()),
+                tenant_id="tenant-effective-index-test",
+                session_id=session_id,
+                evidence_type="FACE_MATCH",
+                schema_version="1.0",
+                status="PASS",
+                reason_codes_json=[],
+                producer="p",
+                producer_version="1",
+                parent_evidence_result_ids_json=[],
+                produced_at=datetime.now(UTC),
+                persisted_at=datetime.now(UTC),
+                integrity_reference="ref-1",
+                is_effective=True,
+            )
+        )
+        await session.flush()
+        session.add(
+            EvidenceResultRecord(
+                id=str(uuid4()),
+                tenant_id="tenant-effective-index-test",
+                session_id=session_id,
+                evidence_type="FACE_MATCH",
+                schema_version="1.0",
+                status="PASS",
+                reason_codes_json=[],
+                producer="p",
+                producer_version="1",
+                parent_evidence_result_ids_json=[],
+                produced_at=datetime.now(UTC),
+                persisted_at=datetime.now(UTC),
+                integrity_reference="ref-2",
+                is_effective=True,
+            )
+        )
+        with pytest.raises(IntegrityError):
+            await session.flush()
+        await session.rollback()
