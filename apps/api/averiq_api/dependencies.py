@@ -71,6 +71,7 @@ async def get_evidence_service(
             session_ttl_minutes=settings.session_ttl_minutes,
         ),
         storage,
+        AuditService(SqlAlchemyAuditEventRepository(db_session)),
     )
 
 

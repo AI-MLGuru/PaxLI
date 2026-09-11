@@ -11,12 +11,14 @@ from sqlalchemy.pool import StaticPool
 from apps.api.averiq_api.config import Settings, get_settings
 from apps.api.averiq_api.dependencies import get_evidence_service, get_rate_limiter
 from apps.api.averiq_api.main import app
+from core.audit.service import AuditService
 from core.evidence.service import EvidenceService
 from core.rate_limit.models import RateLimitDecision, RateLimitRule
 from core.security.credentials import CredentialService
 from core.security.models import CredentialScope
 from core.verification.service import VerificationSessionService
 from infrastructure.database.base import Base
+from infrastructure.database.repositories.audit_event import SqlAlchemyAuditEventRepository
 from infrastructure.database.repositories.credential import SqlAlchemyCredentialStore
 from infrastructure.database.repositories.evidence import SqlAlchemyEvidenceRepository
 from infrastructure.database.repositories.verification_session import (
@@ -111,6 +113,7 @@ def api_client(session_factory, raw_storage):
                 session_repository, session_ttl_minutes=settings.session_ttl_minutes
             ),
             storage,
+            AuditService(SqlAlchemyAuditEventRepository(db_session)),
         )
 
     app.dependency_overrides[get_db_session] = override_get_db_session

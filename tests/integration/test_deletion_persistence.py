@@ -15,11 +15,10 @@ from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import text
-from sqlalchemy.exc import IntegrityError
 
 from apps.api.averiq_api.config import get_settings
 from core.deletion.enums import DeletionBasis
-from core.deletion.exceptions import TombstoneNotFoundError
+from core.deletion.exceptions import DeletionAlreadyRequestedError, TombstoneNotFoundError
 from core.evidence.enums import EvidenceSource, EvidenceType
 from core.evidence.models import Evidence, EvidenceTombstone
 from core.evidence_result.enums import EvidenceResultStatus, EvidenceResultType
@@ -165,7 +164,7 @@ async def test_duplicate_tombstone_creation_is_rejected_by_primary_key() -> None
             authorized_by="admin-2",
             evidence_integrity_reference=evidence.checksum,
         )
-        with pytest.raises(IntegrityError):
+        with pytest.raises(DeletionAlreadyRequestedError):
             await repo.add_tombstone(second)
         await session.rollback()
 
@@ -420,7 +419,7 @@ async def test_evidence_result_duplicate_tombstone_creation_is_rejected() -> Non
         await repo.add_tombstone(_make_tombstone())
         await session.commit()
 
-        with pytest.raises(IntegrityError):
+        with pytest.raises(DeletionAlreadyRequestedError):
             await repo.add_tombstone(_make_tombstone())
         await session.rollback()
 

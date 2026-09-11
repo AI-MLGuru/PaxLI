@@ -5,9 +5,10 @@ from uuid import UUID
 
 from sqlalchemy import delete, select
 from sqlalchemy.engine import CursorResult
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.deletion.exceptions import TombstoneNotFoundError
+from core.deletion.exceptions import DeletionAlreadyRequestedError, TombstoneNotFoundError
 from core.evidence.models import Evidence, EvidenceTombstone
 from infrastructure.database.models.evidence import EvidenceRecord
 from infrastructure.database.models.evidence_tombstone import EvidenceTombstoneRecord
@@ -80,7 +81,12 @@ class SqlAlchemyEvidenceRepository:
     async def add_tombstone(self, tombstone: EvidenceTombstone) -> EvidenceTombstone:
         record = EvidenceTombstoneRecord.from_domain(tombstone)
         self.session.add(record)
-        await self.session.flush()
+        try:
+            await self.session.flush()
+        except IntegrityError as exception:
+            raise DeletionAlreadyRequestedError(
+                f"a tombstone already exists for evidence_id={tombstone.evidence_id!s}"
+            ) from exception
         return record.to_domain()
 
     async def get_tombstone(self, evidence_id: UUID, tenant_id: str) -> EvidenceTombstone | None:

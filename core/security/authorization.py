@@ -14,6 +14,7 @@ class Permission(StrEnum):
     VERIFICATION_CANCEL = "verification:cancel"
     EVIDENCE_SUBMIT = "evidence:submit"
     EVIDENCE_READ = "evidence:read"
+    EVIDENCE_DELETE = "evidence:delete"
     AUDIT_READ = "audit:read"
     CREDENTIAL_MANAGE = "credential:manage"
     POLICY_MANAGE = "policy:manage"
@@ -31,7 +32,7 @@ _OPERATIONAL_PERMISSIONS: frozenset[Permission] = frozenset(
 )
 
 _ADMINISTRATIVE_ONLY_PERMISSIONS: frozenset[Permission] = frozenset(
-    {Permission.CREDENTIAL_MANAGE, Permission.POLICY_MANAGE}
+    {Permission.CREDENTIAL_MANAGE, Permission.POLICY_MANAGE, Permission.EVIDENCE_DELETE}
 )
 
 

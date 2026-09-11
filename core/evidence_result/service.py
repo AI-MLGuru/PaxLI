@@ -2,18 +2,38 @@ import hashlib
 import json
 from collections.abc import Sequence
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Protocol
 from uuid import UUID, uuid4
 
 from core.audit.enums import AuditActorType, AuditDurability, AuditEventType, AuditStatus
 from core.audit.service import AuditService
+from core.deletion.enums import DeletionBasis
+from core.deletion.validation import validate_deletion_request
 from core.evidence_result.enums import EvidenceResultStatus, EvidenceResultType
-from core.evidence_result.models import EvidenceResult, ModelReference
+from core.evidence_result.exceptions import EvidenceResultNotFoundError
+from core.evidence_result.models import EvidenceResult, EvidenceResultTombstone, ModelReference
 from core.evidence_result.repository import EvidenceResultRepository
 from core.evidence_result.schemas import validate_result_payload
 
 _SYSTEM_ACTOR_ID = "evidence-result-service"
 _CREATE_IDEMPOTENCY_OPERATION = "evidence_result_create"
+
+
+class EvidenceResultDeletionReconciler(Protocol):
+    """Performs the Phase-2 (reconciliation) deletion transaction in a
+    session independent of the caller's own unit of work (Invariant-06
+    remediation Phase 3). Same dependency-inversion shape as
+    core.evidence.service.EvidenceDeletionReconciler and
+    core.policy.service.IndependentAuditRecorder."""
+
+    async def reconcile(
+        self,
+        *,
+        evidence_result_id: UUID,
+        tenant_id: str,
+        request_id: str | None = None,
+        correlation_id: str | None = None,
+    ) -> EvidenceResultTombstone: ...
 
 
 def _compute_integrity_reference(
@@ -48,9 +68,15 @@ class EvidenceResultService:
     never imports core.security.keys or calls encrypt/decrypt.
     """
 
-    def __init__(self, repository: EvidenceResultRepository, audit_service: AuditService) -> None:
+    def __init__(
+        self,
+        repository: EvidenceResultRepository,
+        audit_service: AuditService,
+        deletion_reconciler: EvidenceResultDeletionReconciler | None = None,
+    ) -> None:
         self.repository = repository
         self.audit_service = audit_service
+        self.deletion_reconciler = deletion_reconciler
 
     async def create(
         self,
@@ -242,3 +268,85 @@ class EvidenceResultService:
         self, *, session_id: UUID, tenant_id: str
     ) -> Sequence[EvidenceResult]:
         return await self.repository.list_for_session(session_id, tenant_id)
+
+    async def request_deletion(
+        self,
+        *,
+        evidence_result_id: UUID,
+        tenant_id: str,
+        deletion_basis: DeletionBasis,
+        basis_reference: str | None,
+        authorized_by: str,
+        request_id: str | None = None,
+        correlation_id: str | None = None,
+    ) -> EvidenceResultTombstone:
+        """Phase-1 (request) transaction -- see
+        core.evidence.service.EvidenceService.request_deletion for the full
+        rationale (identical shape, applied to an interpreted result rather
+        than a raw capture)."""
+        validate_deletion_request(
+            deletion_basis=deletion_basis,
+            basis_reference=basis_reference,
+            authorized_by=authorized_by,
+        )
+
+        existing_tombstone = await self.repository.get_tombstone(evidence_result_id, tenant_id)
+        if existing_tombstone is not None:
+            return existing_tombstone
+
+        evidence_result = await self.repository.get(evidence_result_id, tenant_id)
+        if evidence_result is None:
+            raise EvidenceResultNotFoundError(
+                f"no evidence_result_id={evidence_result_id!s} for this tenant to delete"
+            )
+
+        tombstone = EvidenceResultTombstone(
+            evidence_result_id=evidence_result_id,
+            session_id=evidence_result.session_id,
+            tenant_id=tenant_id,
+            deletion_basis=deletion_basis,
+            basis_reference=basis_reference,
+            authorized_by=authorized_by,
+            evidence_integrity_reference=evidence_result.integrity_reference,
+        )
+        saved = await self.repository.add_tombstone(tombstone)
+        await self.audit_service.record(
+            tenant_id=tenant_id,
+            session_id=evidence_result.session_id,
+            event_type=AuditEventType.EVIDENCE_RESULT_DELETION_REQUESTED,
+            component="evidence_result",
+            action="request_deletion",
+            status=AuditStatus.SUCCESS,
+            actor_type=AuditActorType.CLIENT,
+            actor_id=authorized_by,
+            request_id=request_id,
+            correlation_id=correlation_id,
+            metadata={
+                "evidence_result_id": str(evidence_result_id),
+                "deletion_basis": deletion_basis.value,
+            },
+            dedupe_key=f"evidence-result-deletion-requested:{evidence_result_id}",
+            durability=AuditDurability.REQUIRED,
+        )
+        return saved
+
+    async def reconcile_deletion(
+        self,
+        *,
+        evidence_result_id: UUID,
+        tenant_id: str,
+        request_id: str | None = None,
+        correlation_id: str | None = None,
+    ) -> EvidenceResultTombstone:
+        """Phase-2 (reconciliation) transaction: delegates to an
+        independently-committing EvidenceResultDeletionReconciler."""
+        if self.deletion_reconciler is None:
+            raise RuntimeError(
+                "EvidenceResultService was constructed without a deletion_reconciler"
+            )
+        return await self.deletion_reconciler.reconcile(
+            evidence_result_id=evidence_result_id,
+            tenant_id=tenant_id,
+            request_id=request_id,
+            correlation_id=correlation_id,
+        )
