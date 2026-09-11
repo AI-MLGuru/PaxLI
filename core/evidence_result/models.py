@@ -4,6 +4,7 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
 
+from core.deletion.enums import DeletionBasis
 from core.evidence_result.enums import EvidenceResultStatus, EvidenceResultType
 
 SCHEMA_VERSION = "1.0"
@@ -56,3 +57,26 @@ class EvidenceResult(BaseModel):
     persisted_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     integrity_reference: str
     retention_until: datetime | None = None
+
+
+class EvidenceResultTombstone(BaseModel):
+    """Same lifecycle as core.evidence.models.EvidenceTombstone, applied to
+    an interpreted result rather than a raw capture. Deliberately does NOT
+    duplicate the sensitive `result` payload -- metadata-only by
+    construction (PRV-11.30.1), matching the Foundation review's explicit
+    instruction not to preserve deleted biometric/document content in the
+    tombstone itself.
+
+    `evidence_integrity_reference` reuses EvidenceResult.integrity_reference
+    -- the same field name convention as the raw-evidence tombstone.
+    """
+
+    evidence_result_id: UUID
+    session_id: UUID
+    tenant_id: str
+    deletion_basis: DeletionBasis
+    basis_reference: str | None = None
+    authorized_by: str
+    requested_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    executed_at: datetime | None = None
+    evidence_integrity_reference: str
