@@ -6,6 +6,7 @@ from uuid import UUID
 from core.audit.enums import AuditActorType, AuditDurability, AuditEventType, AuditStatus
 from core.audit.service import AuditService
 from core.deletion.enums import DeletionBasis
+from core.deletion.exceptions import DeletionBlockedByDependentsError
 from core.deletion.validation import validate_deletion_request
 from core.evidence.enums import EvidenceSource, EvidenceType
 from core.evidence.media_validation import verify_evidence_media
@@ -172,6 +173,11 @@ class EvidenceService:
         if evidence is None:
             raise EvidenceNotFoundError(
                 f"no evidence_id={evidence_id!s} for this tenant to delete"
+            )
+        if await self.repository.has_dependent_evidence_results(evidence_id, tenant_id):
+            raise DeletionBlockedByDependentsError(
+                f"evidence_id={evidence_id!s} has a dependent EvidenceResult "
+                "(source_reference) -- delete the dependent result(s) first"
             )
 
         tombstone = EvidenceTombstone(

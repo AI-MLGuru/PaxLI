@@ -38,7 +38,7 @@ from core.audit.enums import (
     AuditStatus,
 )
 from core.audit.service import AuditPersistenceError, AuditService
-from core.deletion.exceptions import DeletionAlreadyRequestedError
+from core.deletion.exceptions import DeletionAlreadyRequestedError, DeletionBlockedByDependentsError
 from core.evidence.service import EvidenceDeletedError
 from core.rate_limit.exceptions import RateLimitExceededError
 from core.reliability.health import check_dependency
@@ -334,6 +334,20 @@ async def deletion_already_requested_exception_handler(
     # material governed-action failure, so no independent failure audit is
     # recorded here.
     return error_response(request, "DELETION_ALREADY_REQUESTED", str(exception), 409)
+
+
+@app.exception_handler(DeletionBlockedByDependentsError)
+async def deletion_blocked_by_dependents_exception_handler(
+    request: Request, exception: DeletionBlockedByDependentsError
+) -> JSONResponse:
+    # Invariant-06 remediation Phase 6 finding: a foreign key with no ON
+    # DELETE behavior (EvidenceResult.source_reference/supersedes_id) means
+    # a physical DELETE against a resource with a dependent would fail with
+    # a ForeignKeyViolation that no retry could ever resolve. Rejected at
+    # request_deletion() time instead, before any tombstone or storage
+    # delete happens -- a clean, actionable 409 rather than a permanently
+    # stuck reconciliation.
+    return error_response(request, "DELETION_BLOCKED_BY_DEPENDENTS", str(exception), 409)
 
 
 @app.exception_handler(RateLimitExceededError)

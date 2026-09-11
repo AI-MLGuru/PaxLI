@@ -11,7 +11,11 @@ import pytest
 from core.audit.models import AuditEvent
 from core.audit.service import AuditService
 from core.deletion.enums import DeletionBasis
-from core.deletion.exceptions import DeletionAlreadyRequestedError, InvalidDeletionRequestError
+from core.deletion.exceptions import (
+    DeletionAlreadyRequestedError,
+    DeletionBlockedByDependentsError,
+    InvalidDeletionRequestError,
+)
 from core.evidence_result.enums import EvidenceResultStatus, EvidenceResultType
 from core.evidence_result.exceptions import EvidenceResultNotFoundError
 from core.evidence_result.models import EvidenceResult, EvidenceResultTombstone
@@ -23,6 +27,7 @@ class FakeEvidenceResultRepository:
         self.records: dict[UUID, EvidenceResult] = {}
         self.tombstones: dict[UUID, EvidenceResultTombstone] = {}
         self.add_tombstone_calls = 0
+        self.blocked_by_dependents = False
 
     async def add(self, evidence_result: EvidenceResult, idempotency_key: str | None = None):
         self.records[evidence_result.id] = evidence_result
@@ -51,6 +56,11 @@ class FakeEvidenceResultRepository:
 
     async def list_expired(self, tenant_id, as_of):
         return []
+
+    async def has_dependent_evidence_results(
+        self, evidence_result_id: UUID, tenant_id: str
+    ) -> bool:
+        return self.blocked_by_dependents
 
     async def delete_content(self, evidence_result_id: UUID, tenant_id: str) -> bool:
         record = self.records.get(evidence_result_id)
@@ -157,6 +167,30 @@ async def test_request_deletion_creates_tombstone_and_audits(service) -> None:
     event = audit_repo.events[0]
     assert event.event_type.value == "EVIDENCE_RESULT_DELETION_REQUESTED"
     assert event.metadata["evidence_result_id"] == str(result.id)
+
+
+@pytest.mark.asyncio
+async def test_request_deletion_is_blocked_by_a_dependent_supersession(service) -> None:
+    """Phase 6 finding: evidence_results.supersedes_id -> evidence_results.id
+    has no ON DELETE behavior, so a request against a result another result
+    still supersedes must be rejected before any tombstone or audit event
+    is created."""
+    svc, repo, audit_repo = service
+    result = _make_result()
+    repo.records[result.id] = result
+    repo.blocked_by_dependents = True
+
+    with pytest.raises(DeletionBlockedByDependentsError):
+        await svc.request_deletion(
+            evidence_result_id=result.id,
+            tenant_id="tenant-a",
+            deletion_basis=DeletionBasis.TENANT_REQUEST,
+            basis_reference=None,
+            authorized_by="admin-1",
+        )
+
+    assert repo.tombstones == {}
+    assert audit_repo.events == []
 
 
 @pytest.mark.asyncio

@@ -24,6 +24,17 @@ class EvidenceRepository(Protocol):
         this list in v1)."""
         ...
 
+    async def has_dependent_evidence_results(self, evidence_id: UUID, tenant_id: str) -> bool:
+        """True if any EvidenceResult.source_reference still points at this
+        evidence_id (Invariant-06 remediation Phase 6 finding): the DB-level
+        foreign key has no ON DELETE behavior, so a physical delete_content()
+        against evidence with a dependent result fails with a
+        ForeignKeyViolation that no retry can ever resolve -- checked at
+        request_deletion() time instead, so a blocked deletion is rejected
+        immediately rather than getting permanently stuck mid-reconciliation
+        with the MinIO object already gone."""
+        ...
+
     async def delete_content(self, evidence_id: UUID, tenant_id: str) -> bool:
         """Physical DELETE of the evidence row (Invariant-06 remediation
         decision: physical delete, not in-place nulling). Idempotent:

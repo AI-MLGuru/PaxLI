@@ -24,7 +24,7 @@ from apps.api.averiq_api.config import get_settings
 from core.audit.enums import AuditActorType, AuditDurability, AuditEventType, AuditStatus
 from core.audit.service import AuditPersistenceError, AuditService
 from core.deletion.enums import DeletionBasis
-from core.deletion.exceptions import TombstoneNotFoundError
+from core.deletion.exceptions import DeletionBlockedByDependentsError, TombstoneNotFoundError
 from core.evidence.enums import EvidenceType
 from core.evidence.service import EvidenceService
 from core.evidence_result.enums import EvidenceResultStatus, EvidenceResultType
@@ -234,6 +234,125 @@ async def test_reconcile_deletion_raises_without_prior_request() -> None:
     reconciler = SqlAlchemyEvidenceDeletionReconciler(session_factory, storage)
     with pytest.raises(TombstoneNotFoundError):
         await reconciler.reconcile(evidence_id=uuid4(), tenant_id=f"tenant-{uuid4()}")
+
+
+async def test_request_deletion_is_blocked_by_a_dependent_evidence_result() -> None:
+    """Phase 6 finding: evidence_results.source_reference -> evidence.id is
+    a foreign key with no ON DELETE behavior. Letting a request through
+    when a dependent exists would delete the MinIO object, then hit a
+    ForeignKeyViolation on the DB delete that no retry could ever resolve.
+    request_deletion() must reject this before anything is touched."""
+    tenant_id = f"tenant-del-blocked-{uuid4()}"
+    storage = _evidence_storage()
+    key_provider = LocalAesGcmKeyProvider({"test-deletion-svc-key": b"0" * 32})
+    async with session_factory() as session:
+        session_id = await _create_session(session, tenant_id)
+        session_repository = SqlAlchemyVerificationSessionRepository(session)
+        evidence_svc = EvidenceService(
+            SqlAlchemyEvidenceRepository(session),
+            VerificationSessionService(session_repository, session_ttl_minutes=60),
+            storage,
+            AuditService(SqlAlchemyAuditEventRepository(session)),
+        )
+        evidence = await evidence_svc.add(
+            session_id=UUID(session_id),
+            tenant_id=tenant_id,
+            evidence_type=EvidenceType.SELFIE,
+            content=MINIMAL_JPEG_BYTES,
+            checksum=f"canary-blocked-{uuid4()}",
+            metadata={},
+        )
+        result_svc = EvidenceResultService(
+            SqlAlchemyEvidenceResultRepository(session, key_provider, "test-deletion-svc-key"),
+            AuditService(SqlAlchemyAuditEventRepository(session)),
+        )
+        await result_svc.create(
+            tenant_id=tenant_id,
+            session_id=UUID(session_id),
+            evidence_type=EvidenceResultType.FACE_QUALITY,
+            status=EvidenceResultStatus.PASS,
+            producer="p",
+            producer_version="1",
+            source_reference=evidence.id,
+        )
+        await session.commit()
+
+    async with session_factory() as session:
+        session_repository = SqlAlchemyVerificationSessionRepository(session)
+        evidence_svc = EvidenceService(
+            SqlAlchemyEvidenceRepository(session),
+            VerificationSessionService(session_repository, session_ttl_minutes=60),
+            storage,
+            AuditService(SqlAlchemyAuditEventRepository(session)),
+        )
+        with pytest.raises(DeletionBlockedByDependentsError):
+            await evidence_svc.request_deletion(
+                evidence_id=evidence.id,
+                tenant_id=tenant_id,
+                deletion_basis=DeletionBasis.TENANT_REQUEST,
+                basis_reference=None,
+                authorized_by="admin-1",
+            )
+
+    # Nothing was touched: no tombstone, storage object still present.
+    async with session_factory() as session:
+        repo = SqlAlchemyEvidenceRepository(session)
+        assert await repo.get_tombstone(evidence.id, tenant_id) is None
+    content = await storage.get(evidence.object_key)
+    assert content == MINIMAL_JPEG_BYTES
+
+
+async def test_evidence_result_request_deletion_is_blocked_by_dependent_supersession() -> None:
+    """Same root cause, self-referencing: evidence_results.supersedes_id ->
+    evidence_results.id."""
+    tenant_id = f"tenant-result-del-blocked-{uuid4()}"
+    key_provider = LocalAesGcmKeyProvider({"test-deletion-result-key": b"0" * 32})
+
+    async with session_factory() as session:
+        session_id = await _create_session(session, tenant_id)
+        repo = SqlAlchemyEvidenceResultRepository(
+            session, key_provider, "test-deletion-result-key"
+        )
+        svc = EvidenceResultService(repo, AuditService(SqlAlchemyAuditEventRepository(session)))
+        original = await svc.create(
+            tenant_id=tenant_id,
+            session_id=UUID(session_id),
+            evidence_type=EvidenceResultType.FACE_QUALITY,
+            status=EvidenceResultStatus.INCONCLUSIVE,
+            producer="p",
+            producer_version="1",
+        )
+        await svc.supersede(
+            evidence_result_id=original.id,
+            tenant_id=tenant_id,
+            session_id=UUID(session_id),
+            evidence_type=EvidenceResultType.FACE_QUALITY,
+            status=EvidenceResultStatus.PASS,
+            producer="p",
+            producer_version="1",
+        )
+        await session.commit()
+
+    async with session_factory() as session:
+        repo = SqlAlchemyEvidenceResultRepository(
+            session, key_provider, "test-deletion-result-key"
+        )
+        svc = EvidenceResultService(repo, AuditService(SqlAlchemyAuditEventRepository(session)))
+        with pytest.raises(DeletionBlockedByDependentsError):
+            await svc.request_deletion(
+                evidence_result_id=original.id,
+                tenant_id=tenant_id,
+                deletion_basis=DeletionBasis.TENANT_REQUEST,
+                basis_reference=None,
+                authorized_by="admin-1",
+            )
+
+    async with session_factory() as session:
+        repo = SqlAlchemyEvidenceResultRepository(
+            session, key_provider, "test-deletion-result-key"
+        )
+        assert await repo.get_tombstone(original.id, tenant_id) is None
+        assert await repo.get(original.id, tenant_id) is not None
 
 
 async def test_reconciliation_recovers_after_a_required_audit_failure() -> None:

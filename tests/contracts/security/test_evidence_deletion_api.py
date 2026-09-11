@@ -176,7 +176,9 @@ def test_other_authorized_basis_without_reference_is_rejected(
     assert response.status_code == 400
 
 
-async def _create_evidence_result(session_factory, *, tenant_id: str, session_id: UUID):
+async def _create_evidence_result(
+    session_factory, *, tenant_id: str, session_id: UUID, source_reference: UUID | None = None
+):
     key_provider = LocalAesGcmKeyProvider({"test-evidence-key": b"0" * 32})
     async with session_factory() as session:
         service = EvidenceResultService(
@@ -191,9 +193,40 @@ async def _create_evidence_result(session_factory, *, tenant_id: str, session_id
             producer="test-producer",
             producer_version="1.0",
             result={"similarity": 0.9},
+            source_reference=source_reference,
         )
         await session.commit()
         return result
+
+
+async def test_delete_evidence_with_dependent_result_is_409(
+    api_client, issued_credentials, session_factory
+) -> None:
+    """Phase 6 finding: a foreign key with no ON DELETE behavior
+    (EvidenceResult.source_reference -> Evidence.id) means the request must
+    be rejected up front, not allowed to reach a permanently stuck
+    reconciliation with the storage object already gone."""
+    session_id = _create_session(api_client, issued_credentials["tenant_a_operational"])
+    evidence = _upload_selfie(api_client, issued_credentials["tenant_a_operational"], session_id)
+    await _create_evidence_result(
+        session_factory,
+        tenant_id="tenant-a",
+        session_id=UUID(session_id),
+        source_reference=UUID(evidence["id"]),
+    )
+
+    response = _delete_evidence(
+        api_client, issued_credentials["tenant_a_admin"], session_id, evidence["id"]
+    )
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "DELETION_BLOCKED_BY_DEPENDENTS"
+
+    # Confirm nothing was touched: evidence still retrievable, live.
+    get_response = api_client.get(
+        f"/v1/verification-sessions/{session_id}/evidence/{evidence['id']}",
+        headers={"Authorization": issued_credentials["tenant_a_operational"]},
+    )
+    assert get_response.status_code == 200
 
 
 async def test_admin_can_delete_evidence_result(

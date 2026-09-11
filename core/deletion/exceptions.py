@@ -9,6 +9,17 @@ class DeletionAlreadyRequestedError(RuntimeError):
     already-requested tombstone."""
 
 
+class DeletionBlockedByDependentsError(RuntimeError):
+    """Raised by request_deletion() when another row still references the
+    resource through a foreign key with no ON DELETE behavior
+    (EvidenceResult.source_reference -> Evidence.id,
+    EvidenceResult.supersedes_id -> EvidenceResult.id). Rejected before any
+    tombstone or storage delete happens (Invariant-06 remediation Phase 6
+    finding): letting the request through would let reconciliation delete
+    the MinIO object, then hit a ForeignKeyViolation on the DB delete that
+    no retry can ever resolve, permanently stuck with executed_at=NULL."""
+
+
 class TombstoneNotFoundError(LookupError):
     """Raised by a narrow tombstone-transition repository method (e.g.
     mark_tombstone_executed) when no tenant-scoped tombstone row matches.

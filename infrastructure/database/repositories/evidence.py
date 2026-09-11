@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.deletion.exceptions import DeletionAlreadyRequestedError, TombstoneNotFoundError
 from core.evidence.models import Evidence, EvidenceTombstone
 from infrastructure.database.models.evidence import EvidenceRecord
+from infrastructure.database.models.evidence_result import EvidenceResultRecord
 from infrastructure.database.models.evidence_tombstone import EvidenceTombstoneRecord
 
 
@@ -80,6 +81,17 @@ class SqlAlchemyEvidenceRepository:
         )
         records = (await self.session.execute(statement)).scalars().all()
         return [record.to_domain() for record in records]
+
+    async def has_dependent_evidence_results(self, evidence_id: UUID, tenant_id: str) -> bool:
+        statement = (
+            select(EvidenceResultRecord.id)
+            .where(
+                EvidenceResultRecord.source_reference == str(evidence_id),
+                EvidenceResultRecord.tenant_id == tenant_id,
+            )
+            .limit(1)
+        )
+        return (await self.session.execute(statement)).scalar_one_or_none() is not None
 
     async def delete_content(self, evidence_id: UUID, tenant_id: str) -> bool:
         statement = delete(EvidenceRecord).where(

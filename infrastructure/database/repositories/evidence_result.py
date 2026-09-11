@@ -103,6 +103,19 @@ class SqlAlchemyEvidenceResultRepository:
         records = (await self.session.execute(statement)).scalars().all()
         return [await self._to_domain(record) for record in records]
 
+    async def has_dependent_evidence_results(
+        self, evidence_result_id: UUID, tenant_id: str
+    ) -> bool:
+        statement = (
+            select(EvidenceResultRecord.id)
+            .where(
+                EvidenceResultRecord.supersedes_id == str(evidence_result_id),
+                EvidenceResultRecord.tenant_id == tenant_id,
+            )
+            .limit(1)
+        )
+        return (await self.session.execute(statement)).scalar_one_or_none() is not None
+
     async def delete_content(self, evidence_result_id: UUID, tenant_id: str) -> bool:
         statement = delete(EvidenceResultRecord).where(
             EvidenceResultRecord.id == str(evidence_result_id),

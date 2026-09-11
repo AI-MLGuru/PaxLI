@@ -44,6 +44,16 @@ class EvidenceResultRepository(Protocol):
         this list in v1)."""
         ...
 
+    async def has_dependent_evidence_results(
+        self, evidence_result_id: UUID, tenant_id: str
+    ) -> bool:
+        """True if any other EvidenceResult.supersedes_id still points at
+        this evidence_result_id -- same root cause and rationale as
+        EvidenceRepository.has_dependent_evidence_results (Invariant-06
+        remediation Phase 6 finding), applied to the self-referencing
+        supersedes_id foreign key."""
+        ...
+
     async def delete_content(self, evidence_result_id: UUID, tenant_id: str) -> bool:
         """Physical DELETE of the evidence_results row. Idempotent: returns
         True if a row was deleted, False if it was already absent."""

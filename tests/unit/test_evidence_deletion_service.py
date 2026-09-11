@@ -13,7 +13,11 @@ import pytest
 from core.audit.models import AuditEvent
 from core.audit.service import AuditService
 from core.deletion.enums import DeletionBasis
-from core.deletion.exceptions import DeletionAlreadyRequestedError, InvalidDeletionRequestError
+from core.deletion.exceptions import (
+    DeletionAlreadyRequestedError,
+    DeletionBlockedByDependentsError,
+    InvalidDeletionRequestError,
+)
 from core.evidence.enums import EvidenceSource, EvidenceType
 from core.evidence.models import Evidence, EvidenceTombstone
 from core.evidence.service import EvidenceNotFoundError, EvidenceService
@@ -25,6 +29,7 @@ class FakeEvidenceRepository:
         self.records: dict[UUID, Evidence] = {}
         self.tombstones: dict[UUID, EvidenceTombstone] = {}
         self.add_tombstone_calls = 0
+        self.blocked_by_dependents = False
 
     async def add(self, evidence: Evidence, idempotency_key: str | None = None) -> Evidence:
         self.records[evidence.id] = evidence
@@ -46,6 +51,9 @@ class FakeEvidenceRepository:
 
     async def list_expired(self, tenant_id, as_of):
         return []
+
+    async def has_dependent_evidence_results(self, evidence_id: UUID, tenant_id: str) -> bool:
+        return self.blocked_by_dependents
 
     async def delete_content(self, evidence_id: UUID, tenant_id: str) -> bool:
         record = self.records.get(evidence_id)
@@ -162,6 +170,29 @@ async def test_request_deletion_creates_tombstone_and_audits(service) -> None:
     assert event.event_type.value == "EVIDENCE_DELETION_REQUESTED"
     assert event.metadata["evidence_id"] == str(evidence.id)
     assert event.metadata["deletion_basis"] == "TENANT_REQUEST"
+
+
+@pytest.mark.asyncio
+async def test_request_deletion_is_blocked_by_a_dependent_evidence_result(service) -> None:
+    """Phase 6 finding: evidence_results.source_reference -> evidence.id has
+    no ON DELETE behavior, so a request against evidence with a dependent
+    must be rejected before any tombstone or audit event is created."""
+    svc, repo, audit_repo = service
+    evidence = _make_evidence()
+    repo.records[evidence.id] = evidence
+    repo.blocked_by_dependents = True
+
+    with pytest.raises(DeletionBlockedByDependentsError):
+        await svc.request_deletion(
+            evidence_id=evidence.id,
+            tenant_id="tenant-a",
+            deletion_basis=DeletionBasis.TENANT_REQUEST,
+            basis_reference=None,
+            authorized_by="admin-1",
+        )
+
+    assert repo.tombstones == {}
+    assert audit_repo.events == []
 
 
 @pytest.mark.asyncio
