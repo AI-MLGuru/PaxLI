@@ -20,6 +20,16 @@ ActivationType = Literal["INITIAL", "ROLLBACK"]
 _SYSTEM_COMPONENT = "policy"
 
 
+def _compose_idempotency_key(activation_type: ActivationType, idempotency_key: str) -> str:
+    """Prefixes the caller-supplied key with the logical operation, so the
+    same raw key reused across create-and-activate vs. rollback can never
+    collide in the shared `(tenant_id, idempotency_key)` uniqueness scope
+    (Invariant-12 remediation review -- idempotency must be operation-
+    scoped, not merely tenant-scoped)."""
+    operation = "policy_rollback" if activation_type == "ROLLBACK" else "policy_create_and_activate"
+    return f"{operation}:{idempotency_key}"
+
+
 class PolicyService:
     """Domain service for Part V §5.8-5.12 policy governance.
 
@@ -67,13 +77,20 @@ class PolicyService:
         thresholds: dict[str, float] | None = None,
         conflict_resolution: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
+        idempotency_key: str | None = None,
         request_id: str | None = None,
         correlation_id: str | None = None,
     ) -> VerificationPolicy:
         """Raises InvalidPolicyError before anything is persisted (question 1:
         there is no draft state for an invalid policy). Raises
         PolicyActivationConflictError if a concurrent activation for the
-        same (tenant_id, assurance_level) wins the race first."""
+        same (tenant_id, assurance_level) wins the race first.
+
+        `idempotency_key`, if supplied, makes a retried request resolve to
+        the same policy version rather than creating a second real
+        activation -- Invariant-12 remediation: policy activation is a
+        trust boundary, and an ambiguous-outcome retry must not silently
+        produce two authoritative versions from one logical request."""
         evidence_requirements = evidence_requirements or {}
         thresholds = thresholds or {}
         return await self._activate(
@@ -90,6 +107,7 @@ class PolicyService:
             metadata=metadata or {},
             activation_type="INITIAL",
             rollback_source_id=None,
+            idempotency_key=idempotency_key,
             request_id=request_id,
             correlation_id=correlation_id,
         )
@@ -101,6 +119,7 @@ class PolicyService:
         policy_id: str,
         target_version: int,
         created_by: str,
+        idempotency_key: str | None = None,
         request_id: str | None = None,
         correlation_id: str | None = None,
     ) -> VerificationPolicy:
@@ -127,6 +146,7 @@ class PolicyService:
             metadata=target.metadata,
             activation_type="ROLLBACK",
             rollback_source_id=target.id,
+            idempotency_key=idempotency_key,
             request_id=request_id,
             correlation_id=correlation_id,
         )
@@ -147,9 +167,49 @@ class PolicyService:
         metadata: dict[str, Any],
         activation_type: ActivationType,
         rollback_source_id: UUID | None,
+        idempotency_key: str | None,
         request_id: str | None,
         correlation_id: str | None,
     ) -> VerificationPolicy:
+        composed_idempotency_key = (
+            _compose_idempotency_key(activation_type, idempotency_key)
+            if idempotency_key is not None
+            else None
+        )
+        if composed_idempotency_key is not None:
+            existing = await self.repository.get_by_idempotency_key(
+                tenant_id, composed_idempotency_key
+            )
+            if existing is not None:
+                # Same-key replay of an already-completed activation: resolve
+                # to the existing version rather than creating a second real
+                # activation. Still records (dedupe-safe, via the resulting
+                # policy's stable id) rather than silently skipping the audit
+                # call, so the guarantee is uniform whether this is the first
+                # attempt or a replay.
+                await self.audit_service.record(
+                    tenant_id=tenant_id,
+                    event_type=AuditEventType.POLICY_ACTIVATED,
+                    component=_SYSTEM_COMPONENT,
+                    action="activate",
+                    status=AuditStatus.SUCCESS,
+                    actor_type=AuditActorType.CLIENT,
+                    actor_id=created_by,
+                    request_id=request_id,
+                    correlation_id=correlation_id,
+                    metadata={
+                        "policy_id": existing.policy_id,
+                        "version": existing.version,
+                        "assurance_level": existing.assurance_level.value,
+                        "activation_type": activation_type,
+                        "canonical_hash": existing.canonical_hash,
+                        "idempotent_replay": True,
+                    },
+                    dedupe_key=f"policy-activated:{existing.id}",
+                    durability=AuditDurability.REQUIRED,
+                )
+                return existing
+
         validate_policy_content(
             conditions=conditions,
             gates=gates,
@@ -195,7 +255,7 @@ class PolicyService:
             supersedes_id=previous_active.id if previous_active is not None else None,
             created_by=created_by,
         )
-        saved = await self.repository.add(new_policy)
+        saved = await self.repository.add(new_policy, composed_idempotency_key)
 
         await self.audit_service.record(
             tenant_id=tenant_id,
@@ -223,6 +283,7 @@ class PolicyService:
                     str(rollback_source_id) if rollback_source_id is not None else None
                 ),
             },
+            dedupe_key=f"policy-activated:{saved.id}",
             durability=AuditDurability.REQUIRED,
         )
         return saved

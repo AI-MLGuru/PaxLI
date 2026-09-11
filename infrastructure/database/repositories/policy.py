@@ -25,8 +25,10 @@ class SqlAlchemyVerificationPolicyRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def add(self, policy: VerificationPolicy) -> VerificationPolicy:
-        record = self._to_record(policy)
+    async def add(
+        self, policy: VerificationPolicy, idempotency_key: str | None = None
+    ) -> VerificationPolicy:
+        record = self._to_record(policy, idempotency_key)
         self.session.add(record)
         try:
             await self.session.flush()
@@ -36,6 +38,16 @@ class SqlAlchemyVerificationPolicyRepository:
                 f"assurance_level={policy.assurance_level.value!r}"
             ) from exception
         return self._to_domain(record)
+
+    async def get_by_idempotency_key(
+        self, tenant_id: str, idempotency_key: str
+    ) -> VerificationPolicy | None:
+        statement = select(PolicyRecord).where(
+            PolicyRecord.tenant_id == tenant_id,
+            PolicyRecord.idempotency_key == idempotency_key,
+        )
+        record = (await self.session.execute(statement)).scalar_one_or_none()
+        return self._to_domain(record) if record is not None else None
 
     async def mark_superseded(
         self, policy_row_id: UUID, tenant_id: str, superseded_at: datetime
@@ -82,9 +94,7 @@ class SqlAlchemyVerificationPolicyRepository:
         versions = (await self.session.execute(statement)).scalars().all()
         return max(versions, default=0)
 
-    async def list_versions(
-        self, policy_id: str, tenant_id: str
-    ) -> Sequence[VerificationPolicy]:
+    async def list_versions(self, policy_id: str, tenant_id: str) -> Sequence[VerificationPolicy]:
         statement = (
             select(PolicyRecord)
             .where(PolicyRecord.tenant_id == tenant_id, PolicyRecord.policy_id == policy_id)
@@ -93,7 +103,9 @@ class SqlAlchemyVerificationPolicyRepository:
         records = (await self.session.execute(statement)).scalars().all()
         return [self._to_domain(record) for record in records]
 
-    def _to_record(self, policy: VerificationPolicy) -> PolicyRecord:
+    def _to_record(
+        self, policy: VerificationPolicy, idempotency_key: str | None = None
+    ) -> PolicyRecord:
         return PolicyRecord(
             id=str(policy.id),
             policy_id=policy.policy_id,
@@ -117,6 +129,7 @@ class SqlAlchemyVerificationPolicyRepository:
             superseded_at=policy.superseded_at,
             supersedes_id=(str(policy.supersedes_id) if policy.supersedes_id else None),
             created_by=policy.created_by,
+            idempotency_key=idempotency_key,
         )
 
     def _to_domain(self, record: PolicyRecord) -> VerificationPolicy:

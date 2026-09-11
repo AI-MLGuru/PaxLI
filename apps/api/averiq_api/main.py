@@ -34,7 +34,11 @@ from core.audit.enums import (
 from core.audit.service import AuditPersistenceError, AuditService
 from core.rate_limit.exceptions import RateLimitExceededError
 from core.reliability.health import check_dependency
-from core.security.exceptions import AuthenticationError, AuthorizationError
+from core.security.exceptions import (
+    AuthenticationError,
+    AuthorizationError,
+    IdempotentReplayWithoutSecretError,
+)
 from infrastructure.database import models  # noqa: F401
 from infrastructure.database.base import Base
 from infrastructure.database.repositories.audit_event import SqlAlchemyAuditEventRepository
@@ -237,6 +241,18 @@ async def authorization_exception_handler(
     return error_response(request, "AUTHORIZATION_DENIED", "Operation not permitted", 403)
 
 
+@app.exception_handler(IdempotentReplayWithoutSecretError)
+async def idempotent_replay_without_secret_exception_handler(
+    request: Request, exception: IdempotentReplayWithoutSecretError
+) -> JSONResponse:
+    # Invariant-12 remediation, explicit decision: a retried credential
+    # issue/rotate cannot silently return "success" without the secret --
+    # the stored record only ever holds a one-way hash (SEC-7.9.9), so the
+    # original secret is unrecoverable. A clear error beats a response the
+    # caller could mistake for having received a secret it didn't get.
+    return error_response(request, "IDEMPOTENT_REPLAY_SECRET_UNAVAILABLE", str(exception), 409)
+
+
 @app.exception_handler(RateLimitExceededError)
 async def rate_limit_exceeded_exception_handler(
     request: Request, exception: RateLimitExceededError
@@ -290,9 +306,7 @@ async def readiness() -> JSONResponse:
         "storage": classify(storage_health).value,
     }
     ready_values = {state.value for state in READY_STATES}
-    is_ready = all(
-        classify(h).value in ready_values for h in (postgres_health, storage_health)
-    )
+    is_ready = all(classify(h).value in ready_values for h in (postgres_health, storage_health))
     return JSONResponse(
         status_code=200 if is_ready else 503,
         content={

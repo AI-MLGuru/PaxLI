@@ -1,7 +1,7 @@
 from datetime import timedelta
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 
 from apps.api.averiq_api.config import Settings, get_settings
 from apps.api.averiq_api.dependencies import (
@@ -39,6 +39,7 @@ async def issue_credential(
     principal: AuthenticatedPrincipal = Depends(get_principal),  # noqa: B008
     settings: Settings = Depends(get_settings),  # noqa: B008
     limiter: RateLimiterProtocol = Depends(get_rate_limiter),  # noqa: B008
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> IssuedCredentialEnvelope:
     require_permission(principal, Permission.CREDENTIAL_MANAGE)
     # Security-critical endpoint class -> fail_mode="closed" (Foundation-010
@@ -58,6 +59,7 @@ async def issue_credential(
         name=payload.name,
         scope=payload.scope,
         expires_in=expires_in,
+        idempotency_key=idempotency_key,
     )
     await audit_service.record(
         tenant_id=principal.tenant_id,
@@ -87,6 +89,7 @@ async def rotate_credential(
     principal: AuthenticatedPrincipal = Depends(get_principal),  # noqa: B008
     settings: Settings = Depends(get_settings),  # noqa: B008
     limiter: RateLimiterProtocol = Depends(get_rate_limiter),  # noqa: B008
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> IssuedCredentialEnvelope:
     require_permission(principal, Permission.CREDENTIAL_MANAGE)
     await enforce_rate_limit(
@@ -104,6 +107,7 @@ async def rotate_credential(
             tenant_id=principal.tenant_id,
             name=payload.name,
             expires_in=expires_in,
+            idempotency_key=idempotency_key,
         )
     except AuthenticationError as exc:
         raise HTTPException(status_code=404, detail="Credential not found") from exc

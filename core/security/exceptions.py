@@ -39,3 +39,24 @@ class AuthorizationError(Exception):
 
 class CredentialStateError(ValueError):
     """Raised when a credential lifecycle transition is invalid."""
+
+
+class IdempotentReplayWithoutSecretError(Exception):
+    """Raised when a retried issue/rotate request matches an
+    idempotency_key already used successfully once. Unlike session/policy/
+    evidence-result idempotency, credential issuance cannot simply return
+    the original result on replay: the stored CredentialRecord holds only
+    a one-way secret_verifier hash, and the raw secret is never persisted
+    anywhere (SEC-7.9.9 -- credential secrets MUST NOT appear beyond
+    authorized one-time issuance). Silently returning "success" without
+    the secret would be worse than an error: the caller would have no way
+    to tell they didn't receive it. This is a deliberate, explicit decision
+    (Invariant-12 remediation), not an oversight."""
+
+    def __init__(self, *, credential_id: str) -> None:
+        super().__init__(
+            "This credential was already issued under this idempotency key; "
+            "the secret was shown once and cannot be retrieved again. "
+            "Rotate the credential for a new secret if it was lost."
+        )
+        self.credential_id = credential_id

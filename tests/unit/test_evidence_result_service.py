@@ -16,12 +16,24 @@ class FakeEvidenceResultRepository:
 
     def __init__(self) -> None:
         self.records: dict[UUID, EvidenceResult] = {}
+        self.idempotency_keys: dict[tuple[str, UUID, str], UUID] = {}
         self.add_calls = 0
 
-    async def add(self, evidence_result: EvidenceResult) -> EvidenceResult:
+    async def add(
+        self, evidence_result: EvidenceResult, idempotency_key: str | None = None
+    ) -> EvidenceResult:
         self.add_calls += 1
         self.records[evidence_result.id] = evidence_result
+        if idempotency_key is not None:
+            key = (evidence_result.tenant_id, evidence_result.session_id, idempotency_key)
+            self.idempotency_keys[key] = evidence_result.id
         return evidence_result
+
+    async def get_by_idempotency_key(
+        self, tenant_id: str, session_id: UUID, idempotency_key: str
+    ) -> EvidenceResult | None:
+        result_id = self.idempotency_keys.get((tenant_id, session_id, idempotency_key))
+        return self.records.get(result_id) if result_id is not None else None
 
     async def get(self, evidence_result_id: UUID, tenant_id: str) -> EvidenceResult | None:
         record = self.records.get(evidence_result_id)
@@ -87,6 +99,42 @@ async def test_create_persists_and_audits(service) -> None:
     assert audit_repo.events[0].event_type.value == "EVIDENCE_RESULT_CREATED"
     assert audit_repo.events[0].metadata["evidence_result_id"] == str(result.id)
     assert "result" not in audit_repo.events[0].metadata  # payload never enters audit
+
+
+@pytest.mark.asyncio
+async def test_repeated_idempotency_key_resolves_to_the_same_result_not_a_new_one(
+    service,
+) -> None:
+    """Invariant-12 remediation: a retried submission must not silently
+    create a duplicate evidence result."""
+    svc, repo, _ = service
+    session_id = uuid4()
+
+    first = await svc.create(
+        tenant_id="tenant-a",
+        session_id=session_id,
+        evidence_type=EvidenceResultType.FACE_MATCH,
+        status=EvidenceResultStatus.PASS,
+        producer="face-provider",
+        producer_version="1.0.0",
+        result={"similarity": 0.91},
+        score=0.91,
+        idempotency_key="req-abc",
+    )
+    second = await svc.create(
+        tenant_id="tenant-a",
+        session_id=session_id,
+        evidence_type=EvidenceResultType.FACE_MATCH,
+        status=EvidenceResultStatus.PASS,
+        producer="face-provider",
+        producer_version="1.0.0",
+        result={"similarity": 0.91},
+        score=0.91,
+        idempotency_key="req-abc",
+    )
+
+    assert first.id == second.id
+    assert repo.add_calls == 1
 
 
 @pytest.mark.asyncio

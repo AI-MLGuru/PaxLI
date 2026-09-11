@@ -12,7 +12,19 @@ class EvidenceResultRepository(Protocol):
     (EvidenceResultService.supersede()), never a mutation of an existing one.
     """
 
-    async def add(self, evidence_result: EvidenceResult) -> EvidenceResult: ...
+    async def add(
+        self, evidence_result: EvidenceResult, idempotency_key: str | None = None
+    ) -> EvidenceResult: ...
+
+    async def get_by_idempotency_key(
+        self, tenant_id: str, session_id: UUID, idempotency_key: str
+    ) -> EvidenceResult | None:
+        """`idempotency_key` here is the composed, operation-scoped key
+        (e.g. "evidence_result_create:<caller-key>") -- see
+        core.evidence_result.service for composition (Invariant-12
+        remediation review: idempotency must be operation-scoped, not
+        merely tenant-scoped)."""
+        ...
 
     async def get(self, evidence_result_id: UUID, tenant_id: str) -> EvidenceResult | None: ...
 

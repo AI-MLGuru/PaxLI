@@ -14,10 +14,23 @@ from infrastructure.security.hashing import ScryptSecretHasher
 class MemoryCredentialStore:
     def __init__(self) -> None:
         self.records: dict[UUID, CredentialRecord] = {}
+        self.idempotency_keys: dict[tuple[str, str], UUID] = {}
 
-    async def save(self, credential: CredentialRecord) -> CredentialRecord:
+    async def save(
+        self, credential: CredentialRecord, idempotency_key: str | None = None
+    ) -> CredentialRecord:
         self.records[credential.credential_id] = credential
+        if idempotency_key is not None:
+            self.idempotency_keys[(credential.tenant_id, idempotency_key)] = (
+                credential.credential_id
+            )
         return credential
+
+    async def get_by_idempotency_key(
+        self, tenant_id: str, idempotency_key: str
+    ) -> CredentialRecord | None:
+        credential_id = self.idempotency_keys.get((tenant_id, idempotency_key))
+        return self.records.get(credential_id) if credential_id is not None else None
 
     async def get(self, credential_id: UUID, tenant_id: str) -> CredentialRecord | None:
         record = self.records.get(credential_id)

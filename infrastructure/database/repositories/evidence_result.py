@@ -27,11 +27,24 @@ class SqlAlchemyEvidenceResultRepository:
         self.key_provider = key_provider
         self.key_id = key_id
 
-    async def add(self, evidence_result: EvidenceResult) -> EvidenceResult:
-        record = await self._to_record(evidence_result)
+    async def add(
+        self, evidence_result: EvidenceResult, idempotency_key: str | None = None
+    ) -> EvidenceResult:
+        record = await self._to_record(evidence_result, idempotency_key)
         self.session.add(record)
         await self.session.flush()
         return await self._to_domain(record)
+
+    async def get_by_idempotency_key(
+        self, tenant_id: str, session_id: UUID, idempotency_key: str
+    ) -> EvidenceResult | None:
+        statement = select(EvidenceResultRecord).where(
+            EvidenceResultRecord.tenant_id == tenant_id,
+            EvidenceResultRecord.session_id == str(session_id),
+            EvidenceResultRecord.idempotency_key == idempotency_key,
+        )
+        record = (await self.session.execute(statement)).scalar_one_or_none()
+        return await self._to_domain(record) if record is not None else None
 
     async def get(self, evidence_result_id: UUID, tenant_id: str) -> EvidenceResult | None:
         record = await self.session.get(EvidenceResultRecord, str(evidence_result_id))
@@ -39,9 +52,7 @@ class SqlAlchemyEvidenceResultRepository:
             return None
         return await self._to_domain(record)
 
-    async def list_for_session(
-        self, session_id: UUID, tenant_id: str
-    ) -> Sequence[EvidenceResult]:
+    async def list_for_session(self, session_id: UUID, tenant_id: str) -> Sequence[EvidenceResult]:
         statement = (
             select(EvidenceResultRecord)
             .where(
@@ -68,7 +79,9 @@ class SqlAlchemyEvidenceResultRepository:
         records = (await self.session.execute(statement)).scalars().all()
         return [await self._to_domain(record) for record in records]
 
-    async def _to_record(self, evidence_result: EvidenceResult) -> EvidenceResultRecord:
+    async def _to_record(
+        self, evidence_result: EvidenceResult, idempotency_key: str | None = None
+    ) -> EvidenceResultRecord:
         result_json = None
         result_ciphertext = None
         result_key_id = None
@@ -101,9 +114,7 @@ class SqlAlchemyEvidenceResultRepository:
                 else None
             ),
             source_reference=(
-                str(evidence_result.source_reference)
-                if evidence_result.source_reference
-                else None
+                str(evidence_result.source_reference) if evidence_result.source_reference else None
             ),
             parent_evidence_result_ids_json=[
                 str(i) for i in evidence_result.parent_evidence_result_ids
@@ -115,6 +126,7 @@ class SqlAlchemyEvidenceResultRepository:
             persisted_at=evidence_result.persisted_at,
             integrity_reference=evidence_result.integrity_reference,
             retention_until=evidence_result.retention_until,
+            idempotency_key=idempotency_key,
         )
 
     async def _to_domain(self, record: EvidenceResultRecord) -> EvidenceResult:

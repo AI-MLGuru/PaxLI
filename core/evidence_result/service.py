@@ -13,6 +13,7 @@ from core.evidence_result.repository import EvidenceResultRepository
 from core.evidence_result.schemas import validate_result_payload
 
 _SYSTEM_ACTOR_ID = "evidence-result-service"
+_CREATE_IDEMPOTENCY_OPERATION = "evidence_result_create"
 
 
 def _compute_integrity_reference(
@@ -68,13 +69,51 @@ class EvidenceResultService:
         source_reference: UUID | None = None,
         parent_evidence_result_ids: tuple[UUID, ...] = (),
         retention_until: datetime | None = None,
+        idempotency_key: str | None = None,
         request_id: str | None = None,
         correlation_id: str | None = None,
     ) -> EvidenceResult:
         """Raises InvalidEvidenceResultError (via validate_result_payload)
         before anything is persisted -- the caller is responsible for
         recovering with a safe INCONCLUSIVE result of its own (EVD-3.24.3);
-        this method does not auto-substitute one."""
+        this method does not auto-substitute one.
+
+        `idempotency_key`, if supplied, makes a retried submission resolve
+        to the same result rather than creating a duplicate (Invariant-12
+        remediation)."""
+        composed_idempotency_key = (
+            f"{_CREATE_IDEMPOTENCY_OPERATION}:{idempotency_key}"
+            if idempotency_key is not None
+            else None
+        )
+        if composed_idempotency_key is not None:
+            existing = await self.repository.get_by_idempotency_key(
+                tenant_id, session_id, composed_idempotency_key
+            )
+            if existing is not None:
+                await self.audit_service.record(
+                    tenant_id=tenant_id,
+                    session_id=session_id,
+                    event_type=AuditEventType.EVIDENCE_RESULT_CREATED,
+                    component="evidence_result",
+                    action="create",
+                    status=AuditStatus.SUCCESS,
+                    actor_type=AuditActorType.SYSTEM,
+                    actor_id=_SYSTEM_ACTOR_ID,
+                    request_id=request_id,
+                    correlation_id=correlation_id,
+                    metadata={
+                        "evidence_result_id": str(existing.id),
+                        "evidence_type": existing.evidence_type.value,
+                        "status": existing.status.value,
+                        "producer": existing.producer,
+                        "idempotent_replay": True,
+                    },
+                    dedupe_key=f"evidence-result-created:{existing.id}",
+                    durability=AuditDurability.REQUIRED,
+                )
+                return existing
+
         validate_result_payload(evidence_type, result)
 
         now = datetime.now(UTC)
@@ -104,7 +143,7 @@ class EvidenceResultService:
             ),
             retention_until=retention_until,
         )
-        saved = await self.repository.add(evidence_result)
+        saved = await self.repository.add(evidence_result, composed_idempotency_key)
         await self.audit_service.record(
             tenant_id=tenant_id,
             session_id=session_id,
@@ -122,6 +161,7 @@ class EvidenceResultService:
                 "status": status.value,
                 "producer": producer,
             },
+            dedupe_key=f"evidence-result-created:{saved.id}",
             durability=AuditDurability.REQUIRED,
         )
         return saved

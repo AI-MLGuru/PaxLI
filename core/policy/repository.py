@@ -14,7 +14,9 @@ class VerificationPolicyRepository(Protocol):
     place). A rollback or a new policy submission is always a new row via
     `add`, never a content edit of an existing one."""
 
-    async def add(self, policy: VerificationPolicy) -> VerificationPolicy: ...
+    async def add(
+        self, policy: VerificationPolicy, idempotency_key: str | None = None
+    ) -> VerificationPolicy: ...
 
     async def mark_superseded(
         self, policy_row_id: UUID, tenant_id: str, superseded_at: datetime
@@ -36,6 +38,16 @@ class VerificationPolicyRepository(Protocol):
 
     async def get_max_version(self, policy_id: str, tenant_id: str) -> int:
         """Returns 0 if no version of `policy_id` exists yet for the tenant."""
+        ...
+
+    async def get_by_idempotency_key(
+        self, tenant_id: str, idempotency_key: str
+    ) -> VerificationPolicy | None:
+        """`idempotency_key` here is the composed, operation-scoped key
+        (e.g. "policy_create_and_activate:<caller-key>") -- callers never
+        pass a raw caller-supplied key directly, so a reused key can never
+        collide across create-and-activate vs. rollback (Invariant-12
+        remediation review)."""
         ...
 
     async def list_versions(

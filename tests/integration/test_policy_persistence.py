@@ -57,6 +57,62 @@ def _service(session) -> PolicyService:
     )
 
 
+async def test_repeated_idempotency_key_against_real_postgres_creates_one_version() -> None:
+    """Invariant-12 remediation, end to end against real Postgres: a
+    retried activation request (same tenant, same idempotency_key) must
+    resolve to the same version -- proving both the uq_policies_tenant_
+    idempotency constraint and the audit dedupe_key work together, not
+    just in the in-memory unit test."""
+    tenant_id = f"tenant-policy-idem-{uuid4()}"
+    async with session_factory() as session:
+        svc = _service(session)
+        first = await svc.create_and_activate(
+            tenant_id=tenant_id,
+            policy_id="kyc-standard",
+            assurance_level=AssuranceLevel.STANDARD,
+            created_by="admin-1",
+            thresholds={"pass": 0.9},
+            idempotency_key="req-xyz",
+        )
+        await session.commit()
+
+    async with session_factory() as session:
+        svc = _service(session)
+        second = await svc.create_and_activate(
+            tenant_id=tenant_id,
+            policy_id="kyc-standard",
+            assurance_level=AssuranceLevel.STANDARD,
+            created_by="admin-1",
+            thresholds={"pass": 0.9},
+            idempotency_key="req-xyz",
+        )
+        await session.commit()
+
+    assert first.id == second.id
+    assert first.version == second.version == 1
+
+    async with session_factory() as session:
+        rows = (
+            (await session.execute(select(PolicyRecord).where(PolicyRecord.tenant_id == tenant_id)))
+            .scalars()
+            .all()
+        )
+        assert len(rows) == 1  # only one real version was ever persisted
+
+        audit_rows = (
+            (
+                await session.execute(
+                    select(AuditEventRecord).where(AuditEventRecord.tenant_id == tenant_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        # the dedupe_key constraint means the retry's audit call resolved
+        # to the existing event rather than inserting a second one
+        assert len(audit_rows) == 1
+
+
 async def test_partial_unique_index_rejects_two_active_rows_direct_insert() -> None:
     """Direct proof against real PostgreSQL that the partial unique index
     is enforced at the database level, not application code alone."""
@@ -124,12 +180,16 @@ async def test_create_and_activate_persists_and_audits() -> None:
         assert record.status == "ACTIVE"
 
         audit_records = (
-            await session.execute(
-                select(AuditEventRecord).where(
-                    AuditEventRecord.tenant_id == "tenant-policy-create"
+            (
+                await session.execute(
+                    select(AuditEventRecord).where(
+                        AuditEventRecord.tenant_id == "tenant-policy-create"
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert any(r.event_type == "POLICY_ACTIVATED" for r in audit_records)
 
 
@@ -293,10 +353,14 @@ async def test_concurrent_activation_for_the_same_applicability_one_wins_one_con
         # uq_policies_tenant_version and fail this test for a reason
         # unrelated to the race being proven here.
         existing = (
-            await setup_session.execute(
-                select(PolicyRecord).where(PolicyRecord.tenant_id == tenant_id)
+            (
+                await setup_session.execute(
+                    select(PolicyRecord).where(PolicyRecord.tenant_id == tenant_id)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         for row in existing:
             await setup_session.delete(row)
         await setup_session.commit()

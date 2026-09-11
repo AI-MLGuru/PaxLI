@@ -10,6 +10,7 @@ from sqlalchemy import (
     Index,
     LargeBinary,
     String,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -29,6 +30,12 @@ class EvidenceResultRecord(Base):
 
     __tablename__ = "evidence_results"
     __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "session_id",
+            "idempotency_key",
+            name="uq_evidence_results_tenant_session_idempotency",
+        ),
         CheckConstraint(
             "result_json IS NULL OR result_ciphertext IS NULL",
             name="ck_evidence_results_payload_representation_exclusive",
@@ -81,3 +88,4 @@ class EvidenceResultRecord(Base):
     persisted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     integrity_reference: Mapped[str] = mapped_column(String(128), nullable=False)
     retention_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    idempotency_key: Mapped[str | None] = mapped_column(String(256), nullable=True)

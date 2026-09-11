@@ -34,6 +34,7 @@ class PolicyRecord(Base):
     __tablename__ = "policies"
     __table_args__ = (
         UniqueConstraint("tenant_id", "policy_id", "version", name="uq_policies_tenant_version"),
+        UniqueConstraint("tenant_id", "idempotency_key", name="uq_policies_tenant_idempotency"),
         CheckConstraint(
             "(status = 'SUPERSEDED') = (superseded_at IS NOT NULL)",
             name="ck_policies_superseded_at_matches_status",
@@ -85,3 +86,4 @@ class PolicyRecord(Base):
         String(36), ForeignKey("policies.id"), nullable=True
     )
     created_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    idempotency_key: Mapped[str | None] = mapped_column(String(256), nullable=True)

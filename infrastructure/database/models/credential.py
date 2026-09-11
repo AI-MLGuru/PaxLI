@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import DateTime, Index, String
+from sqlalchemy import DateTime, Index, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from core.security.models import CredentialRecord, CredentialScope, CredentialStatus
@@ -10,7 +10,10 @@ from infrastructure.database.base import Base
 
 class CredentialRecordModel(Base):
     __tablename__ = "credentials"
-    __table_args__ = (Index("ix_credentials_tenant_id", "tenant_id"),)
+    __table_args__ = (
+        Index("ix_credentials_tenant_id", "tenant_id"),
+        UniqueConstraint("tenant_id", "idempotency_key", name="uq_credentials_tenant_idempotency"),
+    )
 
     credential_id: Mapped[str] = mapped_column(String(36), primary_key=True)
     tenant_id: Mapped[str] = mapped_column(String(128), nullable=False)
@@ -24,9 +27,12 @@ class CredentialRecordModel(Base):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    idempotency_key: Mapped[str | None] = mapped_column(String(256), nullable=True)
 
     @classmethod
-    def from_domain(cls, credential: CredentialRecord) -> "CredentialRecordModel":
+    def from_domain(
+        cls, credential: CredentialRecord, idempotency_key: str | None = None
+    ) -> "CredentialRecordModel":
         return cls(
             credential_id=str(credential.credential_id),
             tenant_id=credential.tenant_id,
@@ -38,6 +44,7 @@ class CredentialRecordModel(Base):
             expires_at=credential.expires_at,
             revoked_at=credential.revoked_at,
             last_used_at=credential.last_used_at,
+            idempotency_key=idempotency_key,
         )
 
     def to_domain(self) -> CredentialRecord:

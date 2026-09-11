@@ -20,13 +20,24 @@ class FakePolicyRepository:
 
     def __init__(self) -> None:
         self.records: dict[UUID, VerificationPolicy] = {}
+        self.idempotency_keys: dict[tuple[str, str], UUID] = {}
         self.add_calls = 0
         self.mark_superseded_calls = 0
 
-    async def add(self, policy: VerificationPolicy) -> VerificationPolicy:
+    async def add(
+        self, policy: VerificationPolicy, idempotency_key: str | None = None
+    ) -> VerificationPolicy:
         self.add_calls += 1
         self.records[policy.id] = policy
+        if idempotency_key is not None:
+            self.idempotency_keys[(policy.tenant_id, idempotency_key)] = policy.id
         return policy
+
+    async def get_by_idempotency_key(
+        self, tenant_id: str, idempotency_key: str
+    ) -> VerificationPolicy | None:
+        policy_row_id = self.idempotency_keys.get((tenant_id, idempotency_key))
+        return self.records.get(policy_row_id) if policy_row_id is not None else None
 
     async def mark_superseded(
         self, policy_row_id: UUID, tenant_id: str, superseded_at: datetime
@@ -125,6 +136,66 @@ async def test_create_and_activate_persists_and_audits(service) -> None:
     assert event.metadata["activation_type"] == "INITIAL"
     assert event.metadata["policy_id"] == "kyc-standard"
     assert event.metadata["previous_active_policy_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_repeated_idempotency_key_resolves_to_the_same_version_not_a_new_one(
+    service,
+) -> None:
+    """Invariant-12 remediation: a retried activation request must not
+    silently create a second real policy version."""
+    svc, repo, _ = service
+
+    first = await svc.create_and_activate(
+        tenant_id="tenant-a",
+        policy_id="kyc-standard",
+        assurance_level=AssuranceLevel.STANDARD,
+        created_by="admin-1",
+        thresholds={"pass": 0.9},
+        idempotency_key="req-abc",
+    )
+    second = await svc.create_and_activate(
+        tenant_id="tenant-a",
+        policy_id="kyc-standard",
+        assurance_level=AssuranceLevel.STANDARD,
+        created_by="admin-1",
+        thresholds={"pass": 0.9},
+        idempotency_key="req-abc",
+    )
+
+    assert first.id == second.id
+    assert first.version == second.version == 1
+    assert repo.add_calls == 1  # only the first call actually persisted anything
+
+
+@pytest.mark.asyncio
+async def test_same_raw_idempotency_key_does_not_collide_across_activate_and_rollback(
+    service,
+) -> None:
+    """The composed key must be operation-scoped: a caller reusing the same
+    raw key for create-and-activate and, separately, rollback must not have
+    the second call mistaken for a replay of the first (Invariant-12
+    remediation review)."""
+    svc, _, _ = service
+
+    activated = await svc.create_and_activate(
+        tenant_id="tenant-a",
+        policy_id="kyc-standard",
+        assurance_level=AssuranceLevel.STANDARD,
+        created_by="admin-1",
+        thresholds={"pass": 0.9},
+        idempotency_key="same-raw-key",
+    )
+    rolled_back = await svc.rollback(
+        tenant_id="tenant-a",
+        policy_id="kyc-standard",
+        target_version=1,
+        created_by="admin-1",
+        idempotency_key="same-raw-key",
+    )
+
+    assert rolled_back.id != activated.id
+    assert rolled_back.version == 2
 
 
 @pytest.mark.asyncio

@@ -3,7 +3,11 @@ from secrets import token_urlsafe
 from typing import Protocol
 from uuid import UUID
 
-from core.security.exceptions import AuthenticationError, CredentialStateError
+from core.security.exceptions import (
+    AuthenticationError,
+    CredentialStateError,
+    IdempotentReplayWithoutSecretError,
+)
 from core.security.models import (
     CredentialRecord,
     CredentialScope,
@@ -12,6 +16,8 @@ from core.security.models import (
 )
 
 _TIMING_GUARD_SECRET = "averiq-constant-time-guard-placeholder"
+_ISSUE_IDEMPOTENCY_OPERATION = "credential_issue"
+_ROTATE_IDEMPOTENCY_OPERATION = "credential_rotate"
 
 
 class SecretHasher(Protocol):
@@ -23,7 +29,18 @@ class SecretHasher(Protocol):
 class CredentialStore(Protocol):
     """Minimal repository contract used by the credential service."""
 
-    async def save(self, credential: CredentialRecord) -> CredentialRecord: ...
+    async def save(
+        self, credential: CredentialRecord, idempotency_key: str | None = None
+    ) -> CredentialRecord: ...
+
+    async def get_by_idempotency_key(
+        self, tenant_id: str, idempotency_key: str
+    ) -> CredentialRecord | None:
+        """`idempotency_key` is the composed, operation-scoped key (e.g.
+        "credential_issue:<caller-key>") -- see CredentialService for
+        composition (Invariant-12 remediation review: a reused raw key
+        must never collide between issue and rotate)."""
+        ...
 
     async def get(self, credential_id: UUID, tenant_id: str) -> CredentialRecord | None: ...
 
@@ -48,7 +65,44 @@ class CredentialService:
         name: str,
         scope: CredentialScope = CredentialScope.OPERATIONAL,
         expires_in: timedelta | None = None,
+        idempotency_key: str | None = None,
     ) -> IssuedCredential:
+        """Raises IdempotentReplayWithoutSecretError if `idempotency_key`
+        matches an already-completed issuance -- the stored record holds
+        only a one-way secret_verifier hash, so a replay cannot return the
+        original secret (SEC-7.9.9). Returning "success" without it would
+        be worse than an error: the caller could not tell it was missing
+        (Invariant-12 remediation, explicit decision)."""
+        composed_key = (
+            f"{_ISSUE_IDEMPOTENCY_OPERATION}:{idempotency_key}"
+            if idempotency_key is not None
+            else None
+        )
+        if composed_key is not None:
+            existing = await self.store.get_by_idempotency_key(tenant_id, composed_key)
+            if existing is not None:
+                raise IdempotentReplayWithoutSecretError(credential_id=str(existing.credential_id))
+        return await self._issue_new_credential(
+            tenant_id=tenant_id,
+            name=name,
+            scope=scope,
+            expires_in=expires_in,
+            composed_idempotency_key=composed_key,
+        )
+
+    async def _issue_new_credential(
+        self,
+        *,
+        tenant_id: str,
+        name: str,
+        scope: CredentialScope,
+        expires_in: timedelta | None,
+        composed_idempotency_key: str | None,
+    ) -> IssuedCredential:
+        """The actual creation, shared by issue() and rotate() -- each of
+        those does its own operation-scoped idempotency check (different
+        composed-key prefixes, so a reused raw key can never collide
+        between issue and rotate) before calling this."""
         secret = f"avk_{token_urlsafe(32)}"
         expires_at = datetime.now(UTC) + expires_in if expires_in else None
         credential = CredentialRecord(
@@ -58,7 +112,7 @@ class CredentialService:
             secret_verifier=self.hasher.hash(secret),
             expires_at=expires_at,
         )
-        await self.store.save(credential)
+        await self.store.save(credential, composed_idempotency_key)
         return IssuedCredential(
             credential_id=credential.credential_id,
             tenant_id=tenant_id,
@@ -115,11 +169,31 @@ class CredentialService:
         tenant_id: str,
         name: str,
         expires_in: timedelta | None = None,
+        idempotency_key: str | None = None,
     ) -> IssuedCredential:
+        """Raises IdempotentReplayWithoutSecretError on a same-key replay,
+        same reasoning as issue() -- the new secret from the original
+        rotation cannot be recovered (SEC-7.9.9)."""
+        composed_key = (
+            f"{_ROTATE_IDEMPOTENCY_OPERATION}:{idempotency_key}"
+            if idempotency_key is not None
+            else None
+        )
+        if composed_key is not None:
+            existing_replay = await self.store.get_by_idempotency_key(tenant_id, composed_key)
+            if existing_replay is not None:
+                raise IdempotentReplayWithoutSecretError(
+                    credential_id=str(existing_replay.credential_id)
+                )
+
         existing = await self.store.get(credential_id, tenant_id)
         if existing is None:
             raise AuthenticationError(credential_id=str(credential_id), tenant_id=tenant_id)
         await self.revoke(credential_id=credential_id, tenant_id=tenant_id)
-        return await self.issue(
-            tenant_id=tenant_id, name=name, scope=existing.scope, expires_in=expires_in
+        return await self._issue_new_credential(
+            tenant_id=tenant_id,
+            name=name,
+            scope=existing.scope,
+            expires_in=expires_in,
+            composed_idempotency_key=composed_key,
         )
