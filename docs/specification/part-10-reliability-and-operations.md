@@ -1,4 +1,4 @@
-# Averiq by PaxAlpha
+# PaxLI by PaxAlpha
 
 # Decision & Verification Semantics Specification
 
@@ -7,13 +7,13 @@
 **Semantic Contract:** v1.0  
 **Document Status:** Normative  
 **Requirement Prefix:** `REL-*`  
-**Product:** Averiq by PaxAlpha
+**Product:** PaxLI by PaxAlpha
 
 ## 10.0 Purpose and Scope
 
-This part defines the normative reliability and operational requirements for Averiq. Reliability encompasses availability, correctness, controlled degradation, predictable failure, recoverability, observability, operational safety, dependency resilience, capacity, incident response, disaster recovery, and recovery verification.
+This part defines the normative reliability and operational requirements for PaxLI. Reliability encompasses availability, correctness, controlled degradation, predictable failure, recoverability, observability, operational safety, dependency resilience, capacity, incident response, disaster recovery, and recovery verification.
 
-Averiq MUST distinguish verification failure, infrastructure failure, dependency failure, operational failure, security failure, data-protection failure, and inconclusive outcome. Infrastructure failure MUST NOT automatically become verification rejection.
+PaxLI MUST distinguish verification failure, infrastructure failure, dependency failure, operational failure, security failure, data-protection failure, and inconclusive outcome. Infrastructure failure MUST NOT automatically become verification rejection.
 
 ### Requirements
 
@@ -24,7 +24,7 @@ Averiq MUST distinguish verification failure, infrastructure failure, dependency
 
 ## 10.1 Reliability Principles
 
-Averiq reliability follows fail safely, fail predictably, recover deterministically, preserve evidence integrity and decision authority, avoid cascades, detect degradation early, prefer controlled degradation, preserve tenant isolation and auditability, expose operational state, and verify recovery.
+PaxLI reliability follows fail safely, fail predictably, recover deterministically, preserve evidence integrity and decision authority, avoid cascades, detect degradation early, prefer controlled degradation, preserve tenant isolation and auditability, expose operational state, and verify recovery.
 
 ### Requirements
 
@@ -65,7 +65,7 @@ Failure in one component MUST NOT automatically become semantic failure in anoth
 
 ## 10.4 Service Level Indicators
 
-Averiq SHOULD measure API availability and errors, completion and latency, evidence upload, Decision Engine and dependency latency/availability, storage/database health, webhook delivery, recovery time, retries, timeouts, circuit activation, `INCONCLUSIVE` rate, `REVIEW_REQUIRED` rate, and infrastructure-induced inconclusive rate.
+PaxLI SHOULD measure API availability and errors, completion and latency, evidence upload, Decision Engine and dependency latency/availability, storage/database health, webhook delivery, recovery time, retries, timeouts, circuit activation, `INCONCLUSIVE` rate, `REVIEW_REQUIRED` rate, and infrastructure-induced inconclusive rate.
 
 ### Requirements
 
@@ -96,7 +96,7 @@ Availability is evaluated separately for API, evidence, processing, decision, re
 
 ## 10.7 Latency Semantics
 
-Averiq distinguishes request, processing, dependency, inference, decision, persistence, and notification latency. End-to-end latency is not equivalent to any individual component latency.
+PaxLI distinguishes request, processing, dependency, inference, decision, persistence, and notification latency. End-to-end latency is not equivalent to any individual component latency.
 
 ### Requirements
 
@@ -150,7 +150,7 @@ Critical dependencies include database, storage, cache where used, inference run
 
 ## 10.12 Readiness and Liveness
 
-Averiq distinguishes liveness, readiness, dependency health, and application correctness. A live process is not necessarily ready; readiness does not imply every dependency can complete verification.
+PaxLI distinguishes liveness, readiness, dependency health, and application correctness. A live process is not necessarily ready; readiness does not imply every dependency can complete verification.
 
 ### Requirements
 
@@ -336,7 +336,7 @@ Capacity limits include CPU, memory, disk, database connections, storage, networ
 
 ## 10.30 Resource Exhaustion
 
-Averiq MUST protect against memory, disk, connection, worker, request, storage, and payload exhaustion.
+PaxLI MUST protect against memory, disk, connection, worker, request, storage, and payload exhaustion.
 
 ### Requirements
 
@@ -631,7 +631,7 @@ Degraded operation MUST NOT disable authentication, authorization, isolation, cr
 
 ## 10.59 Reliability and Decision Correctness
 
-Averiq prefers controlled `INCONCLUSIVE` over false `REJECTED` or fabricated `VERIFIED` when evaluation is unsafe.
+PaxLI prefers controlled `INCONCLUSIVE` over false `REJECTED` or fabricated `VERIFIED` when evaluation is unsafe.
 
 ### Requirements
 
@@ -640,7 +640,7 @@ Averiq prefers controlled `INCONCLUSIVE` over false `REJECTED` or fabricated `VE
 
 ## 10.60 Reliability Degradation Monitoring
 
-Averiq SHOULD measure infrastructure-induced inconclusive outcomes, processing failures, timeouts, retries, and dependency errors separately from genuine verification failures.
+PaxLI SHOULD measure infrastructure-induced inconclusive outcomes, processing failures, timeouts, retries, and dependency errors separately from genuine verification failures.
 
 ### Requirements
 
@@ -744,7 +744,7 @@ Part X operationalizes Parts II-IX. It preserves authority and boundaries, evide
 
 ## 10.68 Constitutional Principle
 
-Averiq remains trustworthy when parts fail. It prefers known failure over silent corruption, controlled degradation over unbounded failure, `INCONCLUSIVE` over false rejection, durable state over notification, recovery over assumption, and measured reliability over unsupported claims.
+PaxLI remains trustworthy when parts fail. It prefers known failure over silent corruption, controlled degradation over unbounded failure, `INCONCLUSIVE` over false rejection, durable state over notification, recovery over assumption, and measured reliability over unsupported claims.
 
 The system MUST never manufacture successful verification because infrastructure is unavailable, manufacture rejection because evaluation failed, or sacrifice tenant isolation, evidence integrity, security, privacy, or Decision Engine authority for availability.
 

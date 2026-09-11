@@ -1,6 +1,6 @@
 # Architecture
 
-Averiq is organized around a verification-session domain and independently replaceable intelligence engines.
+PaxLI is organized around a verification-session domain and independently replaceable intelligence engines.
 
 ## Dependency direction
 

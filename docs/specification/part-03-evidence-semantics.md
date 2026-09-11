@@ -1,4 +1,4 @@
-# Averiq by PaxAlpha
+# PaxLI by PaxAlpha
 
 # Decision & Verification Semantics Specification
 
@@ -6,13 +6,13 @@
 
 **Semantic Contract:** v1.0  
 **Document Status:** Normative  
-**Product:** Averiq by PaxAlpha  
+**Product:** PaxLI by PaxAlpha  
 **Positioning:** Identity Verification & Biometric Trust Infrastructure  
 **Tagline:** Verify with confidence.
 
 ## 3.0 Purpose and Scope
 
-This part defines the normative meaning, lifecycle, integrity, provenance, status semantics, and handling rules for evidence within Averiq.
+This part defines the normative meaning, lifecycle, integrity, provenance, status semantics, and handling rules for evidence within PaxLI.
 
 Evidence is the primary intermediate representation through which verification components communicate findings to the Decision Engine. Models and verification components produce evidence. The Decision Engine interprets evidence and produces the final verification decision. Evidence MUST NOT itself constitute a final verification verdict.
 
@@ -84,7 +84,7 @@ Evidence identity MUST be independent of content. An evidence identifier remains
 
 ### Requirements
 
-- **EVD-3.4.1** Evidence IDs MUST be unique within the Averiq system.
+- **EVD-3.4.1** Evidence IDs MUST be unique within the PaxLI system.
 - **EVD-3.4.2** An evidence ID MUST NOT be reassigned after evidence deletion.
 - **EVD-3.4.3** Evidence identity MUST NOT depend solely on a client filename, object-storage key, or external provider identifier.
 
@@ -92,7 +92,7 @@ Evidence identity MUST be independent of content. An evidence identifier remains
 
 **Status: PREREQUISITE: v1.0**
 
-Averiq MUST use an explicit evidence-type taxonomy. Initial v1.0 domains include:
+PaxLI MUST use an explicit evidence-type taxonomy. Initial v1.0 domains include:
 
 ```text
 Evidence
@@ -271,7 +271,7 @@ Evidence MAY contain stable machine-readable reason codes, including `IMAGE_TOO_
 
 **Status: PREREQUISITE: v1.0**
 
-Where models produce evidence, Averiq MUST retain sufficient model-reference metadata to establish which model produced the result. A model reference SHOULD include `model_id`, `model_version`, `runtime`, `runtime_version`, and `configuration_reference` as applicable.
+Where models produce evidence, PaxLI MUST retain sufficient model-reference metadata to establish which model produced the result. A model reference SHOULD include `model_id`, `model_version`, `runtime`, `runtime_version`, and `configuration_reference` as applicable.
 
 ### Requirements
 
@@ -425,7 +425,7 @@ delete(evidence_id, deletion_basis, authorization_context)
 
 **Status: PREREQUISITE: v1.0**
 
-Averiq MAY retain a tombstone where a deleted identifier must remain represented for audit or referential integrity. A tombstone MUST NOT preserve deleted biometric or document content.
+PaxLI MAY retain a tombstone where a deleted identifier must remain represented for audit or referential integrity. A tombstone MUST NOT preserve deleted biometric or document content.
 
 ```text
 EvidenceDeleted
@@ -450,7 +450,7 @@ EvidenceDeleted
 
 **Status: PREREQUISITE: v1.0**
 
-Evidence retention and immutability are separate concerns. Retention is governed by applicable law, contractual requirements, tenant policy, security requirements, and operational requirements. Averiq MUST support jurisdiction-specific retention and deletion rules and MUST NOT hard-code one jurisdiction as universally applicable.
+Evidence retention and immutability are separate concerns. Retention is governed by applicable law, contractual requirements, tenant policy, security requirements, and operational requirements. PaxLI MUST support jurisdiction-specific retention and deletion rules and MUST NOT hard-code one jurisdiction as universally applicable.
 
 ### Requirements
 
@@ -638,10 +638,10 @@ Part III depends on Part II and MUST NOT be interpreted independently of the arc
 
 ## 3.37 Constitutional Principle
 
-> **Averiq must never infer certainty from ambiguity.**
+> **PaxLI must never infer certainty from ambiguity.**
 
-When evidence establishes a condition, Averiq records that condition. When evidence establishes a negative condition, Averiq records that condition. When the system cannot reliably establish either, it records uncertainty explicitly. The Decision Engine then makes the controlled decision permitted by policy.
+When evidence establishes a condition, PaxLI records that condition. When evidence establishes a negative condition, PaxLI records that condition. When the system cannot reliably establish either, it records uncertainty explicitly. The Decision Engine then makes the controlled decision permitted by policy.
 
-**Evidence describes what Averiq knows. The Decision Engine determines what Averiq decides.**
+**Evidence describes what PaxLI knows. The Decision Engine determines what PaxLI decides.**
 
 ## End of Part III

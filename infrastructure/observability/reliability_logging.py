@@ -10,7 +10,7 @@ import structlog
 from core.reliability.metrics import ReliabilitySnapshot
 from core.reliability.models import ComponentResult
 
-logger = structlog.get_logger("averiq.reliability")
+logger = structlog.get_logger("paxli.reliability")
 
 
 def log_dependency_call(

@@ -1,4 +1,4 @@
-# Averiq by PaxAlpha
+# PaxLI by PaxAlpha
 
 # Decision & Verification Semantics Specification
 
@@ -6,13 +6,13 @@
 
 **Semantic Contract:** v1.0  
 **Document Status:** Normative  
-**Product:** Averiq by PaxAlpha  
+**Product:** PaxLI by PaxAlpha  
 **Positioning:** Identity Verification & Biometric Trust Infrastructure  
 **Tagline:** Verify with confidence.
 
 ## 4.0 Purpose and Scope
 
-This part defines the normative workflow semantics governing an Averiq verification session from creation through evidence submission, processing, decisioning, completion, expiration, cancellation, and result retrieval.
+This part defines the normative workflow semantics governing an PaxLI verification session from creation through evidence submission, processing, decisioning, completion, expiration, cancellation, and result retrieval.
 
 The following concepts are separate and MUST NOT be collapsed into one state machine:
 
@@ -92,7 +92,7 @@ Exceptional terminal lifecycle states are `EXPIRED` and `CANCELLED`. `INCONCLUSI
 - **`CREATED`**: the session exists but capture/submission has not begun.
 - **`CAPTURING`**: the session is accepting or preparing evidence.
 - **`SUBMITTED`**: client submission has been received and is ready for processing.
-- **`PROCESSING`**: Averiq is actively evaluating submitted evidence.
+- **`PROCESSING`**: PaxLI is actively evaluating submitted evidence.
 - **`COMPLETED`**: the workflow reached a terminal result that is durably recorded.
 - **`EXPIRED`**: the permitted lifetime ended before successful completion.
 - **`CANCELLED`**: an authorized cancellation terminated the session.
@@ -338,7 +338,7 @@ Decision: VERIFIED, REJECTED, REVIEW_REQUIRED, INCONCLUSIVE
 
 **Status: PREREQUISITE: v1.0**
 
-Final `INCONCLUSIVE` is used when Averiq cannot safely establish `VERIFIED` or `REJECTED`, including dependency outage, timeout, insufficient evidence, conflict, invalid input, or Decision Engine failure. It is not a disguised rejection.
+Final `INCONCLUSIVE` is used when PaxLI cannot safely establish `VERIFIED` or `REJECTED`, including dependency outage, timeout, insufficient evidence, conflict, invalid input, or Decision Engine failure. It is not a disguised rejection.
 
 ### Requirements
 
@@ -409,7 +409,7 @@ The durable webhook event is not externally observable; the required audit MUST 
 - **WF-4.26.6** Webhook events MUST have durable identifiers and an explicit payload version.
 - **WF-4.26.7** Webhook retry behavior MUST use bounded retry policies and durable delivery state.
 - **WF-4.26.8** Webhook events, delivery state, and result references MUST remain tenant-scoped.
-- **WF-4.26.9** Webhook configuration MUST use the authenticated tenant and authorization context. Background publication, retry, and delivery MUST use tenant ID from the durable event and the typed context `actor_type=SYSTEM`, `actor_id=averiq-webhook-delivery-service`, `authentication_method=INTERNAL_SCHEDULER`, `permission_used=WEBHOOK_DELIVER`, and `source=WEBHOOK_WORKER`.
+- **WF-4.26.9** Webhook configuration MUST use the authenticated tenant and authorization context. Background publication, retry, and delivery MUST use tenant ID from the durable event and the typed context `actor_type=SYSTEM`, `actor_id=paxli-webhook-delivery-service`, `authentication_method=INTERNAL_SCHEDULER`, `permission_used=WEBHOOK_DELIVER`, and `source=WEBHOOK_WORKER`.
 - **WF-4.26.10** Required audit events for webhook publication and governed delivery actions MUST be durable before the corresponding observable effect.
 
 ## 4.27 Polling Interaction
@@ -442,7 +442,7 @@ Crashes MUST NOT corrupt semantics, create duplicate authoritative results, crea
 
 **Status: PREREQUISITE: v1.0**
 
-Averiq MUST distinguish legitimate retries from replayed operations and support submission idempotency, webhook idempotency, and safe repeated retrieval.
+PaxLI MUST distinguish legitimate retries from replayed operations and support submission idempotency, webhook idempotency, and safe repeated retrieval.
 
 ### Requirements
 
@@ -587,9 +587,9 @@ If a workflow rule conflicts with an architectural invariant or evidence semanti
 
 ## 4.38 Constitutional Principle
 
-> **Averiq must preserve the distinction between what happened, what the system observed, and what the system decided.**
+> **PaxLI must preserve the distinction between what happened, what the system observed, and what the system decided.**
 
-The session records what happened in the workflow. Evidence records what Averiq observed or established. The Decision Engine records what Averiq decided under policy. These records may be related, but MUST NOT be treated as interchangeable.
+The session records what happened in the workflow. Evidence records what PaxLI observed or established. The Decision Engine records what PaxLI decided under policy. These records may be related, but MUST NOT be treated as interchangeable.
 
 A verification is successful only when the Decision Engine produces a valid `VERIFIED` decision and that decision is durably recorded.
 

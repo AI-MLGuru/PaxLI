@@ -1,4 +1,4 @@
-# Averiq by PaxAlpha
+# PaxLI by PaxAlpha
 
 # Decision & Verification Semantics Specification
 
@@ -7,15 +7,15 @@
 **Semantic Contract:** v1.0  
 **Document Status:** Normative  
 **Requirement Prefix:** `CONF-*`  
-**Product:** Averiq by PaxAlpha
+**Product:** PaxLI by PaxAlpha
 
 ## 8.0 Purpose and Scope
 
-This part defines the normative conformance model for Averiq. Conformance establishes whether an implementation satisfies the Semantic Specification and whether objective evidence demonstrates that satisfaction.
+This part defines the normative conformance model for PaxLI. Conformance establishes whether an implementation satisfies the Semantic Specification and whether objective evidence demonstrates that satisfaction.
 
 Conformance applies to application code, domain services, APIs, evidence handling, workflows, Decision Engine behavior, security, privacy, reliability, observability, policies, configuration, model and calibration artifacts, infrastructure adapters, provider adapters, operational controls, and release artifacts.
 
-Averiq MUST demonstrate positive, negative, failure, security, privacy, isolation, deterministic, auditability, observability, and reproducibility behavior. Correct happy-path behavior alone is not conformance.
+PaxLI MUST demonstrate positive, negative, failure, security, privacy, isolation, deterministic, auditability, observability, and reproducibility behavior. Correct happy-path behavior alone is not conformance.
 
 ### Requirements
 
@@ -117,7 +117,7 @@ Contract tests MUST exist for architectural invariants, API, evidence, Decision 
 
 Failure testing MUST cover database, storage, cache, network, provider timeout/outage, model failure/timeout, Decision Engine failure, worker failure, restart, exhaustion, malformed responses, duplicates, replay, webhook failure, and partial pipeline failure.
 
-Averiq MUST distinguish verification failure, infrastructure failure, dependency failure, security failure, and client error.
+PaxLI MUST distinguish verification failure, infrastructure failure, dependency failure, security failure, and client error.
 
 ### Requirements
 
@@ -149,7 +149,7 @@ Privacy conformance verifies Part XI and applicable protection requirements, inc
 
 ## 8.12 Adversarial Conformance
 
-Averiq MUST evaluate malformed JSON, unexpected types, oversized payloads, invalid IDs, corrupted files, unsupported media, invalid or pathological policies, conflicting evidence, repeated/replayed requests, forged webhooks, manipulated provider responses, invalid model references, and dependency anomalies.
+PaxLI MUST evaluate malformed JSON, unexpected types, oversized payloads, invalid IDs, corrupted files, unsupported media, invalid or pathological policies, conflicting evidence, repeated/replayed requests, forged webhooks, manipulated provider responses, invalid model references, and dependency anomalies.
 
 ### Requirements
 
@@ -363,7 +363,7 @@ Conformance records SHOULD include reports, matrices, results, assessments, resi
 
 ## 8.32 External Providers and Adapters
 
-External dependencies are evaluated at the adapter boundary for interface, authentication, authorization, response validation, timeouts, retries, rate limits, outage, malformed responses, classification, isolation, and semantic mapping. Provider claims do not prove Averiq conformance.
+External dependencies are evaluated at the adapter boundary for interface, authentication, authorization, response validation, timeouts, retries, rate limits, outage, malformed responses, classification, isolation, and semantic mapping. Provider claims do not prove PaxLI conformance.
 
 ```text
 Provider unavailable -> Adapter -> EXTERNAL_PROVIDER_UNAVAILABLE
@@ -373,9 +373,9 @@ Provider unavailable -> Adapter -> EXTERNAL_PROVIDER_UNAVAILABLE
 
 ### Requirements
 
-- **CONF-8.32.1** Every production provider integration MUST satisfy the Averiq adapter contract.
+- **CONF-8.32.1** Every production provider integration MUST satisfy the PaxLI adapter contract.
 - **CONF-8.32.2** Provider availability MUST NOT be treated as identity correctness.
-- **CONF-8.32.3** Provider failures MUST have tested Averiq semantic mappings.
+- **CONF-8.32.3** Provider failures MUST have tested PaxLI semantic mappings.
 
 ## 8.33 Models and Calibration
 
@@ -447,7 +447,7 @@ Valid requirement states are `CONFORMANT`, `NONCONFORMANT`, `DEFERRED`, `NOT_APP
 
 ## 8.38 Constitutional Principle
 
-Averiq does not define conformance as “the software works.” Conformance means the implementation satisfies normative semantics, preserves authority boundaries, behaves safely under expected and unexpected conditions, protects security and privacy, and possesses objective evidence proving that behavior.
+PaxLI does not define conformance as “the software works.” Conformance means the implementation satisfies normative semantics, preserves authority boundaries, behaves safely under expected and unexpected conditions, protects security and privacy, and possesses objective evidence proving that behavior.
 
 ```text
 Required behavior
@@ -458,6 +458,6 @@ Required behavior
 = Conformance
 ```
 
-Averiq MUST demonstrate, not merely assert, that it preserves the semantics, authority boundaries, safety, security, privacy, reliability, and decision requirements defined by its specification. A passing happy-path test MUST NOT conceal failure of trust, safety, security, privacy, reliability, or decision authority.
+PaxLI MUST demonstrate, not merely assert, that it preserves the semantics, authority boundaries, safety, security, privacy, reliability, and decision requirements defined by its specification. A passing happy-path test MUST NOT conceal failure of trust, safety, security, privacy, reliability, or decision authority.
 
 ## End of Part VIII

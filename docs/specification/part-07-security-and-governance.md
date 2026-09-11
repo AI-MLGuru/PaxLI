@@ -1,4 +1,4 @@
-# Averiq by PaxAlpha
+# PaxLI by PaxAlpha
 
 # Decision & Verification Semantics Specification
 
@@ -6,15 +6,15 @@
 
 **Semantic Contract:** v1.0  
 **Document Status:** Normative  
-**Product:** Averiq by PaxAlpha  
+**Product:** PaxLI by PaxAlpha  
 **Positioning:** Identity Verification & Biometric Trust Infrastructure  
 **Tagline:** Verify with confidence.
 
 ## 7.0 Purpose and Scope
 
-This part defines the normative security, access-control, credential, cryptographic, governance, and abuse-prevention requirements for Averiq.
+This part defines the normative security, access-control, credential, cryptographic, governance, and abuse-prevention requirements for PaxLI.
 
-Averiq processes identity information, biometric evidence, authentication credentials, verification decisions, and tenant-owned operational data. Security is therefore a system property rather than an isolated infrastructure feature.
+PaxLI processes identity information, biometric evidence, authentication credentials, verification decisions, and tenant-owned operational data. Security is therefore a system property rather than an isolated infrastructure feature.
 
 This part defines security boundaries, authentication, authorization, tenant isolation, credential lifecycle, privileged access, cryptographic controls, key management, secret handling, session security, biometric security, administrative security, policy governance, audit, incident handling, abuse prevention, adversarial input, testing, exceptions, and conformance. It does not prescribe a cloud provider, HSM vendor, database, framework, or cryptographic library.
 
@@ -27,7 +27,7 @@ This part defines security boundaries, authentication, authorization, tenant iso
 
 ## 7.1 Security Principles
 
-Averiq security is based on least privilege, explicit authorization, tenant isolation, defense in depth, secure defaults, fail-safe behavior, credential minimization, cryptographic protection, auditability, separation of duties, controlled administration, privacy by design, and continuous verification of security assumptions.
+PaxLI security is based on least privilege, explicit authorization, tenant isolation, defense in depth, secure defaults, fail-safe behavior, credential minimization, cryptographic protection, auditability, separation of duties, controlled administration, privacy by design, and continuous verification of security assumptions.
 
 ### Requirements
 
@@ -39,10 +39,10 @@ Averiq security is based on least privilege, explicit authorization, tenant isol
 
 ## 7.2 Security Boundaries
 
-Averiq maintains boundaries between tenants, verification operations, management operations, sensitive evidence, credentials, infrastructure, and external providers.
+PaxLI maintains boundaries between tenants, verification operations, management operations, sensitive evidence, credentials, infrastructure, and external providers.
 
 ```text
-                    AVERIQ
+                    PAXLI
                        |
         +--------------+--------------+
         |                             |
@@ -57,7 +57,7 @@ Averiq maintains boundaries between tenants, verification operations, management
 
 ### Requirements
 
-- **SEC-7.2.1** Averiq MUST maintain explicit boundaries between tenants, operational verification, management, evidence, credentials, infrastructure, and providers.
+- **SEC-7.2.1** PaxLI MUST maintain explicit boundaries between tenants, operational verification, management, evidence, credentials, infrastructure, and providers.
 - **SEC-7.2.2** Boundary crossing MUST require explicit authorization or documented trusted system operation.
 - **SEC-7.2.3** Internal network placement MUST NOT substitute for application authorization.
 - **SEC-7.2.4** Security boundaries MUST be represented in architecture and conformance tests.
@@ -91,7 +91,7 @@ Authorization determines whether an authenticated principal may perform a specif
 
 ## 7.5 Tenant Isolation
 
-Averiq is tenant-scoped by default. Platform-level operations require explicit authorization.
+PaxLI is tenant-scoped by default. Platform-level operations require explicit authorization.
 
 ### Requirements
 
@@ -579,12 +579,12 @@ tests/contracts/security/
 
 ## 7.38 Constitutional Principle
 
-Security protects the integrity of Averiq, its tenants, evidence, decisions, and the people whose identities are processed. Only an authorized principal may cause an authorized state change within an authorized tenant boundary.
+Security protects the integrity of PaxLI, its tenants, evidence, decisions, and the people whose identities are processed. Only an authorized principal may cause an authorized state change within an authorized tenant boundary.
 
 A security failure is not evidence of identity failure. Unavailable credential services, key management, authorization context, audit controls, or dependencies MUST NOT become fabricated identity mismatches. Successful authentication, authorization, biometric matching, or document extraction does not itself establish identity verification. The Decision Engine remains the sole final-verdict authority.
 
 ### Final Constitutional Rule
 
-> **Averiq MUST enforce least privilege, explicit authorization, tenant isolation, cryptographic protection, controlled credential lifecycles, auditable privileged operations, and safe security failure while preserving the exclusive authority of the Decision Engine over final verification outcomes.**
+> **PaxLI MUST enforce least privilege, explicit authorization, tenant isolation, cryptographic protection, controlled credential lifecycles, auditable privileged operations, and safe security failure while preserving the exclusive authority of the Decision Engine over final verification outcomes.**
 
 ## End of Part VII

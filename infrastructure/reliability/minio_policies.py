@@ -6,7 +6,7 @@ already-deleted key as a no-op (it swallows `S3Error`), so a retried delete
 cannot fail differently than the first attempt.
 
 PUT is retryable specifically because of three properties that hold
-together in Averiq's design, not because "S3 PUT is generally idempotent":
+together in PaxLI's design, not because "S3 PUT is generally idempotent":
   1. the object key is content-addressed (SHA-256 of the plaintext,
      computed before encryption), so retrying with the same input produces
      the same key;

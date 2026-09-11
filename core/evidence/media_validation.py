@@ -2,7 +2,7 @@
 
 Establishes the media type from the actual file bytes, independent of the
 client-supplied Content-Type header, which MUST NOT be trusted alone. Scoped
-to the image formats Averiq actually accepts today (selfie/document/liveness
+to the image formats PaxLI actually accepts today (selfie/document/liveness
 capture); this is signature verification, not content/malware scanning.
 """
 

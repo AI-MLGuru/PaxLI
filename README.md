@@ -1,10 +1,10 @@
-# Averiq by PaxAlpha
+# PaxLI by PaxAlpha
 
 **Identity Verification & Biometric Trust Infrastructure**
 
 > **Verify with confidence.**
 
-Averiq is a high-assurance identity verification platform designed for secure digital onboarding across banking, fintech, and other identity-sensitive applications.
+PaxLI is a high-assurance identity verification platform designed for secure digital onboarding across banking, fintech, and other identity-sensitive applications.
 
 The platform combines:
 
@@ -21,7 +21,7 @@ The platform combines:
 
 **Models produce evidence; the decision engine makes decisions.**
 
-Averiq is intentionally being built as a new system. The former IDQORE Verification Engine is treated only as a reference implementation and learning baseline; its architecture and code are not being patched into Averiq.
+PaxLI is intentionally being built as a new system. The former IDQORE Verification Engine is treated only as a reference implementation and learning baseline; its architecture and code are not being patched into PaxLI.
 
 ## Initial architecture
 
@@ -102,7 +102,7 @@ guarantee:
 and `DATABASE_URL` must request SSL (`sslmode=require`/`sslmode=verify-*`/
 `ssl=true`) unless `INTERNAL_TRANSPORT_TRUSTED=true` is also set.
 
-External client -> Averiq TLS is the reverse proxy's job (Webuzo or
+External client -> PaxLI TLS is the reverse proxy's job (Webuzo or
 equivalent) and isn't checked here, since this process doesn't terminate it.
 
 ## Verification states

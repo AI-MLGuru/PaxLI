@@ -15,7 +15,7 @@ from core.security.models import (
     IssuedCredential,
 )
 
-_TIMING_GUARD_SECRET = "averiq-constant-time-guard-placeholder"
+_TIMING_GUARD_SECRET = "paxli-constant-time-guard-placeholder"
 _ISSUE_IDEMPOTENCY_OPERATION = "credential_issue"
 _ROTATE_IDEMPOTENCY_OPERATION = "credential_rotate"
 

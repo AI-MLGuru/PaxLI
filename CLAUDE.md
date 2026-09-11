@@ -1,12 +1,12 @@
 # CLAUDE.md
 
-## Averiq by PaxAlpha
+## PaxLI by PaxAlpha
 
-**Product:** Averiq by PaxAlpha  
+**Product:** PaxLI by PaxAlpha  
 **Positioning:** Identity Verification & Biometric Trust Infrastructure  
 **Tagline:** Verify with confidence.
 
-Averiq is a production-oriented, auditable, explainable, tenant-isolated identity verification platform. It must fail safely under uncertainty and infrastructure failure.
+PaxLI is a production-oriented, auditable, explainable, tenant-isolated identity verification platform. It must fail safely under uncertainty and infrastructure failure.
 
 ## Source Of Truth
 
@@ -272,4 +272,4 @@ The goal is not merely that the application runs. The goal is that it behaves co
 - Exceptions must be explicit, numbered, approved, scoped, risk-assessed, time-bounded or reviewable, recorded in Appendix A, and governed. An approved exception may permit a governed release but does not make the affected requirement conformant.
 - Reliability means correctness under failure, not merely uptime.
 
-When uncertain, ask whether the change makes Averiq more reliable, secure, explainable, auditable, privacy-preserving, and correct under failure.
+When uncertain, ask whether the change makes PaxLI more reliable, secure, explainable, auditable, privacy-preserving, and correct under failure.

@@ -11,7 +11,7 @@ class DeletionBasis(StrEnum):
     Deliberately does NOT include a legal-hold-specific value: a legal hold
     is a more specialized records-management concept this codebase hasn't
     designed a subsystem for yet (Foundation review). Deliberately does NOT
-    name a specific jurisdiction's statutory mechanism -- Averiq is
+    name a specific jurisdiction's statutory mechanism -- PaxLI is
     Nigeria-first but not hard-coded to one jurisdiction (Part III §3.28),
     so LEGAL_REQUIREMENT stays general rather than encoding e.g. NDPA-
     specific terminology into the domain enum.

@@ -129,7 +129,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(
-    title="Averiq API",
+    title="PaxLI API",
     description="Identity verification and biometric trust infrastructure by PaxAlpha.",
     version=settings.app_version,
     lifespan=lifespan,

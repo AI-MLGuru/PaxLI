@@ -125,7 +125,7 @@ context assembly → pure evaluation → persistence → required audit) runs
 end to end against real infrastructure and has survived a dedicated
 attempt to falsify it against the frozen DE-003 semantics. This
 establishes **implementation conformance within the scope actually
-tested** — not "production ready," not "all of Averiq complete," and
+tested** — not "production ready," not "all of PaxLI complete," and
 explicitly not covering session-lifecycle synchronization or a real
 evaluation timeout mechanism, both disclosed above as open rather than
 silently assumed closed.

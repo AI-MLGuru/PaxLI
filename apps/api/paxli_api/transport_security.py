@@ -1,6 +1,6 @@
 """Production transport-security guard (SEC-7.14.1 / PRV-11.22.1).
 
-Averiq does not terminate the external client -> Averiq TLS hop itself --
+PaxLI does not terminate the external client -> PaxLI TLS hop itself --
 that belongs to whatever reverse proxy sits in front of it (Webuzo or
 equivalent), and isn't something this process can enforce. What this process
 does own are its two outbound hops: object storage and the database. In

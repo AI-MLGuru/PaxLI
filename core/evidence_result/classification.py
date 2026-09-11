@@ -1,7 +1,7 @@
 """Server-side evidence_type -> DataClassification mapping.
 
 This is the mechanism that satisfies "classification must be determined by
-Averiq's server-side policy, never by a caller-provided value": the public
+PaxLI's server-side policy, never by a caller-provided value": the public
 EvidenceResultService.create() signature has no classification parameter
 at all -- classify() is the only source of truth, keyed by evidence_type.
 

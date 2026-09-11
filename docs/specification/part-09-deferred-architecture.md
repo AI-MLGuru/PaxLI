@@ -1,4 +1,4 @@
-# Averiq by PaxAlpha
+# PaxLI by PaxAlpha
 
 # Decision & Verification Semantics Specification
 
@@ -7,11 +7,11 @@
 **Semantic Contract:** v1.0  
 **Document Status:** Normative  
 **Requirement Prefix:** `DEF-*`  
-**Product:** Averiq by PaxAlpha
+**Product:** PaxLI by PaxAlpha
 
 ## 9.0 Purpose and Scope
 
-This part defines how Averiq governs architectural capabilities intentionally deferred from the current release. Deferred architecture preserves a deliberate boundary between current requirements, anticipated capabilities, capabilities requiring validation, future versions, and capabilities prohibited until governance and technical requirements are satisfied.
+This part defines how PaxLI governs architectural capabilities intentionally deferred from the current release. Deferred architecture preserves a deliberate boundary between current requirements, anticipated capabilities, capabilities requiring validation, future versions, and capabilities prohibited until governance and technical requirements are satisfied.
 
 Deferral is an explicit architectural decision. It is not incomplete implementation, technical debt, an undocumented limitation, an experiment, a failed requirement, or permission to weaken current requirements.
 
@@ -33,7 +33,7 @@ A deferred capability is intentionally not activated or required for the current
 
 ## 9.2 Deferred Capability States
 
-Averiq recognizes:
+PaxLI recognizes:
 
 ```text
 PLANNED -> DEFERRED -> EXPERIMENTAL -> CANDIDATE -> ACTIVATED
@@ -55,7 +55,7 @@ PLANNED -> DEFERRED -> EXPERIMENTAL -> CANDIDATE -> ACTIVATED
 
 ## 9.3 Deferred Architecture Register
 
-Averiq SHOULD maintain a Deferred Architecture Register containing capability ID, name, state, reason, affected components, dependencies, security/privacy/reliability considerations, conformance impact, activation preconditions, risks, target release, owner, and review status.
+PaxLI SHOULD maintain a Deferred Architecture Register containing capability ID, name, state, reason, affected components, dependencies, security/privacy/reliability considerations, conformance impact, activation preconditions, risks, target release, owner, and review status.
 
 ### Requirements
 
@@ -66,7 +66,7 @@ Averiq SHOULD maintain a Deferred Architecture Register containing capability ID
 
 ## 9.4 Relationship to v1.0 Scope
 
-The active contract defines what Averiq MUST guarantee. Deferred architecture defines what it intentionally does not guarantee. A deferred capability MUST NOT become a hidden mandatory dependency for v1.0.
+The active contract defines what PaxLI MUST guarantee. Deferred architecture defines what it intentionally does not guarantee. A deferred capability MUST NOT become a hidden mandatory dependency for v1.0.
 
 ### Requirements
 
@@ -200,13 +200,13 @@ External integrations such as NIMC, BVN-related services, institutional registri
 ### Requirements
 
 - **DEF-9.16.1** Provider integrations MUST use governed adapters.
-- **DEF-9.16.2** Provider behavior MUST NOT redefine Averiq semantics.
+- **DEF-9.16.2** Provider behavior MUST NOT redefine PaxLI semantics.
 - **DEF-9.16.3** Activation MUST include security, reliability, response-validation, and failure-semantic verification.
 - **DEF-9.16.4** Provider availability MUST NOT be treated as verification success.
 
 ## 9.17 Deferred Multi-Region Architecture
 
-Averiq MAY initially operate in one region. Multi-region deployment may be deferred until justified by availability, residency, recovery, latency, workload, or business-continuity requirements. Deferral MUST NOT remove backup or recovery requirements.
+PaxLI MAY initially operate in one region. Multi-region deployment may be deferred until justified by availability, residency, recovery, latency, workload, or business-continuity requirements. Deferral MUST NOT remove backup or recovery requirements.
 
 ### Requirements
 
@@ -236,7 +236,7 @@ Experimental components MUST be clearly identified and MUST NOT silently replace
 
 ## 9.20 Future Capability Interfaces
 
-Averiq MAY define capability interfaces before implementations, including evidence storage, inference runtime, external provider, notification, cache, and key-provider interfaces. Interfaces MUST preserve semantic authority boundaries and avoid unnecessary infrastructure coupling.
+PaxLI MAY define capability interfaces before implementations, including evidence storage, inference runtime, external provider, notification, cache, and key-provider interfaces. Interfaces MUST preserve semantic authority boundaries and avoid unnecessary infrastructure coupling.
 
 ### Requirements
 
@@ -448,7 +448,7 @@ Part IX depends on and complements Parts II-VIII. Deferred architecture MUST pre
 
 ## 9.37 Constitutional Principle
 
-A future capability is not part of Averiq merely because its architecture, interface, or code exists. It becomes part of Averiq only when explicitly activated through applicable semantic, security, privacy, reliability, conformance, operational, and governance requirements.
+A future capability is not part of PaxLI merely because its architecture, interface, or code exists. It becomes part of PaxLI only when explicitly activated through applicable semantic, security, privacy, reliability, conformance, operational, and governance requirements.
 
 ```text
 Designed != Implemented != Validated != Conformant
@@ -456,6 +456,6 @@ Conformant != Activated
 Activated = Governed production capability
 ```
 
-Averiq MUST never allow future capability ambition to weaken present reliability, security, privacy, evidence integrity, tenant isolation, or Decision Engine authority.
+PaxLI MUST never allow future capability ambition to weaken present reliability, security, privacy, evidence integrity, tenant isolation, or Decision Engine authority.
 
 ## End of Part IX

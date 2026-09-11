@@ -6,7 +6,7 @@ class EncryptedObjectStorage:
     """Encrypts evidence bytes before they reach an inner `ObjectStorage`.
 
     The inner storage adapter (e.g. MinIO) never sees plaintext and has no
-    awareness of Averiq's cryptographic policy; encryption is applied at this
+    awareness of PaxLI's cryptographic policy; encryption is applied at this
     boundary, keyed by an opaque `key_id` resolved through `KeyProvider`.
     """
 

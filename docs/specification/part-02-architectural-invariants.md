@@ -1,4 +1,4 @@
-# Averiq by PaxAlpha
+# PaxLI by PaxAlpha
 
 # Decision & Verification Semantics Specification
 
@@ -6,13 +6,13 @@
 
 **Document Status:** Normative  
 **Specification Version:** Semantic Contract v1.0  
-**Product:** Averiq by PaxAlpha  
+**Product:** PaxLI by PaxAlpha  
 **Positioning:** Identity Verification & Biometric Trust Infrastructure  
 **Tagline:** Verify with confidence.
 
 ## 2.0 Purpose
 
-This part defines the architectural invariants that govern the behavior, implementation, testing, and release of Averiq v1.0.
+This part defines the architectural invariants that govern the behavior, implementation, testing, and release of PaxLI v1.0.
 
 These invariants are normative constraints. An implementation is conformant with Semantic Contract v1.0 only when it satisfies all applicable requirements defined by these invariants and their associated contract tests. Where an implementation conflicts with an invariant, the invariant takes precedence. The implementation MUST NOT silently redefine the semantics specification. Changes to an invariant, its meaning, or its normative requirements MUST follow the specification governance process defined in Part I.
 
@@ -574,7 +574,7 @@ Best-effort events are a defined audit class, not an exception to audit governan
 
 > **Every verification-relevant, governance-relevant, and authorization-relevant action MUST leave a durable, integrity-protected audit trail before its governed effects become externally observable.**
 
-The audit trail is part of Averiq's trust boundary. Governed actions MUST be reconstructable, attributable, integrity-protected, and auditable without compromising privacy, tenant isolation, reliability, or Decision Engine authority.
+The audit trail is part of PaxLI's trust boundary. Governed actions MUST be reconstructable, attributable, integrity-protected, and auditable without compromising privacy, tenant isolation, reliability, or Decision Engine authority.
 
 **Exception status:** Only formally approved exceptions recorded in the Approved Exception Registry (Appendix A) may relax a normative requirement. Best-effort classification MUST NOT be reported as a waiver or as full durable conformance.
 
@@ -780,4 +780,4 @@ No exception may permit release against a failure of Decision Engine verdict aut
 
 ## End of Part II
 
-Part II establishes the normative architectural constitution of Averiq v1.0. Subsequent semantic definitions, API contracts, implementations, and contract tests MUST conform to these twelve invariants.
+Part II establishes the normative architectural constitution of PaxLI v1.0. Subsequent semantic definitions, API contracts, implementations, and contract tests MUST conform to these twelve invariants.

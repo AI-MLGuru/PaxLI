@@ -1,14 +1,14 @@
-# Averiq Decision & Verification Semantics Specification
+# PaxLI Decision & Verification Semantics Specification
 
 **Specification version:** Semantic Contract v1.0  
-**Product:** Averiq by PaxAlpha  
+**Product:** PaxLI by PaxAlpha  
 **Status:** Normative entry point
 
 ## Purpose
 
-This document is the canonical entry point for Averiq's Decision & Verification Semantics Specification. The repository is the source of truth for the current approved semantic contract.
+This document is the canonical entry point for PaxLI's Decision & Verification Semantics Specification. The repository is the source of truth for the current approved semantic contract.
 
-The specification defines the behavioral guarantees, security boundaries, evidence semantics, decision rules, API contract, governance requirements, conformance gates, and deferred architecture for Averiq v1.0.
+The specification defines the behavioral guarantees, security boundaries, evidence semantics, decision rules, API contract, governance requirements, conformance gates, and deferred architecture for PaxLI v1.0.
 
 ## Parts
 

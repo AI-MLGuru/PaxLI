@@ -1,16 +1,16 @@
-# Averiq Decision & Verification Semantics Specification
+# PaxLI Decision & Verification Semantics Specification
 
 ## Part V - Decision Engine
 
 **Semantic Contract:** v1.0  
 **Document Status:** Normative  
-**Product:** Averiq by PaxAlpha  
+**Product:** PaxLI by PaxAlpha  
 **Positioning:** Identity Verification & Biometric Trust Infrastructure  
 **Tagline:** Verify with confidence.
 
 ## 5.0 Purpose and Scope
 
-This part defines the normative semantics governing the Averiq Decision Engine.
+This part defines the normative semantics governing the PaxLI Decision Engine.
 
 The Decision Engine is the authoritative component responsible for transforming an authorized verification evidence set, under a specific immutable verification policy, into a final verification decision. Components produce evidence. Policies define how authorized evidence is interpreted. The Decision Engine alone produces the final verification decision.
 
@@ -357,7 +357,7 @@ Conflicting evidence, such as `FaceMatch = PASS` with `IdentityProvider = MISMAT
 
 **Status: PREREQUISITE: v1.0**
 
-Averiq prioritizes safety over optimistic verification:
+PaxLI prioritizes safety over optimistic verification:
 
 ```text
 Invalid Decision Context -> Safe Failure
@@ -618,4 +618,4 @@ The final outcome MUST be produced only after applicable policy validation and e
 
 Models produce evidence, not verdicts. Scores retain their actual semantics. Policies are explicit and versioned. Decisions are deterministic. Conflicts are governed. Failures are safe. Historical decisions are reconstructible. No implementation convenience may override Decision Engine authority.
 
-Averiq MUST never claim verification merely because the system was unable to establish that verification was false. Averiq calls a verification successful only when the Decision Engine produces a valid `VERIFIED` decision under an authorized policy and that decision is durably recorded.
+PaxLI MUST never claim verification merely because the system was unable to establish that verification was false. PaxLI calls a verification successful only when the Decision Engine produces a valid `VERIFIED` decision under an authorized policy and that decision is durably recorded.

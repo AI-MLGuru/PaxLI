@@ -1,4 +1,4 @@
-# Averiq by PaxAlpha
+# PaxLI by PaxAlpha
 
 # Decision & Verification Semantics Specification
 
@@ -7,28 +7,28 @@
 **Semantic Contract:** v1.0  
 **Document Status:** Normative  
 **Requirement Prefix:** `PRV-*`  
-**Product:** Averiq by PaxAlpha
+**Product:** PaxLI by PaxAlpha
 
 ## 11.0 Purpose and Scope
 
-This part defines the normative data-protection and privacy semantics governing how Averiq collects, classifies, processes, accesses, protects, retains, discloses, derives, migrates, restores, and disposes of data.
+This part defines the normative data-protection and privacy semantics governing how PaxLI collects, classifies, processes, accesses, protects, retains, discloses, derives, migrates, restores, and disposes of data.
 
 It applies to identity and biometric information, documents and media, evidence, verification and audit metadata, security records, telemetry, tenant configuration, derived/model information, backups, external-provider data, and research/evaluation data. It MUST be interpreted with Parts II-X. Privacy is a system property, not documentation alone.
 
 ### Requirements
 
-- **PRV-11.0.1** Averiq MUST define and enforce data-protection semantics for all processed data classes.
+- **PRV-11.0.1** PaxLI MUST define and enforce data-protection semantics for all processed data classes.
 - **PRV-11.0.2** Privacy controls MUST apply throughout the complete lifecycle.
 - **PRV-11.0.3** Privacy controls MUST NOT weaken tenant isolation, security, auditability, or Decision Engine authority.
 - **PRV-11.0.4** Data-protection requirements MUST be testable at implementation and operational boundaries.
 
 ## 11.1 Privacy Principles
 
-Averiq applies purpose limitation, minimization, least privilege, tenant isolation, controlled retention, secure processing, lifecycle accountability, traceability, privacy-safe observability, controlled secondary use, privacy by design, and privacy by default.
+PaxLI applies purpose limitation, minimization, least privilege, tenant isolation, controlled retention, secure processing, lifecycle accountability, traceability, privacy-safe observability, controlled secondary use, privacy by design, and privacy by default.
 
 ### Requirements
 
-- **PRV-11.1.1** Averiq MUST process only data necessary for an authorized purpose.
+- **PRV-11.1.1** PaxLI MUST process only data necessary for an authorized purpose.
 - **PRV-11.1.2** Access MUST be limited to authorized actors and purposes.
 - **PRV-11.1.3** Privacy-sensitive defaults MUST be restrictive.
 - **PRV-11.1.4** Secondary use MUST NOT be inferred from technical availability.
@@ -70,7 +70,7 @@ Classification attaches to handling rules, not merely database tables.
 
 ## 11.4 Data Categories
 
-Averiq distinguishes identity, biometric, document/media, evidence, verification metadata, operational metadata, audit, security, credential, tenant configuration, derived/model, and backup data.
+PaxLI distinguishes identity, biometric, document/media, evidence, verification metadata, operational metadata, audit, security, credential, tenant configuration, derived/model, and backup data.
 
 ### Requirements
 
@@ -178,7 +178,7 @@ Every material processing operation MUST have an identifiable purpose, such as v
 
 ## 11.13 Data Minimization
 
-Averiq minimizes collection, storage, duplication, exposure, retention, transmission, and logging.
+PaxLI minimizes collection, storage, duplication, exposure, retention, transmission, and logging.
 
 ### Requirements
 
@@ -206,9 +206,9 @@ Consent is distinct from authentication, authorization, and technical-term accep
 ### Requirements
 
 - **PRV-11.15.1** Consent records MUST be distinguishable from API authorization.
-- **PRV-11.15.2** Consent state MUST be auditable where Averiq records it.
+- **PRV-11.15.2** Consent state MUST be auditable where PaxLI records it.
 - **PRV-11.15.3** Withdrawal MUST have defined semantics where applicable.
-- **PRV-11.15.4** Averiq MUST NOT fabricate consent records.
+- **PRV-11.15.4** PaxLI MUST NOT fabricate consent records.
 - **PRV-11.15.5** Consent MUST NOT be inferred from silence unless governed as permitted.
 
 ## 11.16 Collection Boundaries
@@ -392,7 +392,7 @@ Tombstones MAY preserve accountability without preserving deleted sensitive cont
 
 ## 11.31 Data Subject Rights
 
-Where applicable, Averiq MUST support technical capabilities for authorized access, correction, export, objection, restriction, deletion, and other applicable rights.
+Where applicable, PaxLI MUST support technical capabilities for authorized access, correction, export, objection, restriction, deletion, and other applicable rights.
 
 ### Requirements
 
@@ -469,7 +469,7 @@ External providers are controlled data processors or service dependencies under 
 
 - **PRV-11.37.1** Provider data flows MUST be documented.
 - **PRV-11.37.2** Provider responses MUST NOT automatically become unrestricted records.
-- **PRV-11.37.3** Provider-returned sensitive data MUST receive Averiq classification.
+- **PRV-11.37.3** Provider-returned sensitive data MUST receive PaxLI classification.
 - **PRV-11.37.4** Provider access MUST use controlled credentials.
 - **PRV-11.37.5** Provider failure MUST NOT cause unnecessary disclosure or duplication.
 - **PRV-11.37.6** Provider retention MUST be understood where applicable.
@@ -667,7 +667,7 @@ Tenant settings MAY exist but remain bounded by platform controls.
 
 ## 11.53 Data Residency
 
-Averiq supports explicit data-residency identification.
+PaxLI supports explicit data-residency identification.
 
 ### Requirements
 
@@ -897,10 +897,10 @@ System Failure != Verification Rejection
 
 ## 11.69 Constitutional Principle
 
-Averiq treats personal, identity, biometric, document, and verification data as controlled assets rather than unrestricted application state. It MUST know what data it possesses, why it possesses it, how sensitive it is, who may access it, which tenant owns the context, how it was produced, how long it may be retained, where it is stored, when it must be deleted, what derived information exists, what external parties received it, and what governance permits its use.
+PaxLI treats personal, identity, biometric, document, and verification data as controlled assets rather than unrestricted application state. It MUST know what data it possesses, why it possesses it, how sensitive it is, who may access it, which tenant owns the context, how it was produced, how long it may be retained, where it is stored, when it must be deleted, what derived information exists, what external parties received it, and what governance permits its use.
 
 Privacy MUST NOT sacrifice reliability, auditability, or verification correctness. Security MUST NOT justify indefinite retention. Auditability MUST NOT justify raw sensitive evidence. Analytics and machine-learning improvement MUST NOT become automatic secondary-use licenses. Deletion MUST NOT be falsely reported while governed copies remain. Privacy controls MUST NOT become alternate decision authority.
 
-> **Averiq MUST collect only what it is authorized to process, use it only for governed purposes, protect it according to sensitivity, preserve only what is justified, expose only what is authorized, and dispose of it when its governed lifecycle ends—while preserving evidence integrity, auditability, reliability, and exclusive Decision Engine authority.**
+> **PaxLI MUST collect only what it is authorized to process, use it only for governed purposes, protect it according to sensitivity, preserve only what is justified, expose only what is authorized, and dispose of it when its governed lifecycle ends—while preserving evidence integrity, auditability, reliability, and exclusive Decision Engine authority.**
 
 ## End of Part XI
