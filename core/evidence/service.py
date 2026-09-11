@@ -12,6 +12,7 @@ from core.evidence.enums import EvidenceSource, EvidenceType
 from core.evidence.media_validation import verify_evidence_media
 from core.evidence.models import Evidence, EvidenceTombstone
 from core.evidence.repository import EvidenceRepository
+from core.verification.enums import TERMINAL_STATUSES
 from core.verification.service import SessionExpiredError, VerificationSessionService
 
 if TYPE_CHECKING:
@@ -88,7 +89,16 @@ class EvidenceService:
         idempotency_key: str | None = None,
     ) -> Evidence:
         session = await self.session_service.get(session_id=session_id, tenant_id=tenant_id)
-        if session.status.value in {"EXPIRED", "CANCELLED"}:
+        # WF-4.19.2 / DE-003 §13 (DE-004 Phase 4 mandatory acceptance gate):
+        # rejected before ANY mutation -- no media verification, no object
+        # storage write, no EvidenceRecord insert -- for every one of the
+        # six terminal states, not just the two previously checked
+        # (EXPIRED, CANCELLED). The gap mattered only latently before a
+        # Decision Engine existed to ever put a session into VERIFIED/
+        # REJECTED/REVIEW_REQUIRED/INCONCLUSIVE; DE-004 Phase 3 made that
+        # real, so this guard being incomplete became a live vulnerability
+        # rather than a theoretical one (DE-002 landmine 2).
+        if session.status in TERMINAL_STATUSES:
             raise SessionExpiredError
         if idempotency_key:
             existing = await self.repository.get_by_idempotency_key(
@@ -127,9 +137,7 @@ class EvidenceService:
     async def get(self, *, evidence_id: UUID, tenant_id: str) -> Evidence | None:
         return await self.repository.get(evidence_id, tenant_id)
 
-    async def get_tombstone(
-        self, *, evidence_id: UUID, tenant_id: str
-    ) -> EvidenceTombstone | None:
+    async def get_tombstone(self, *, evidence_id: UUID, tenant_id: str) -> EvidenceTombstone | None:
         return await self.repository.get_tombstone(evidence_id, tenant_id)
 
     async def request_deletion(
@@ -171,9 +179,7 @@ class EvidenceService:
 
         evidence = await self.repository.get(evidence_id, tenant_id)
         if evidence is None:
-            raise EvidenceNotFoundError(
-                f"no evidence_id={evidence_id!s} for this tenant to delete"
-            )
+            raise EvidenceNotFoundError(f"no evidence_id={evidence_id!s} for this tenant to delete")
         if await self.repository.has_dependent_evidence_results(evidence_id, tenant_id):
             raise DeletionBlockedByDependentsError(
                 f"evidence_id={evidence_id!s} has a dependent EvidenceResult "
@@ -224,9 +230,7 @@ class EvidenceService:
         since reconciliation must be able to commit on its own regardless
         of whatever the request phase's session is doing."""
         if self.deletion_reconciler is None:
-            raise RuntimeError(
-                "EvidenceService was constructed without a deletion_reconciler"
-            )
+            raise RuntimeError("EvidenceService was constructed without a deletion_reconciler")
         return await self.deletion_reconciler.reconcile(
             evidence_id=evidence_id,
             tenant_id=tenant_id,

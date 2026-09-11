@@ -38,6 +38,15 @@ VALID_STATUS_TRANSITIONS: dict[VerificationStatus, frozenset[VerificationStatus]
     VerificationStatus.CANCELLED: frozenset(),
 }
 
+# DE-003 §13 / DE-004 Phase 4: a status is terminal iff nothing may
+# transition out of it -- derived from VALID_STATUS_TRANSITIONS rather than
+# listed again by hand, so the two can never silently drift apart. This is
+# the exact six-state set WF-4.19.2 requires evidence-submission rejection
+# for: VERIFIED, REJECTED, REVIEW_REQUIRED, INCONCLUSIVE, EXPIRED, CANCELLED.
+TERMINAL_STATUSES: frozenset[VerificationStatus] = frozenset(
+    status for status, transitions in VALID_STATUS_TRANSITIONS.items() if not transitions
+)
+
 
 class AssuranceLevel(StrEnum):
     STANDARD = "STANDARD"
