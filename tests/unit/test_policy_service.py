@@ -1,14 +1,20 @@
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 
 import pytest
 
+from core.audit.enums import AuditActorType, AuditEventType
 from core.audit.models import AuditEvent
 from core.audit.service import AuditService
 from core.evidence_result.schema_catalog import EvidenceResultSchemaCatalog
 from core.policy.condition import EvidenceCondition
 from core.policy.enums import PolicyStatus
-from core.policy.exceptions import InvalidPolicyError, PolicyVersionNotFoundError
+from core.policy.exceptions import (
+    InvalidPolicyError,
+    PolicyActivationConflictError,
+    PolicyVersionNotFoundError,
+)
 from core.policy.models import VerificationPolicy
 from core.policy.service import PolicyService
 from core.verification.enums import AssuranceLevel
@@ -23,10 +29,14 @@ class FakePolicyRepository:
         self.idempotency_keys: dict[tuple[str, str], UUID] = {}
         self.add_calls = 0
         self.mark_superseded_calls = 0
+        self.raise_conflict_on_next_add = False
 
     async def add(
         self, policy: VerificationPolicy, idempotency_key: str | None = None
     ) -> VerificationPolicy:
+        if self.raise_conflict_on_next_add:
+            self.raise_conflict_on_next_add = False
+            raise PolicyActivationConflictError("simulated concurrent activation conflict")
         self.add_calls += 1
         self.records[policy.id] = policy
         if idempotency_key is not None:
@@ -105,6 +115,44 @@ class FakeAuditRepository:
 
     async def list_for_session(self, session_id, tenant_id):
         return []
+
+
+class FakeIndependentAuditRecorder:
+    """Records calls without touching any session -- proves PolicyService
+    calls this on a conflict, with what arguments, independent of whether a
+    real independent transaction is actually involved (that guarantee is
+    proved separately against real Postgres)."""
+
+    def __init__(self, *, raise_on_record: bool = False) -> None:
+        self.calls: list[dict[str, Any]] = []
+        self.raise_on_record = raise_on_record
+
+    async def record_independently(
+        self,
+        *,
+        tenant_id: str,
+        event_type: AuditEventType,
+        component: str,
+        action: str,
+        actor_type: AuditActorType,
+        actor_id: str | None,
+        request_id: str | None,
+        correlation_id: str | None,
+        metadata: dict[str, Any],
+    ) -> None:
+        if self.raise_on_record:
+            raise RuntimeError("simulated independent audit persistence failure")
+        self.calls.append(
+            {
+                "tenant_id": tenant_id,
+                "event_type": event_type,
+                "component": component,
+                "action": action,
+                "actor_type": actor_type,
+                "actor_id": actor_id,
+                "metadata": metadata,
+            }
+        )
 
 
 @pytest.fixture
@@ -311,4 +359,79 @@ async def test_rollback_to_a_nonexistent_version_raises(service) -> None:
     with pytest.raises(PolicyVersionNotFoundError):
         await svc.rollback(
             tenant_id="tenant-a", policy_id="kyc-standard", target_version=1, created_by="admin-1"
+        )
+
+
+@pytest.mark.asyncio
+async def test_activation_conflict_propagates_unmasked_when_no_recorder_configured() -> None:
+    """Backward-compatible default: PolicyActivationConflictError still
+    propagates untouched when no failure_audit_recorder is supplied (the
+    existing 22 tests in this file construct PolicyService this way)."""
+    repo = FakePolicyRepository()
+    audit_repo = FakeAuditRepository()
+    svc = PolicyService(repo, AuditService(audit_repo), EvidenceResultSchemaCatalog())
+    repo.raise_conflict_on_next_add = True
+
+    with pytest.raises(PolicyActivationConflictError):
+        await svc.create_and_activate(
+            tenant_id="tenant-a",
+            policy_id="kyc-standard",
+            assurance_level=AssuranceLevel.STANDARD,
+            created_by="admin-1",
+        )
+
+
+@pytest.mark.asyncio
+async def test_activation_conflict_records_independent_failure_audit() -> None:
+    """Invariant-12 remediation 2, Option 2: a genuine activation conflict
+    triggers the independent failure-audit recorder with the right
+    context, and the original conflict still propagates."""
+    repo = FakePolicyRepository()
+    audit_repo = FakeAuditRepository()
+    recorder = FakeIndependentAuditRecorder()
+    svc = PolicyService(
+        repo, AuditService(audit_repo), EvidenceResultSchemaCatalog(), recorder
+    )
+    repo.raise_conflict_on_next_add = True
+
+    with pytest.raises(PolicyActivationConflictError):
+        await svc.create_and_activate(
+            tenant_id="tenant-a",
+            policy_id="kyc-standard",
+            assurance_level=AssuranceLevel.STANDARD,
+            created_by="admin-1",
+        )
+
+    assert len(recorder.calls) == 1
+    call = recorder.calls[0]
+    assert call["tenant_id"] == "tenant-a"
+    assert call["event_type"].value == "POLICY_ACTIVATION_FAILED"
+    assert call["actor_id"] == "admin-1"
+    assert call["metadata"]["policy_id"] == "kyc-standard"
+    # the conflict prevented persistence -- nothing was ever added
+    assert repo.add_calls == 0
+    # and the normal SUCCESS audit path was never reached either
+    assert audit_repo.events == []
+
+
+@pytest.mark.asyncio
+async def test_failure_audit_write_failure_never_masks_the_original_conflict() -> None:
+    """Explicit decision (Invariant-12 remediation 2 review): if the
+    independent failure-audit write itself fails, the original
+    PolicyActivationConflictError must still propagate -- never replaced
+    by a fabricated success or a different error type."""
+    repo = FakePolicyRepository()
+    audit_repo = FakeAuditRepository()
+    recorder = FakeIndependentAuditRecorder(raise_on_record=True)
+    svc = PolicyService(
+        repo, AuditService(audit_repo), EvidenceResultSchemaCatalog(), recorder
+    )
+    repo.raise_conflict_on_next_add = True
+
+    with pytest.raises(PolicyActivationConflictError):
+        await svc.create_and_activate(
+            tenant_id="tenant-a",
+            policy_id="kyc-standard",
+            assurance_level=AssuranceLevel.STANDARD,
+            created_by="admin-1",
         )

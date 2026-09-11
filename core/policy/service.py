@@ -1,6 +1,7 @@
+import logging
 from collections.abc import Sequence
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 from uuid import UUID, uuid4
 
 from core.audit.enums import AuditActorType, AuditDurability, AuditEventType, AuditStatus
@@ -8,16 +9,45 @@ from core.audit.service import AuditService
 from core.policy.canonicalization import compute_canonical_hash
 from core.policy.condition import Condition
 from core.policy.enums import PolicyStatus
-from core.policy.exceptions import PolicyVersionNotFoundError
+from core.policy.exceptions import PolicyActivationConflictError, PolicyVersionNotFoundError
 from core.policy.models import VerificationPolicy
 from core.policy.repository import VerificationPolicyRepository
 from core.policy.schema_catalog import EvidenceSchemaCatalog
 from core.policy.validation import validate_policy_content
 from core.verification.enums import AssuranceLevel
 
+logger = logging.getLogger(__name__)
+
 ActivationType = Literal["INITIAL", "ROLLBACK"]
 
 _SYSTEM_COMPONENT = "policy"
+
+
+class IndependentAuditRecorder(Protocol):
+    """Records one audit event in a transaction independent of the
+    caller's own unit of work -- used only for failure-path audit, where
+    the caller's own transaction is already aborted (a repository
+    IntegrityError leaves a Postgres transaction unable to accept further
+    statements) and cannot safely be reused (Invariant-12 remediation 2,
+    Option 2). Kept as a narrow Protocol, not a concrete SQLAlchemy type,
+    so core/ stays infrastructure-agnostic; the real implementation
+    (infrastructure/audit/independent.py) owns its own session lifecycle,
+    the same dependency-inversion shape as KeyProvider/RateLimiterProtocol
+    elsewhere in this codebase."""
+
+    async def record_independently(
+        self,
+        *,
+        tenant_id: str,
+        event_type: AuditEventType,
+        component: str,
+        action: str,
+        actor_type: AuditActorType,
+        actor_id: str | None,
+        request_id: str | None,
+        correlation_id: str | None,
+        metadata: dict[str, Any],
+    ) -> None: ...
 
 
 def _compose_idempotency_key(activation_type: ActivationType, idempotency_key: str) -> str:
@@ -58,10 +88,19 @@ class PolicyService:
         repository: VerificationPolicyRepository,
         audit_service: AuditService,
         schema_catalog: EvidenceSchemaCatalog,
+        failure_audit_recorder: IndependentAuditRecorder | None = None,
     ) -> None:
         self.repository = repository
         self.audit_service = audit_service
         self.schema_catalog = schema_catalog
+        # Optional: no policy router exists yet (nothing currently calls
+        # this service over HTTP), so there is no live call site that must
+        # supply this today. Left unset, a PolicyActivationConflictError
+        # still propagates untouched -- only the extra required failure
+        # audit is skipped, logged as a warning so the gap is visible
+        # rather than silent. Whichever future router wires this service
+        # in MUST supply a real recorder (Invariant-12 remediation 2).
+        self._failure_audit_recorder = failure_audit_recorder
 
     async def create_and_activate(
         self,
@@ -255,7 +294,42 @@ class PolicyService:
             supersedes_id=previous_active.id if previous_active is not None else None,
             created_by=created_by,
         )
-        saved = await self.repository.add(new_policy, composed_idempotency_key)
+        try:
+            saved = await self.repository.add(new_policy, composed_idempotency_key)
+        except PolicyActivationConflictError:
+            if self._failure_audit_recorder is not None:
+                try:
+                    await self._failure_audit_recorder.record_independently(
+                        tenant_id=tenant_id,
+                        event_type=AuditEventType.POLICY_ACTIVATION_FAILED,
+                        component=_SYSTEM_COMPONENT,
+                        action="activate",
+                        actor_type=AuditActorType.CLIENT,
+                        actor_id=created_by,
+                        request_id=request_id,
+                        correlation_id=correlation_id,
+                        metadata={
+                            "policy_id": policy_id,
+                            "assurance_level": assurance_level.value,
+                            "activation_type": activation_type,
+                        },
+                    )
+                except Exception:
+                    # The independent failure-audit write itself failed.
+                    # Never mask the original conflict with a fabricated
+                    # success/failure state -- log it and let the real
+                    # PolicyActivationConflictError propagate unchanged
+                    # (Invariant-12 remediation 2, explicit decision).
+                    logger.error(
+                        "policy_activation_failure_audit_failed",
+                        extra={"tenant_id": tenant_id, "policy_id": policy_id},
+                    )
+            else:
+                logger.warning(
+                    "policy_activation_conflict_not_audited_no_recorder_configured",
+                    extra={"tenant_id": tenant_id, "policy_id": policy_id},
+                )
+            raise
 
         await self.audit_service.record(
             tenant_id=tenant_id,

@@ -37,6 +37,7 @@ from core.reliability.health import check_dependency
 from core.security.exceptions import (
     AuthenticationError,
     AuthorizationError,
+    CredentialStateError,
     IdempotentReplayWithoutSecretError,
 )
 from infrastructure.database import models  # noqa: F401
@@ -239,6 +240,43 @@ async def authorization_exception_handler(
             503,
         )
     return error_response(request, "AUTHORIZATION_DENIED", "Operation not permitted", 403)
+
+
+@app.exception_handler(CredentialStateError)
+async def credential_state_exception_handler(
+    request: Request, exception: CredentialStateError
+) -> JSONResponse:
+    # Invariant-12 remediation 2: a material, externally initiated
+    # credential-management failure (rotating/revoking an already-inactive
+    # credential) is a governance-relevant action MUST-auditable under
+    # 12.43, following the exact same independent-transaction pattern as
+    # AUTHENTICATION_FAILED/AUTHORIZATION_DENIED above -- there is no
+    # governed effect to gate, so this is its own unit of work.
+    try:
+        async with request.app.state.db_session_factory() as session:
+            audit_service = AuditService(SqlAlchemyAuditEventRepository(session))
+            await audit_service.record(
+                tenant_id=exception.tenant_id or UNATTRIBUTED_TENANT_ID,
+                event_type=AuditEventType.CREDENTIAL_OPERATION_FAILED,
+                component="credential_management_api",
+                action="credential_state_transition",
+                status=AuditStatus.FAILURE,
+                actor_type=AuditActorType.CLIENT,
+                actor_id=exception.actor_id,
+                request_id=request_id(request),
+                correlation_id=request.headers.get("X-Correlation-ID"),
+                metadata={"target_credential_id": exception.target_credential_id},
+                durability=AuditDurability.REQUIRED,
+            )
+            await guarded_commit(session)
+    except Exception:
+        return error_response(
+            request,
+            "AUDIT_PERSISTENCE_FAILED",
+            "The security audit record could not be persisted.",
+            503,
+        )
+    return error_response(request, "CREDENTIAL_STATE_CONFLICT", str(exception), 409)
 
 
 @app.exception_handler(IdempotentReplayWithoutSecretError)

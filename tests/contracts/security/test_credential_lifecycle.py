@@ -1,8 +1,11 @@
 """Requirement traceability: SEC-7.8.*, SEC-7.9.*, SEC-7.10.*, SEC-7.11.*."""
 
+from datetime import UTC, datetime, timedelta
+
 from sqlalchemy import select
 
 from infrastructure.database.models.audit_event import AuditEventRecord
+from infrastructure.database.models.credential import CredentialRecordModel
 
 
 async def _audit_event_types_for_tenant(session_factory, tenant_id: str) -> set[str]:
@@ -193,3 +196,50 @@ def test_same_raw_idempotency_key_does_not_collide_between_issue_and_rotate(
         headers={**headers, "Idempotency-Key": "shared-raw-key"},
     )
     assert rotate_response.status_code == 200  # not treated as a replay of the issue
+
+
+def test_revoking_an_expired_credential_returns_409_and_audits_the_failure(
+    api_client, issued_credentials, session_factory
+) -> None:
+    """Invariant-12 remediation 2: a material, externally initiated
+    credential-management failure (revoking an already-expired credential)
+    is a governance-relevant action, and must produce a durable
+    CREDENTIAL_OPERATION_FAILED audit event via the global exception
+    handler's independent transaction -- not silently fail or 500."""
+    import asyncio
+
+    headers = {"Authorization": issued_credentials["tenant_a_admin"]}
+    issue_response = api_client.post(
+        "/v1/management/credentials",
+        json={"name": "will-expire", "scope": "OPERATIONAL"},
+        headers=headers,
+    )
+    credential_id = issue_response.json()["data"]["credential_id"]
+
+    async def _force_expiry() -> None:
+        async with session_factory() as session:
+            record = await session.get(CredentialRecordModel, credential_id)
+            record.expires_at = datetime.now(UTC) - timedelta(days=1)
+            await session.commit()
+
+    asyncio.run(_force_expiry())
+
+    revoke_response = api_client.post(
+        f"/v1/management/credentials/{credential_id}/revoke", headers=headers
+    )
+    assert revoke_response.status_code == 409
+    assert revoke_response.json()["error"]["code"] == "CREDENTIAL_STATE_CONFLICT"
+
+    async def _failure_events() -> list[str]:
+        async with session_factory() as session:
+            result = await session.execute(
+                select(AuditEventRecord).where(
+                    AuditEventRecord.tenant_id == "tenant-a",
+                    AuditEventRecord.event_type == "CREDENTIAL_OPERATION_FAILED",
+                )
+            )
+            return [record.actor_id for record in result.scalars().all()]
+
+    actor_ids = asyncio.run(_failure_events())
+    assert len(actor_ids) == 1
+    assert actor_ids[0] is not None

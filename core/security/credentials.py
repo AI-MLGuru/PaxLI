@@ -157,7 +157,11 @@ class CredentialService:
         if credential.status == CredentialStatus.REVOKED:
             return
         if not credential.is_active():
-            raise CredentialStateError("Credential is no longer active")
+            raise CredentialStateError(
+                "Credential is no longer active",
+                tenant_id=tenant_id,
+                target_credential_id=str(credential_id),
+            )
         credential.status = CredentialStatus.REVOKED
         credential.revoked_at = datetime.now(UTC)
         await self.store.update(credential)

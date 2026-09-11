@@ -4,7 +4,7 @@ from uuid import UUID
 import pytest
 
 from core.security.credentials import CredentialService, CredentialStore
-from core.security.exceptions import AuthenticationError
+from core.security.exceptions import AuthenticationError, CredentialStateError
 from core.security.models import CredentialRecord, CredentialStatus
 from infrastructure.security.hashing import ScryptSecretHasher, hash_secret
 
@@ -110,3 +110,25 @@ async def test_revocation_rotation_and_expiry() -> None:
 
 def test_secret_verifier_rejects_malformed_hash() -> None:
     assert hash_secret("secret") != "secret"
+
+
+@pytest.mark.asyncio
+async def test_revoking_an_expired_credential_raises_a_state_error_carrying_context() -> None:
+    """Invariant-12 remediation 2: CredentialStateError must carry enough
+    context (tenant_id, target_credential_id) for the API boundary to
+    record the required CREDENTIAL_OPERATION_FAILED audit event without
+    a second lookup -- the service layer knows this much; only the actor
+    (who is attempting the operation) is filled in later, at the router,
+    since the service never sees the authenticated principal."""
+    store = MemoryCredentialStore()
+    service = CredentialService(store, ScryptSecretHasher())
+    issued = await service.issue(
+        tenant_id="tenant-a", name="already-expired", expires_in=timedelta(seconds=-1)
+    )
+
+    with pytest.raises(CredentialStateError) as exc_info:
+        await service.revoke(credential_id=issued.credential_id, tenant_id="tenant-a")
+
+    assert exc_info.value.tenant_id == "tenant-a"
+    assert exc_info.value.target_credential_id == str(issued.credential_id)
+    assert exc_info.value.actor_id is None  # not yet known at this layer

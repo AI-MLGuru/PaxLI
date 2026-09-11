@@ -111,6 +111,13 @@ async def rotate_credential(
         )
     except AuthenticationError as exc:
         raise HTTPException(status_code=404, detail="Credential not found") from exc
+    except CredentialStateError as exc:
+        # rotate() revokes the existing credential internally, so the same
+        # already-expired-but-not-revoked state can surface here too --
+        # previously unhandled (a latent 500), now routed the same way as
+        # revoke_credential (Invariant-12 remediation 2).
+        exc.actor_id = str(principal.credential_id)
+        raise
     await audit_service.record(
         tenant_id=principal.tenant_id,
         event_type=AuditEventType.CREDENTIAL_ROTATED,
@@ -156,7 +163,14 @@ async def revoke_credential(
     except AuthenticationError as exc:
         raise HTTPException(status_code=404, detail="Credential not found") from exc
     except CredentialStateError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        # The service layer knows the target credential/tenant but not who
+        # is attempting the operation; fill in the actor here (the router
+        # is the only layer with `principal`) and let main.py's global
+        # handler record the required CREDENTIAL_OPERATION_FAILED audit
+        # event in its own independent transaction before returning 409
+        # (Invariant-12 remediation 2).
+        exc.actor_id = str(principal.credential_id)
+        raise
     await audit_service.record(
         tenant_id=principal.tenant_id,
         event_type=AuditEventType.CREDENTIAL_REVOKED,

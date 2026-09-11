@@ -19,6 +19,7 @@ from core.evidence_result.schema_catalog import EvidenceResultSchemaCatalog
 from core.policy.enums import PolicyStatus
 from core.policy.service import PolicyService
 from core.verification.enums import AssuranceLevel
+from infrastructure.audit.independent import SqlAlchemyIndependentAuditRecorder
 from infrastructure.database.models.audit_event import AuditEventRecord
 from infrastructure.database.models.policy import PolicyRecord
 from infrastructure.database.repositories.audit_event import SqlAlchemyAuditEventRepository
@@ -370,3 +371,75 @@ async def test_concurrent_activation_for_the_same_applicability_one_wins_one_con
         _insert_active("kyc-b", wait_for_signal=True, delay_before_commit=0.0),
     )
     assert sorted(results) == ["conflict", "won"]
+
+
+async def test_activation_conflict_durably_records_failure_audit_via_independent_recorder() -> None:
+    """Invariant-12 remediation 2, Option 2, proved end to end: when two
+    genuinely concurrent create_and_activate() calls race for the same
+    (tenant_id, assurance_level), the losing side's transaction aborts
+    (its own PolicyService.audit_service session is poisoned), yet a
+    durable POLICY_ACTIVATION_FAILED event still lands -- because it was
+    written through SqlAlchemyIndependentAuditRecorder's own, separate
+    session, not the aborted one. Same barrier-synchronized methodology as
+    the direct-record race test above, this time through the service.
+    """
+    tenant_id = f"tenant-policy-failure-audit-{uuid4()}"
+    barrier_released = asyncio.Event()
+
+    async def _activate(
+        policy_id: str, *, wait_for_signal: bool, delay_before_commit: float
+    ) -> str:
+        async with session_factory() as session:
+            svc = PolicyService(
+                SqlAlchemyVerificationPolicyRepository(session),
+                AuditService(SqlAlchemyAuditEventRepository(session)),
+                EvidenceResultSchemaCatalog(),
+                SqlAlchemyIndependentAuditRecorder(session_factory),
+            )
+            if wait_for_signal:
+                await barrier_released.wait()
+            try:
+                try:
+                    await svc.create_and_activate(
+                        tenant_id=tenant_id,
+                        policy_id=policy_id,
+                        assurance_level=AssuranceLevel.STANDARD,
+                        created_by="admin",
+                    )
+                except Exception:
+                    return "conflict"
+            finally:
+                # Release right after this attempt's own flush (inside
+                # create_and_activate's repository.add()) so the second
+                # attempt's flush genuinely blocks on PostgreSQL's
+                # uncommitted row-level lock, not on scheduling luck --
+                # same lesson as the direct-record race test above.
+                if not wait_for_signal:
+                    barrier_released.set()
+            if delay_before_commit:
+                await asyncio.sleep(delay_before_commit)
+            await session.commit()
+            return "won"
+
+    results = await asyncio.gather(
+        _activate("kyc-a", wait_for_signal=False, delay_before_commit=0.5),
+        _activate("kyc-b", wait_for_signal=True, delay_before_commit=0.0),
+    )
+    assert sorted(results) == ["conflict", "won"]
+
+    async with session_factory() as session:
+        failure_events = (
+            (
+                await session.execute(
+                    select(AuditEventRecord).where(
+                        AuditEventRecord.tenant_id == tenant_id,
+                        AuditEventRecord.event_type == "POLICY_ACTIVATION_FAILED",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(failure_events) == 1
+        assert failure_events[0].status == "FAILURE"
+        assert failure_events[0].actor_id == "admin"

@@ -38,7 +38,29 @@ class AuthorizationError(Exception):
 
 
 class CredentialStateError(ValueError):
-    """Raised when a credential lifecycle transition is invalid."""
+    """Raised when a credential lifecycle transition is invalid (e.g.
+    rotating or revoking an already-expired credential).
+
+    Raised initially from CredentialService with only the context the
+    service itself knows (tenant_id, the target credential); the router
+    catches it, fills in `actor_id` from the authenticated principal (which
+    the service layer never sees), and re-raises the same instance so
+    main.py's global handler can record the required CREDENTIAL_OPERATION_
+    FAILED audit event without re-deriving any of this (Invariant-12
+    remediation 2)."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        tenant_id: str | None = None,
+        target_credential_id: str | None = None,
+        actor_id: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.tenant_id = tenant_id
+        self.target_credential_id = target_credential_id
+        self.actor_id = actor_id
 
 
 class IdempotentReplayWithoutSecretError(Exception):
