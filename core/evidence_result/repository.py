@@ -1,9 +1,10 @@
 from collections.abc import Sequence
+from datetime import datetime
 from typing import Protocol
 from uuid import UUID
 
 from core.evidence_result.enums import EvidenceResultType
-from core.evidence_result.models import EvidenceResult
+from core.evidence_result.models import EvidenceResult, EvidenceResultTombstone
 
 
 class EvidenceResultRepository(Protocol):
@@ -35,3 +36,34 @@ class EvidenceResultRepository(Protocol):
     async def list_for_session_by_type(
         self, session_id: UUID, tenant_id: str, evidence_type: EvidenceResultType
     ) -> Sequence[EvidenceResult]: ...
+
+    async def list_expired(self, tenant_id: str, as_of: datetime) -> Sequence[EvidenceResult]:
+        """Evidence results whose retention_until has passed and that have
+        not already been requested for deletion (Invariant-06 remediation:
+        retention eligibility, not automatic purge -- no scheduler acts on
+        this list in v1)."""
+        ...
+
+    async def delete_content(self, evidence_result_id: UUID, tenant_id: str) -> bool:
+        """Physical DELETE of the evidence_results row. Idempotent: returns
+        True if a row was deleted, False if it was already absent."""
+        ...
+
+    async def add_tombstone(
+        self, tombstone: EvidenceResultTombstone
+    ) -> EvidenceResultTombstone:
+        """Phase-1 (request) persistence. Must be called at most once per
+        evidence_result_id -- enforced by the tombstone table's primary
+        key, not merely application logic."""
+        ...
+
+    async def get_tombstone(
+        self, evidence_result_id: UUID, tenant_id: str
+    ) -> EvidenceResultTombstone | None: ...
+
+    async def mark_tombstone_executed(
+        self, evidence_result_id: UUID, tenant_id: str, executed_at: datetime
+    ) -> EvidenceResultTombstone:
+        """Phase-2 (reconciliation) completion. Deliberately not a generic
+        update() -- the only tombstone mutation this repository exposes."""
+        ...

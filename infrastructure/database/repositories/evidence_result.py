@@ -1,17 +1,23 @@
 import json
 from collections.abc import Sequence
-from typing import Any
+from datetime import datetime
+from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.deletion.exceptions import TombstoneNotFoundError
 from core.evidence_result.classification import classify
 from core.evidence_result.enums import EvidenceResultStatus, EvidenceResultType
-from core.evidence_result.models import EvidenceResult, ModelReference
+from core.evidence_result.models import EvidenceResult, EvidenceResultTombstone, ModelReference
 from core.security.classification import DataClassification
 from core.security.keys import KeyProvider
 from infrastructure.database.models.evidence_result import EvidenceResultRecord
+from infrastructure.database.models.evidence_result_tombstone import (
+    EvidenceResultTombstoneRecord,
+)
 
 
 class SqlAlchemyEvidenceResultRepository:
@@ -78,6 +84,59 @@ class SqlAlchemyEvidenceResultRepository:
         )
         records = (await self.session.execute(statement)).scalars().all()
         return [await self._to_domain(record) for record in records]
+
+    async def list_expired(self, tenant_id: str, as_of: datetime) -> Sequence[EvidenceResult]:
+        already_tombstoned = select(EvidenceResultTombstoneRecord.evidence_result_id).where(
+            EvidenceResultTombstoneRecord.evidence_result_id == EvidenceResultRecord.id
+        )
+        statement = (
+            select(EvidenceResultRecord)
+            .where(
+                EvidenceResultRecord.tenant_id == tenant_id,
+                EvidenceResultRecord.retention_until.is_not(None),
+                EvidenceResultRecord.retention_until <= as_of,
+                ~already_tombstoned.exists(),
+            )
+            .order_by(EvidenceResultRecord.retention_until)
+        )
+        records = (await self.session.execute(statement)).scalars().all()
+        return [await self._to_domain(record) for record in records]
+
+    async def delete_content(self, evidence_result_id: UUID, tenant_id: str) -> bool:
+        statement = delete(EvidenceResultRecord).where(
+            EvidenceResultRecord.id == str(evidence_result_id),
+            EvidenceResultRecord.tenant_id == tenant_id,
+        )
+        result = cast("CursorResult[Any]", await self.session.execute(statement))
+        return bool(result.rowcount)
+
+    async def add_tombstone(
+        self, tombstone: EvidenceResultTombstone
+    ) -> EvidenceResultTombstone:
+        record = EvidenceResultTombstoneRecord.from_domain(tombstone)
+        self.session.add(record)
+        await self.session.flush()
+        return record.to_domain()
+
+    async def get_tombstone(
+        self, evidence_result_id: UUID, tenant_id: str
+    ) -> EvidenceResultTombstone | None:
+        record = await self.session.get(EvidenceResultTombstoneRecord, str(evidence_result_id))
+        if record is None or record.tenant_id != tenant_id:
+            return None
+        return record.to_domain()
+
+    async def mark_tombstone_executed(
+        self, evidence_result_id: UUID, tenant_id: str, executed_at: datetime
+    ) -> EvidenceResultTombstone:
+        record = await self.session.get(EvidenceResultTombstoneRecord, str(evidence_result_id))
+        if record is None or record.tenant_id != tenant_id:
+            raise TombstoneNotFoundError(
+                f"no tombstone for evidence_result_id={evidence_result_id!s} in this tenant"
+            )
+        record.executed_at = executed_at
+        await self.session.flush()
+        return record.to_domain()
 
     async def _to_record(
         self, evidence_result: EvidenceResult, idempotency_key: str | None = None
