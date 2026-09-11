@@ -373,6 +373,17 @@ class PolicyService:
     ) -> VerificationPolicy | None:
         return await self.repository.get_active(tenant_id, assurance_level)
 
+    async def get_version(
+        self, *, policy_id: str, version: int, tenant_id: str
+    ) -> VerificationPolicy | None:
+        """Resolves a session's pinned (policy_id, policy_version) back to
+        its full content -- the DE-002 §8 step 1 "context validation" read
+        the evaluation orchestration boundary needs, now that early binding
+        (DE-004 Phase 4) gives it a pin to resolve. Policies are never
+        deleted (Invariant 07), only superseded, so this remains valid for
+        the lifetime of any session that ever pinned it."""
+        return await self.repository.get_version(policy_id, version, tenant_id)
+
     async def list_versions(
         self, *, policy_id: str, tenant_id: str
     ) -> Sequence[VerificationPolicy]:

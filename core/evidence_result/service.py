@@ -280,6 +280,17 @@ class EvidenceResultService:
     ) -> Sequence[EvidenceResult]:
         return await self.repository.list_for_session(session_id, tenant_id)
 
+    async def list_effective_for_session(
+        self, *, session_id: UUID, tenant_id: str
+    ) -> Sequence[EvidenceResult]:
+        """DE-003 §11's input: supersession-filtered, at most one row per
+        evidence_type (the database's own partial unique index is the
+        primary guarantee; core.evidence_result.effective's defensive
+        resolver is the fallback -- neither lives here). The evaluation
+        orchestration boundary (core.decision.orchestration) is this
+        method's only caller today."""
+        return await self.repository.list_effective_for_session(session_id, tenant_id)
+
     async def request_deletion(
         self,
         *,
