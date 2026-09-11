@@ -1,5 +1,6 @@
 from collections.abc import AsyncIterator
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 import pytest
 import pytest_asyncio
@@ -23,6 +24,7 @@ from core.security.credentials import CredentialService
 from core.security.models import CredentialScope
 from core.verification.service import VerificationSessionService
 from infrastructure.database.base import Base
+from infrastructure.database.models.policy import PolicyRecord
 from infrastructure.database.repositories.audit_event import SqlAlchemyAuditEventRepository
 from infrastructure.database.repositories.credential import SqlAlchemyCredentialStore
 from infrastructure.database.repositories.evidence import SqlAlchemyEvidenceRepository
@@ -100,8 +102,50 @@ def raw_storage() -> FakeObjectStorage:
     return FakeObjectStorage()
 
 
-@pytest.fixture
-def api_client(session_factory, raw_storage):
+async def _activate_standard_policy(session_factory, tenant_id: str) -> None:
+    """DE-002/DE-003 §1 early policy binding made VerificationSessionService.
+    create() depend on an ACTIVE policy existing for (tenant_id,
+    assurance_level) -- every contract/integration test that creates a
+    session via api_client now needs one to already exist, the same way
+    `issued_credentials` pre-seeds authentication. A raw PolicyRecord
+    insert, not PolicyService.create_and_activate(): this is fixture setup,
+    not something under test, and every api_client test uses STANDARD
+    (the schema default -- apps/api/averiq_api/schemas/verification.py)."""
+    async with session_factory() as session:
+        session.add(
+            PolicyRecord(
+                id=str(uuid4()),
+                policy_id=f"test-fixture-default-{tenant_id}",
+                version=1,
+                tenant_id=tenant_id,
+                assurance_level="STANDARD",
+                schema_version="1.0",
+                status="ACTIVE",
+                evidence_requirements_json=[],
+                gates_json=[],
+                rules_json=[],
+                thresholds_json=[],
+                metadata_json={},
+                canonical_hash=f"test-fixture-hash-{tenant_id}",
+                created_at=datetime.now(UTC),
+                activated_at=datetime.now(UTC),
+                created_by="test-fixture",
+            )
+        )
+        await session.commit()
+
+
+@pytest_asyncio.fixture
+async def api_client(session_factory, raw_storage):
+    # Awaited directly, inside pytest-asyncio's own managed event loop --
+    # NOT asyncio.run(), which spins up and tears down a separate loop and
+    # corrupts the "current event loop" state asyncio.get_event_loop()
+    # depends on for whichever async test runs next (confirmed by running
+    # the full suite with asyncio.run() here: four unrelated async tests
+    # failed with "There is no current event loop in thread 'MainThread'").
+    for tenant_id in ("tenant-a", "tenant-b"):
+        await _activate_standard_policy(session_factory, tenant_id)
+
     async def override_get_db_session() -> AsyncIterator[AsyncSession]:
         async with session_factory() as session:
             try:

@@ -4,6 +4,7 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, Field
 
 from core.verification.enums import (
+    TERMINAL_STATUSES,
     VALID_STATUS_TRANSITIONS,
     AssuranceLevel,
     VerificationStatus,
@@ -19,19 +20,22 @@ class VerificationSession(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     expires_at: datetime = Field(default_factory=lambda: datetime.now(UTC) + timedelta(minutes=30))
     completed_at: datetime | None = None
+    # DE-002/DE-003 §1 early policy binding: resolved once at creation via
+    # PolicyService.get_active() and never re-resolved (VerificationSession.
+    # create() below makes all three required together). Optional here, not
+    # on the factory, purely for backward compatibility with rows persisted
+    # before this field existed -- the same "nullable at the model boundary,
+    # required for every new row going forward" discipline this session's
+    # migrations have already used repeatedly.
+    policy_id: str | None = None
+    policy_version: int | None = None
+    policy_hash: str | None = None
 
     def transition_to(self, status: VerificationStatus) -> None:
         if status not in VALID_STATUS_TRANSITIONS[self.status]:
             raise ValueError(f"Invalid session transition: {self.status} -> {status}")
         self.status = status
-        if status in {
-            VerificationStatus.VERIFIED,
-            VerificationStatus.REJECTED,
-            VerificationStatus.REVIEW_REQUIRED,
-            VerificationStatus.INCONCLUSIVE,
-            VerificationStatus.EXPIRED,
-            VerificationStatus.CANCELLED,
-        }:
+        if status in TERMINAL_STATUSES:
             self.completed_at = datetime.now(UTC)
 
     def expire_if_needed(self, now: datetime | None = None) -> bool:
@@ -55,7 +59,17 @@ class VerificationSession(BaseModel):
         external_reference: str | None,
         assurance_level: AssuranceLevel,
         ttl_minutes: int,
+        policy_id: str,
+        policy_version: int,
+        policy_hash: str,
     ) -> "VerificationSession":
+        """The policy_id/version/hash triple is required here, unlike on
+        the bare model fields above: every NEW session must carry a pin
+        (DE-002 §1), resolved by the caller (VerificationSessionService)
+        before this factory is ever invoked. This is the one and only place
+        a session's pin is ever set -- there is no corresponding
+        transition/update path, matching Invariant 07's "never re-resolve"
+        rule for early binding."""
         now = datetime.now(UTC)
         return cls(
             tenant_id=tenant_id,
@@ -63,4 +77,7 @@ class VerificationSession(BaseModel):
             assurance_level=assurance_level,
             created_at=now,
             expires_at=now + timedelta(minutes=ttl_minutes),
+            policy_id=policy_id,
+            policy_version=policy_version,
+            policy_hash=policy_hash,
         )

@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import DateTime, Index, String, UniqueConstraint
+from sqlalchemy import DateTime, Index, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from core.verification.enums import AssuranceLevel, VerificationStatus
@@ -25,6 +25,15 @@ class VerificationSessionRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # DE-002/DE-003 §1 early policy binding. Nullable at the DB level for
+    # migration safety on a non-empty table (same discipline as every other
+    # additive migration this session has done) -- rows created before this
+    # column existed have no pin and stay that way forever; every new
+    # session going forward always has one, enforced at
+    # VerificationSession.create(), not here.
+    policy_id: Mapped[str | None] = mapped_column(String(128))
+    policy_version: Mapped[int | None] = mapped_column(Integer)
+    policy_hash: Mapped[str | None] = mapped_column(String(128))
 
     @classmethod
     def from_domain(
@@ -40,6 +49,9 @@ class VerificationSessionRecord(Base):
             created_at=session.created_at,
             expires_at=session.expires_at,
             completed_at=session.completed_at,
+            policy_id=session.policy_id,
+            policy_version=session.policy_version,
+            policy_hash=session.policy_hash,
         )
 
     def to_domain(self) -> VerificationSession:
@@ -52,6 +64,9 @@ class VerificationSessionRecord(Base):
             created_at=self.created_at,
             expires_at=self.expires_at,
             completed_at=self.completed_at,
+            policy_id=self.policy_id,
+            policy_version=self.policy_version,
+            policy_hash=self.policy_hash,
         )
 
     def update_from_domain(self, session: VerificationSession) -> None:

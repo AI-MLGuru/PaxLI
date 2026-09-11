@@ -16,3 +16,14 @@ class PolicyActivationConflictError(RuntimeError):
 class PolicyVersionNotFoundError(LookupError):
     """Raised by rollback() when the requested (policy_id, version) does not
     exist for the tenant -- there is nothing valid to roll back to."""
+
+
+class NoActivePolicyError(LookupError):
+    """Raised by VerificationSessionService.create() (DE-002/DE-003 §1
+    early policy binding) when no ACTIVE policy exists for the requested
+    (tenant_id, assurance_level). A creation-time failure, not a Decision
+    Engine INCONCLUSIVE -- there is no session yet to attach a decision
+    outcome to, and DE-003 §8 deliberately keeps this out of
+    EngineReasonCode for exactly that reason: under early binding, no
+    decision-bearing session can ever exist without a resolved policy, so
+    this can only ever be a session-creation-time API error."""

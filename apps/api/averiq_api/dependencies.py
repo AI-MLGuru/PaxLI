@@ -6,7 +6,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from apps.api.averiq_api.config import Settings, get_settings
 from core.audit.service import AuditService
 from core.evidence.service import EvidenceService
+from core.evidence_result.schema_catalog import EvidenceResultSchemaCatalog
 from core.evidence_result.service import EvidenceResultService
+from core.policy.service import PolicyService
 from core.rate_limit.enums import RateLimitScope
 from core.rate_limit.evaluation import FailMode, evaluate_admission
 from core.rate_limit.keys import build_scope_key
@@ -23,6 +25,7 @@ from infrastructure.database.repositories.evidence import SqlAlchemyEvidenceRepo
 from infrastructure.database.repositories.evidence_result import (
     SqlAlchemyEvidenceResultRepository,
 )
+from infrastructure.database.repositories.policy import SqlAlchemyVerificationPolicyRepository
 from infrastructure.database.repositories.verification_session import (
     SqlAlchemyVerificationSessionRepository,
 )
@@ -54,8 +57,14 @@ async def get_session_service(
     db_session: AsyncSession = Depends(get_db_session),  # noqa: B008
     settings: Settings = Depends(get_settings),  # noqa: B008
 ) -> AsyncIterator[VerificationSessionService]:
+    policy_service = PolicyService(
+        SqlAlchemyVerificationPolicyRepository(db_session),
+        AuditService(SqlAlchemyAuditEventRepository(db_session)),
+        EvidenceResultSchemaCatalog(),
+    )
     yield VerificationSessionService(
         SqlAlchemyVerificationSessionRepository(db_session),
+        policy_service,
         session_ttl_minutes=settings.session_ttl_minutes,
     )
 

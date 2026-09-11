@@ -40,6 +40,7 @@ from core.audit.enums import (
 from core.audit.service import AuditPersistenceError, AuditService
 from core.deletion.exceptions import DeletionAlreadyRequestedError, DeletionBlockedByDependentsError
 from core.evidence.service import EvidenceDeletedError
+from core.policy.exceptions import NoActivePolicyError
 from core.rate_limit.exceptions import RateLimitExceededError
 from core.reliability.health import check_dependency
 from core.security.exceptions import (
@@ -334,6 +335,19 @@ async def deletion_already_requested_exception_handler(
     # material governed-action failure, so no independent failure audit is
     # recorded here.
     return error_response(request, "DELETION_ALREADY_REQUESTED", str(exception), 409)
+
+
+@app.exception_handler(NoActivePolicyError)
+async def no_active_policy_exception_handler(
+    request: Request, exception: NoActivePolicyError
+) -> JSONResponse:
+    # DE-002/DE-003 §1 early policy binding: session creation now depends
+    # on policy governance, and this is its explicit failure path -- a
+    # plain creation-time conflict (no policy has been activated for this
+    # tenant/assurance_level yet), never a Decision Engine INCONCLUSIVE,
+    # since no session exists yet to attach one to. POLICY_NOT_FOUND is the
+    # exact code DE-003 §8 reserves for this case.
+    return error_response(request, "POLICY_NOT_FOUND", str(exception), 409)
 
 
 @app.exception_handler(DeletionBlockedByDependentsError)
