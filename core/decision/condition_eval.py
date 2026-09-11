@@ -12,6 +12,8 @@ INDETERMINATE, and INDETERMINATE propagates through negation unchanged.
 
 Gates and rules match only on TRUE. INDETERMINATE never fires anything, in
 either direction.
+
+Frozen and recorded in docs/decisions/DE-003-decision-semantics.md §17.1.
 """
 
 import operator

@@ -181,12 +181,18 @@ def _check_calibration_compatibility(
     depending on priority ordering -- the implementation-order dependence
     DEC-5.19.1 and DEC-5.25.2 forbid.
 
-    Evidence carrying no model reference at all is treated as incompatible:
-    a ThresholdDefinition asserts "this comparison is valid only for model X
-    version Y", and evidence that cannot demonstrate which model produced it
-    cannot satisfy that assertion. Failing safe here costs an INCONCLUSIVE;
-    failing open would mean comparing a score against a threshold calibrated
-    for something else entirely.
+    Evidence carrying no model reference at all is also treated as
+    incompatible -- frozen and grounded explicitly in
+    docs/decisions/DE-003-decision-semantics.md §17.2 (DEC-5.34.1's
+    identifiability requirement and DEC-5.34.3's attributability
+    requirement, not DEC-5.34.2's "incompatible version" wording alone,
+    which is silent on the absent-reference case). Failing safe here costs
+    an INCONCLUSIVE; failing open would mean comparing a score against a
+    threshold calibrated for something else entirely, and would leave a
+    resulting decision structurally unable to satisfy 5.34.3 for that
+    evidence. No new ENGINE: code is introduced for this case -- see §17.2
+    for how it stays forensically distinguishable from a named
+    incompatibility without one.
     """
     for name in sorted(_referenced_threshold_names(policy)):
         definition = thresholds.get(name)
