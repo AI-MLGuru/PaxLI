@@ -2,9 +2,11 @@
 
 A test that merely calls the evaluator twice and compares the results shows
 that it *happened* to be deterministic for one input. These tests show that
-it cannot be otherwise: the engine has no clock to read, no identifier to
-generate, no randomness to draw on, and no transitive import that could
-reach a database, an HTTP client, or an object store.
+it cannot be otherwise: the pure evaluator has no clock to read, no
+identifier to generate, no randomness to draw on, and nothing in
+core.decision (evaluator included -- persistence.py is the sole,
+deliberate exception; see PURE_MODULES below) has a transitive import that
+could reach a database, an HTTP client, or an object store.
 
 This is the same discipline as the repositories having no generic
 `update()`. The guarantee is worth more when the code is incapable of
@@ -47,6 +49,25 @@ FORBIDDEN_IMPORT_ROOTS = frozenset(
 )
 
 DECISION_MODULES = sorted(p for p in DECISION_PACKAGE.glob("*.py") if p.name != "__init__.py")
+
+# The pure evaluator's own closed dependency set -- everything the
+# evaluator can reach, directly or transitively, within core.decision.
+# `persistence.py` is deliberately excluded: DE-004 Phase 3 made it the one
+# place a decision's `decision_id` and `created_at` get assigned (see its
+# module docstring), which requires exactly the clock/identifier calls this
+# module forbids everywhere else. `exceptions.py` and `repository.py`
+# (a Protocol, no calls at all) are inert either way.
+PURE_MODULES = sorted(
+    DECISION_PACKAGE / name
+    for name in (
+        "condition_eval.py",
+        "context.py",
+        "enums.py",
+        "evaluator.py",
+        "models.py",
+        "references.py",
+    )
+)
 
 
 def _parse(path: Path) -> ast.Module:
@@ -93,7 +114,7 @@ def _transitive_project_imports() -> set[str]:
     return external
 
 
-@pytest.mark.parametrize("path", DECISION_MODULES, ids=lambda p: p.name)
+@pytest.mark.parametrize("path", PURE_MODULES, ids=lambda p: p.name)
 def test_decision_module_reads_no_clock_and_generates_no_identifier(path: Path) -> None:
     """A decision's timestamp and identifier are assigned by persistence, so
     the evaluator never needs either -- and must not be able to reach for
