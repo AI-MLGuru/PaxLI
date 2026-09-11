@@ -1,5 +1,6 @@
 import logging
 from collections.abc import Mapping, Sequence
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
@@ -77,3 +78,22 @@ class AuditService:
 
     async def list_for_session(self, *, session_id: UUID, tenant_id: str) -> Sequence[AuditEvent]:
         return await self.repository.list_for_session(session_id, tenant_id)
+
+    async def list_for_tenant(
+        self,
+        *,
+        tenant_id: str,
+        event_type: AuditEventType | None = None,
+        actor_id: str | None = None,
+        occurred_after: datetime | None = None,
+        occurred_before: datetime | None = None,
+        limit: int = 100,
+    ) -> Sequence[AuditEvent]:
+        return await self.repository.list_for_tenant(
+            tenant_id,
+            event_type=event_type,
+            actor_id=actor_id,
+            occurred_after=occurred_after,
+            occurred_before=occurred_before,
+            limit=limit,
+        )

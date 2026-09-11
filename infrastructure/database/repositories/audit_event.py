@@ -1,11 +1,15 @@
 from collections.abc import Sequence
+from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.audit.enums import AuditEventType
 from core.audit.models import AuditEvent
 from infrastructure.database.models.audit_event import AuditEventRecord
+
+_MAX_LIST_FOR_TENANT_LIMIT = 500
 
 
 class SqlAlchemyAuditEventRepository:
@@ -37,6 +41,35 @@ class SqlAlchemyAuditEventRepository:
                 AuditEventRecord.tenant_id == tenant_id,
             )
             .order_by(AuditEventRecord.occurred_at, AuditEventRecord.event_id)
+        )
+        records = (await self.session.execute(statement)).scalars().all()
+        return [record.to_domain() for record in records]
+
+    async def list_for_tenant(
+        self,
+        tenant_id: str,
+        *,
+        event_type: AuditEventType | None = None,
+        actor_id: str | None = None,
+        occurred_after: datetime | None = None,
+        occurred_before: datetime | None = None,
+        limit: int = 100,
+    ) -> Sequence[AuditEvent]:
+        bounded_limit = min(max(limit, 1), _MAX_LIST_FOR_TENANT_LIMIT)
+        conditions = [AuditEventRecord.tenant_id == tenant_id]
+        if event_type is not None:
+            conditions.append(AuditEventRecord.event_type == event_type.value)
+        if actor_id is not None:
+            conditions.append(AuditEventRecord.actor_id == actor_id)
+        if occurred_after is not None:
+            conditions.append(AuditEventRecord.occurred_at >= occurred_after)
+        if occurred_before is not None:
+            conditions.append(AuditEventRecord.occurred_at <= occurred_before)
+        statement = (
+            select(AuditEventRecord)
+            .where(*conditions)
+            .order_by(AuditEventRecord.occurred_at.desc(), AuditEventRecord.event_id)
+            .limit(bounded_limit)
         )
         records = (await self.session.execute(statement)).scalars().all()
         return [record.to_domain() for record in records]

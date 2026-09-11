@@ -11,6 +11,9 @@ from sqlalchemy import text
 from apps.api.averiq_api.config import get_settings
 from apps.api.averiq_api.routers.audit import router as audit_router
 from apps.api.averiq_api.routers.evidence import router as evidence_router
+from apps.api.averiq_api.routers.management.audit import (
+    router as management_audit_router,
+)
 from apps.api.averiq_api.routers.management.credentials import (
     router as management_credentials_router,
 )
@@ -134,6 +137,7 @@ app.include_router(verification_sessions_router, prefix=settings.api_prefix)
 app.include_router(evidence_router, prefix=settings.api_prefix)
 app.include_router(audit_router, prefix=settings.api_prefix)
 app.include_router(management_credentials_router, prefix=settings.api_prefix)
+app.include_router(management_audit_router, prefix=settings.api_prefix)
 
 
 def error_response(request: Request, code: str, message: str, status_code: int) -> JSONResponse:
