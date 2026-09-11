@@ -1,5 +1,4 @@
 import asyncio
-from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -8,9 +7,6 @@ from core.reliability.enums import CircuitState, ComponentOutcome, FailureCatego
 from core.reliability.executor import execute_with_reliability
 from core.reliability.health import check_dependency
 from core.reliability.policies import RetryPolicy
-from core.verification.enums import VerificationStatus
-from core.verification.models import VerificationSession
-from core.verification.orchestrator import VerificationOrchestrator
 
 
 @pytest.mark.asyncio
@@ -86,25 +82,37 @@ async def test_non_retryable_failure_is_not_retried() -> None:
 
 
 @pytest.mark.asyncio
-async def test_orchestrator_maps_unavailable_component_to_inconclusive() -> None:
-    session = VerificationSession(
-        tenant_id="tenant-a",
-        expires_at=datetime.now(UTC) + timedelta(minutes=5),
-    )
-    orchestrator = VerificationOrchestrator()
+async def test_retryable_exception_exhausted_becomes_unavailable_not_failed() -> None:
+    """The one outcome case the other tests in this file don't already
+    cover directly: a *retryable* exception (ConnectionError, in the
+    default retryable_exceptions tuple) that never succeeds within the
+    retry budget must resolve to UNAVAILABLE, not FAILED -- WF-001 §14 /
+    DEC-5.23.2's "infrastructure failure must not become an invented
+    rejection" applies at this layer too: UNAVAILABLE and FAILED carry
+    different retryability semantics (see result.reason.retryable below),
+    and conflating them would misdescribe a transient dependency outage as
+    a definitive failure.
+
+    Deliberately exercises execute_with_reliability() directly, with no
+    VerificationSession or workflow orchestrator involved -- WF-001 §14's
+    disposition for the deleted core/verification/orchestrator.py
+    scaffold: this reliability mechanism is tested on its own terms, not
+    through a class that mutated session lifecycle state as a side effect
+    of retry/circuit-breaker plumbing."""
 
     async def unavailable() -> None:
         raise ConnectionError("provider offline")
 
-    result = await orchestrator.process_component(
-        session,
+    result = await execute_with_reliability(
         unavailable,
-        category=FailureCategory.EXTERNAL_PROVIDER,
+        timeout_seconds=1,
         retry_policy=RetryPolicy(max_attempts=1),
+        category=FailureCategory.EXTERNAL_PROVIDER,
+        timeout_code="PROVIDER_TIMEOUT",
+        unavailable_code="PROVIDER_UNAVAILABLE",
     )
 
     assert result.outcome == ComponentOutcome.UNAVAILABLE
-    assert session.status == VerificationStatus.INCONCLUSIVE
     assert result.reason is not None
     assert result.reason.retryable is True
 

@@ -12,7 +12,7 @@ from core.evidence.enums import EvidenceSource, EvidenceType
 from core.evidence.media_validation import verify_evidence_media
 from core.evidence.models import Evidence, EvidenceTombstone
 from core.evidence.repository import EvidenceRepository
-from core.verification.enums import TERMINAL_STATUSES
+from core.verification.enums import EVIDENCE_SUBMISSION_ALLOWED_STATUSES
 from core.verification.service import SessionExpiredError, VerificationSessionService
 
 if TYPE_CHECKING:
@@ -89,16 +89,16 @@ class EvidenceService:
         idempotency_key: str | None = None,
     ) -> Evidence:
         session = await self.session_service.get(session_id=session_id, tenant_id=tenant_id)
-        # WF-4.19.2 / DE-003 §13 (DE-004 Phase 4 mandatory acceptance gate):
-        # rejected before ANY mutation -- no media verification, no object
-        # storage write, no EvidenceRecord insert -- for every one of the
-        # six terminal states, not just the two previously checked
-        # (EXPIRED, CANCELLED). The gap mattered only latently before a
-        # Decision Engine existed to ever put a session into VERIFIED/
-        # REJECTED/REVIEW_REQUIRED/INCONCLUSIVE; DE-004 Phase 3 made that
-        # real, so this guard being incomplete became a live vulnerability
-        # rather than a theoretical one (DE-002 landmine 2).
-        if session.status in TERMINAL_STATUSES:
+        # WF-4.19.2 / WF-001 §8: rejected before ANY mutation -- no media
+        # verification, no object storage write, no EvidenceRecord insert.
+        # An allow-list, not a deny-list of terminal states: SUBMITTED and
+        # PROCESSING must also reject ordinary submission despite neither
+        # being terminal (the client already signaled "done" by calling
+        # /submit), so "not terminal" is not the same test as "still
+        # collecting evidence." An allow-list also fails safe automatically
+        # against any future new status, rather than requiring a deny-list
+        # to be remembered and extended.
+        if session.status not in EVIDENCE_SUBMISSION_ALLOWED_STATUSES:
             raise SessionExpiredError
         if idempotency_key:
             existing = await self.repository.get_by_idempotency_key(

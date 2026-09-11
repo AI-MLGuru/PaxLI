@@ -1,8 +1,8 @@
-"""Real PostgreSQL + MinIO integration tests for DE-004 Phase 4's mandatory
-acceptance gate (WF-4.19.2 / DE-003 §13): evidence submission MUST be
-rejected for all six terminal session states, proven against real
-infrastructure, not merely against fakes. Skipped when either dependency
-isn't reachable, mirroring tests/integration/test_evidence_deletion_service.py.
+"""Real PostgreSQL + MinIO integration tests for WF-001 §8's evidence-
+submission allow-list (WF-4.19.2): submission MUST be rejected outside
+{CREATED, CAPTURING}, proven against real infrastructure, not merely
+against fakes. Skipped when either dependency isn't reachable, mirroring
+tests/integration/test_evidence_deletion_service.py.
 """
 
 import socket
@@ -17,7 +17,7 @@ from apps.api.paxli_api.config import get_settings
 from core.audit.service import AuditService
 from core.evidence.enums import EvidenceType
 from core.evidence.service import EvidenceService, SessionExpiredError
-from core.verification.enums import TERMINAL_STATUSES, VerificationStatus
+from core.verification.enums import EVIDENCE_SUBMISSION_ALLOWED_STATUSES, VerificationStatus
 from core.verification.service import VerificationSessionService
 from infrastructure.database.models.evidence import EvidenceRecord
 from infrastructure.database.models.verification_session import VerificationSessionRecord
@@ -32,6 +32,10 @@ from infrastructure.storage.encrypted import EncryptedObjectStorage
 from infrastructure.storage.minio import MinioObjectStorage
 
 MINIMAL_JPEG_BYTES = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"
+
+EVIDENCE_SUBMISSION_REJECTED_STATUSES = tuple(
+    status for status in VerificationStatus if status not in EVIDENCE_SUBMISSION_ALLOWED_STATUSES
+)
 
 
 def _postgres_reachable() -> bool:
@@ -94,14 +98,19 @@ def _evidence_storage() -> EncryptedObjectStorage:
     )
 
 
-@pytest.mark.parametrize("status", sorted(TERMINAL_STATUSES, key=lambda s: s.value))
-async def test_evidence_submission_rejected_for_every_terminal_status_real_infrastructure(
+@pytest.mark.parametrize(
+    "status", sorted(EVIDENCE_SUBMISSION_REJECTED_STATUSES, key=lambda s: s.value)
+)
+async def test_evidence_submission_rejected_outside_the_allow_list_real_infrastructure(
     status: VerificationStatus,
 ) -> None:
-    """The mandatory acceptance gate itself: no EvidenceRecord row and no
-    MinIO object survive a submission attempt against any of the six
-    terminal states."""
-    tenant_id = f"tenant-terminal-guard-{status.value.lower()}-{uuid4()}"
+    """The mandatory acceptance gate: no EvidenceRecord row and no MinIO
+    object survive a submission attempt against any status outside
+    {CREATED, CAPTURING} -- including SUBMITTED and PROCESSING, neither of
+    which is terminal, because the client has already signaled "done" by
+    calling /submit (WF-001 §8's allow-list, not the DE-004 Phase 4
+    deny-list this test previously exercised)."""
+    tenant_id = f"tenant-allow-list-guard-{status.value.lower()}-{uuid4()}"
     storage = _evidence_storage()
     async with session_factory() as session:
         session_id = await _create_session_in_status(session, tenant_id, status)
@@ -134,21 +143,21 @@ async def test_evidence_submission_rejected_for_every_terminal_status_real_infra
             .all()
         )
         assert rows == []
-        # No object was ever written either: the terminal-state check is
-        # the first statement in EvidenceService.add() (see its source),
+        # No object was ever written either: the allow-list check is the
+        # first statement in EvidenceService.add() (see its source),
         # strictly before storage.put() ever runs, so the absent DB row
         # already proves storage.put() was never reached -- deliberately
         # not probing MinIO for a missing object here, since repeatedly
-        # doing that across six parametrized cases would trip the shared
+        # doing that across five parametrized cases would trip the shared
         # module-level circuit breaker (5-failure threshold) and start
         # failing the unrelated happy-path test that follows.
 
 
-async def test_evidence_submission_still_succeeds_for_non_terminal_statuses() -> None:
+async def test_evidence_submission_still_succeeds_for_every_allowed_status() -> None:
     """The mirror image against real infrastructure: CREATED and
-    PROCESSING must remain unaffected by the widened guard."""
-    for status in (VerificationStatus.CREATED, VerificationStatus.PROCESSING):
-        tenant_id = f"tenant-terminal-guard-ok-{status.value.lower()}-{uuid4()}"
+    CAPTURING must remain accepted."""
+    for status in sorted(EVIDENCE_SUBMISSION_ALLOWED_STATUSES, key=lambda s: s.value):
+        tenant_id = f"tenant-allow-list-guard-ok-{status.value.lower()}-{uuid4()}"
         storage = _evidence_storage()
         async with session_factory() as session:
             session_id = await _create_session_in_status(session, tenant_id, status)

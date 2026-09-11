@@ -23,7 +23,8 @@ from core.rate_limit.limiter import RateLimiterProtocol
 from core.security.authentication import AuthenticatedPrincipal
 from core.security.authorization import Permission, require_permission
 from core.verification.service import (
-    SessionExpiredError,
+    ConcurrentTransitionError,
+    SessionAlreadyTerminalError,
     SessionNotFoundError,
     VerificationSessionService,
 )
@@ -145,8 +146,18 @@ async def cancel_session(
         session = await service.cancel(session_id=session_id, tenant_id=principal.tenant_id)
     except SessionNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Verification session not found") from exc
-    except SessionExpiredError as exc:
-        raise HTTPException(status_code=409, detail="Verification session has expired") from exc
+    except SessionAlreadyTerminalError as exc:
+        raise HTTPException(
+            status_code=409, detail="Verification session has already reached a terminal state"
+        ) from exc
+    except ConcurrentTransitionError as exc:
+        # WF-001 §6: an explicit, client-intent-driven request racing a
+        # concurrent transition is a real conflict to surface, not a
+        # harmless side effect to swallow (unlike the lazy expire check
+        # inside VerificationSessionService.get()).
+        raise HTTPException(
+            status_code=409, detail="Verification session state changed concurrently"
+        ) from exc
     await audit_service.record(
         tenant_id=principal.tenant_id,
         session_id=session.id,

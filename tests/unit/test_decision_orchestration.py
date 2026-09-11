@@ -26,6 +26,7 @@ from core.policy.requirements import EvidenceRequirement, EvidenceRequirementLev
 from core.policy.rules import Rule
 from core.policy.service import PolicyService
 from core.verification.enums import AssuranceLevel, VerificationStatus
+from core.verification.exceptions import ConcurrentTransitionError
 from core.verification.models import VerificationSession
 from core.verification.service import VerificationSessionService
 
@@ -48,8 +49,13 @@ class FakeSessionRepository:
         return session
 
     async def get(self, session_id, tenant_id):
+        # A fresh copy, deliberately -- see test_verification_session_service.py's
+        # identical fake for why a real DB-backed repository never hands
+        # back a live, caller-mutable reference here.
         session = self.sessions.get(session_id)
-        return session if session and session.tenant_id == tenant_id else None
+        if session is None or session.tenant_id != tenant_id:
+            return None
+        return session.model_copy()
 
     async def get_by_idempotency_key(self, tenant_id, idempotency_key):
         return None
@@ -57,7 +63,12 @@ class FakeSessionRepository:
     async def list(self, tenant_id):
         return [s for s in self.sessions.values() if s.tenant_id == tenant_id]
 
-    async def update(self, session):
+    async def update(self, session, *, expected_status):
+        current = self.sessions.get(session.id)
+        if current is None or current.status != expected_status:
+            raise ConcurrentTransitionError(
+                f"session_id={session.id!s} was not in status {expected_status.value!r}"
+            )
         self.sessions[session.id] = session
         return session
 

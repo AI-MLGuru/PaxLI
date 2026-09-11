@@ -4,6 +4,7 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, Field
 
 from core.verification.enums import (
+    PRE_PROCESSING_STATUSES,
     TERMINAL_STATUSES,
     VALID_STATUS_TRANSITIONS,
     AssuranceLevel,
@@ -43,10 +44,7 @@ class VerificationSession(BaseModel):
         expires_at = self.expires_at
         if expires_at.tzinfo is None:
             expires_at = expires_at.replace(tzinfo=UTC)
-        if (
-            self.status in {VerificationStatus.CREATED, VerificationStatus.PROCESSING}
-            and current_time >= expires_at
-        ):
+        if self.status in PRE_PROCESSING_STATUSES and current_time >= expires_at:
             self.transition_to(VerificationStatus.EXPIRED)
             return True
         return False

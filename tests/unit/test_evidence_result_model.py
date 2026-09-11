@@ -48,16 +48,23 @@ def test_evidence_result_status_enum_has_exactly_the_part_iii_vocabulary() -> No
     }
 
 
-def test_evidence_result_status_does_not_share_values_with_verification_status() -> None:
+def test_evidence_result_status_does_not_share_values_with_decision_outcome() -> None:
     """Constitutional check: an evidence result must never be representable
     as a verification decision. VERIFIED/REJECTED/REVIEW_REQUIRED are
-    decision-only outcomes and must not appear in the evidence vocabulary."""
-    from core.verification.enums import VerificationStatus
+    decision-only outcomes and must not appear in the evidence vocabulary.
+    (WF-001: this checks against core.decision.enums.DecisionOutcome, not
+    core.verification.enums.VerificationStatus -- the reconciliation that
+    corrected VerificationStatus removed these three values from it
+    entirely, since they were never legitimately lifecycle values in the
+    first place. INCONCLUSIVE is deliberately excluded from this check:
+    Part III explicitly permits that one label to be shared between an
+    evidence status and a decision outcome, as two distinct enum types.)"""
+    from core.decision.enums import DecisionOutcome
 
     evidence_values = {member.value for member in EvidenceResultStatus}
     decision_only_values = {
-        VerificationStatus.VERIFIED.value,
-        VerificationStatus.REJECTED.value,
-        VerificationStatus.REVIEW_REQUIRED.value,
+        DecisionOutcome.VERIFIED.value,
+        DecisionOutcome.REJECTED.value,
+        DecisionOutcome.REVIEW_REQUIRED.value,
     }
     assert evidence_values.isdisjoint(decision_only_values)

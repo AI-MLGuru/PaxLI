@@ -1,7 +1,8 @@
-"""DE-004 Phase 4 mandatory acceptance gate: WF-4.19.2 / DE-003 §13 --
-evidence submission MUST be rejected for every one of the six terminal
-session states, not just EXPIRED/CANCELLED (DE-002 landmine 2). Real-
-Postgres + MinIO proof of the same property lives in
+"""WF-001 §8 / WF-4.19.2: evidence submission MUST be rejected outside the
+allow-list {CREATED, CAPTURING} -- not merely outside the terminal states.
+SUBMITTED and PROCESSING must also reject ordinary submission despite
+neither being terminal, because the client has already signaled "done" by
+calling /submit. Real-Postgres + MinIO proof of the same property lives in
 tests/integration/test_evidence_service_terminal_state.py; these tests
 exercise the guard itself, and that rejection precedes any mutation, purely
 in memory.
@@ -17,7 +18,12 @@ from core.audit.service import AuditService
 from core.evidence.enums import EvidenceSource, EvidenceType
 from core.evidence.models import Evidence
 from core.evidence.service import EvidenceService
-from core.verification.enums import TERMINAL_STATUSES, AssuranceLevel, VerificationStatus
+from core.verification.enums import (
+    EVIDENCE_SUBMISSION_ALLOWED_STATUSES,
+    AssuranceLevel,
+    VerificationStatus,
+)
+from core.verification.exceptions import ConcurrentTransitionError
 from core.verification.models import VerificationSession
 from core.verification.service import SessionExpiredError, VerificationSessionService
 
@@ -27,8 +33,8 @@ TENANT = "tenant-a"
 # tests/conftest.py uses for server-side media validation (SEC-7.22.2).
 MINIMAL_JPEG_BYTES = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"
 
-NON_TERMINAL_STATUSES = tuple(
-    status for status in VerificationStatus if status not in TERMINAL_STATUSES
+EVIDENCE_SUBMISSION_REJECTED_STATUSES = tuple(
+    status for status in VerificationStatus if status not in EVIDENCE_SUBMISSION_ALLOWED_STATUSES
 )
 
 
@@ -41,8 +47,13 @@ class FakeVerificationSessionRepository:
         return session
 
     async def get(self, session_id: UUID, tenant_id: str) -> VerificationSession | None:
+        # A fresh copy, deliberately -- see test_verification_session_service.py's
+        # identical fake for why a real DB-backed repository never hands
+        # back a live, caller-mutable reference here.
         session = self.sessions.get(session_id)
-        return session if session and session.tenant_id == tenant_id else None
+        if session is None or session.tenant_id != tenant_id:
+            return None
+        return session.model_copy()
 
     async def get_by_idempotency_key(self, tenant_id: str, idempotency_key: str):
         return None
@@ -50,7 +61,14 @@ class FakeVerificationSessionRepository:
     async def list(self, tenant_id: str):
         return [s for s in self.sessions.values() if s.tenant_id == tenant_id]
 
-    async def update(self, session: VerificationSession) -> VerificationSession:
+    async def update(
+        self, session: VerificationSession, *, expected_status: VerificationStatus
+    ) -> VerificationSession:
+        current = self.sessions.get(session.id)
+        if current is None or current.status != expected_status:
+            raise ConcurrentTransitionError(
+                f"session_id={session.id!s} was not in status {expected_status.value!r}"
+            )
         self.sessions[session.id] = session
         return session
 
@@ -132,11 +150,10 @@ class FakeAuditRepository:
 def _session_in_status(status: VerificationStatus) -> VerificationSession:
     """Constructed directly in the target status, bypassing
     transition_to()'s legality checks -- these tests seed an arbitrary
-    terminal state to prove the evidence-submission guard, not exercise the
+    status to prove the evidence-submission guard, not exercise the
     session state machine itself. `expires_at` is set in the future so
-    VerificationSessionService.get()'s expire_if_needed() side effect never
-    interferes (and for CREATED/PROCESSING it would be a no-op on a
-    non-terminal status anyway)."""
+    VerificationSessionService.get()'s expire_if_needed() side effect
+    never interferes."""
     now = datetime.now(UTC)
     return VerificationSession(
         tenant_id=TENANT,
@@ -163,8 +180,10 @@ def service():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("status", sorted(TERMINAL_STATUSES, key=lambda s: s.value))
-async def test_evidence_submission_is_rejected_for_every_terminal_status(service, status) -> None:
+@pytest.mark.parametrize(
+    "status", sorted(EVIDENCE_SUBMISSION_REJECTED_STATUSES, key=lambda s: s.value)
+)
+async def test_evidence_submission_is_rejected_outside_the_allow_list(service, status) -> None:
     svc, session_repo, evidence_repo, storage, _audit_repo = service
     session = _session_in_status(status)
     await session_repo.add(session)
@@ -186,13 +205,13 @@ async def test_evidence_submission_is_rejected_for_every_terminal_status(service
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("status", NON_TERMINAL_STATUSES)
-async def test_evidence_submission_is_accepted_for_every_non_terminal_status(
-    service, status
-) -> None:
-    """The mirror image, so the fix is proven to widen the guard correctly
-    rather than simply rejecting everything: CREATED and PROCESSING must
-    remain unaffected."""
+@pytest.mark.parametrize(
+    "status", sorted(EVIDENCE_SUBMISSION_ALLOWED_STATUSES, key=lambda s: s.value)
+)
+async def test_evidence_submission_is_accepted_for_every_allowed_status(service, status) -> None:
+    """The mirror image, so the fix is proven to scope the guard correctly
+    rather than simply rejecting everything: CREATED and CAPTURING must
+    remain accepted."""
     svc, session_repo, evidence_repo, storage, _audit_repo = service
     session = _session_in_status(status)
     await session_repo.add(session)
@@ -211,17 +230,22 @@ async def test_evidence_submission_is_accepted_for_every_non_terminal_status(
     assert evidence_repo.add_calls == 1
 
 
-def test_terminal_and_non_terminal_status_sets_are_exhaustive_and_disjoint() -> None:
+def test_allowed_and_rejected_status_sets_are_exhaustive_and_disjoint() -> None:
     """Guards against a future new VerificationStatus member silently
     falling into neither set."""
     all_statuses = set(VerificationStatus)
-    assert TERMINAL_STATUSES | set(NON_TERMINAL_STATUSES) == all_statuses
-    assert TERMINAL_STATUSES.isdisjoint(NON_TERMINAL_STATUSES)
-    assert TERMINAL_STATUSES == {
-        VerificationStatus.VERIFIED,
-        VerificationStatus.REJECTED,
-        VerificationStatus.REVIEW_REQUIRED,
-        VerificationStatus.INCONCLUSIVE,
+    assert EVIDENCE_SUBMISSION_ALLOWED_STATUSES | set(EVIDENCE_SUBMISSION_REJECTED_STATUSES) == (
+        all_statuses
+    )
+    assert EVIDENCE_SUBMISSION_ALLOWED_STATUSES.isdisjoint(EVIDENCE_SUBMISSION_REJECTED_STATUSES)
+    assert EVIDENCE_SUBMISSION_ALLOWED_STATUSES == {
+        VerificationStatus.CREATED,
+        VerificationStatus.CAPTURING,
+    }
+    assert set(EVIDENCE_SUBMISSION_REJECTED_STATUSES) == {
+        VerificationStatus.SUBMITTED,
+        VerificationStatus.PROCESSING,
+        VerificationStatus.COMPLETED,
         VerificationStatus.EXPIRED,
         VerificationStatus.CANCELLED,
     }

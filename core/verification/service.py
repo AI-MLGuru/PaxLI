@@ -2,17 +2,23 @@ from uuid import UUID
 
 from core.policy.exceptions import NoActivePolicyError
 from core.policy.service import PolicyService
-from core.verification.enums import AssuranceLevel, VerificationStatus
+from core.verification.enums import TERMINAL_STATUSES, AssuranceLevel, VerificationStatus
+from core.verification.exceptions import (
+    ConcurrentTransitionError,
+    SessionAlreadyTerminalError,
+    SessionExpiredError,
+    SessionNotFoundError,
+)
 from core.verification.models import VerificationSession
 from core.verification.repository import VerificationSessionRepository
 
-
-class SessionNotFoundError(Exception):
-    pass
-
-
-class SessionExpiredError(Exception):
-    pass
+__all__ = [
+    "ConcurrentTransitionError",
+    "SessionAlreadyTerminalError",
+    "SessionExpiredError",
+    "SessionNotFoundError",
+    "VerificationSessionService",
+]
 
 
 class VerificationSessionService:
@@ -85,13 +91,40 @@ class VerificationSessionService:
         session = await self.repository.get(session_id, tenant_id)
         if session is None:
             raise SessionNotFoundError
+        original_status = session.status
         if session.expire_if_needed():
-            await self.repository.update(session)
+            try:
+                await self.repository.update(session, expected_status=original_status)
+            except ConcurrentTransitionError:
+                # A concurrent write already resolved this session's
+                # status (another request's own lazy expire, or a real
+                # workflow transition) -- this is a harmless lost race on
+                # a read path's opportunistic side effect, not a conflict
+                # to surface. Re-fetch and return whatever is now true,
+                # rather than raising for a caller that only ever asked
+                # to read.
+                refetched = await self.repository.get(session_id, tenant_id)
+                if refetched is None:
+                    raise SessionNotFoundError from None
+                return refetched
         return session
 
     async def cancel(self, *, session_id: UUID, tenant_id: str) -> VerificationSession:
+        """Raises SessionAlreadyTerminalError (WF-001 §6) for any of the
+        three terminal states, checked explicitly before attempting the
+        transition -- never a bare ValueError escaping from
+        transition_to()'s own internal legality guard. A ConcurrentTransitionError
+        from the CAS write below (a genuine race against another
+        transition) propagates unchanged: unlike get()'s lazy expire,
+        this is an explicit, client-intent-driven request, and losing a
+        race here is a real conflict the caller needs to see, not a
+        harmless side effect to swallow."""
         session = await self.get(session_id=session_id, tenant_id=tenant_id)
-        if session.status == VerificationStatus.EXPIRED:
-            raise SessionExpiredError
+        if session.status in TERMINAL_STATUSES:
+            raise SessionAlreadyTerminalError(
+                f"session_id={session_id!s} is already {session.status.value} "
+                "and cannot be cancelled"
+            )
+        original_status = session.status
         session.transition_to(VerificationStatus.CANCELLED)
-        return await self.repository.update(session)
+        return await self.repository.update(session, expected_status=original_status)
