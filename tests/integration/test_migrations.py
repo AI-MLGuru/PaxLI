@@ -14,7 +14,7 @@ from urllib.parse import urlparse
 
 import pytest
 
-from apps.api.averiq_api.config import get_settings
+from apps.api.paxli_api.config import get_settings
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 

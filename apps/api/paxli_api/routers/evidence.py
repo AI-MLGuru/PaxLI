@@ -13,16 +13,16 @@ from fastapi import (
     status,
 )
 
-from apps.api.averiq_api.config import Settings, get_settings
-from apps.api.averiq_api.dependencies import (
+from apps.api.paxli_api.config import Settings, get_settings
+from apps.api.paxli_api.dependencies import (
     enforce_rate_limit,
     get_audit_service,
     get_evidence_service,
     get_principal,
     get_rate_limiter,
 )
-from apps.api.averiq_api.routers.verification_sessions import request_id
-from apps.api.averiq_api.schemas.verification import (
+from apps.api.paxli_api.routers.verification_sessions import request_id
+from apps.api.paxli_api.schemas.verification import (
     DeleteEvidenceRequest,
     EvidenceListEnvelope,
     EvidenceResponse,

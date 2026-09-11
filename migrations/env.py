@@ -6,7 +6,7 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
-from apps.api.averiq_api.config import get_settings
+from apps.api.paxli_api.config import get_settings
 from infrastructure.database import models  # noqa: F401  (registers tables on Base.metadata)
 from infrastructure.database.base import Base
 

@@ -8,7 +8,7 @@ successful denial.
 
 from sqlalchemy import select
 
-from apps.api.averiq_api.main import app
+from apps.api.paxli_api.main import app
 from infrastructure.database.models.audit_event import AuditEventRecord
 
 

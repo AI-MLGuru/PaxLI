@@ -2,8 +2,8 @@ from uuid import UUID
 
 import pytest
 
-from apps.api.averiq_api.dependencies import get_principal
-from apps.api.averiq_api.routers.verification_sessions import tenant_from_principal
+from apps.api.paxli_api.dependencies import get_principal
+from apps.api.paxli_api.routers.verification_sessions import tenant_from_principal
 from core.security.authentication import authenticate_bearer
 from core.security.credentials import CredentialService
 from core.security.exceptions import AuthenticationError

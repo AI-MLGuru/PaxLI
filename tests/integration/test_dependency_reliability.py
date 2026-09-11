@@ -10,8 +10,8 @@ from urllib.parse import urlparse
 import pytest
 from sqlalchemy import text
 
-from apps.api.averiq_api.config import get_settings
-from apps.api.averiq_api.main import app
+from apps.api.paxli_api.config import get_settings
+from apps.api.paxli_api.main import app
 from infrastructure.database.session import engine, session_factory
 from infrastructure.reliability.dependency_health import DependencyHealthState
 from infrastructure.reliability.postgres_policies import guarded_commit

@@ -9,7 +9,7 @@ from uuid import uuid4
 
 from sqlalchemy import select
 
-from apps.api.averiq_api.main import app
+from apps.api.paxli_api.main import app
 from core.audit.enums import UNATTRIBUTED_TENANT_ID
 from infrastructure.database.models.audit_event import AuditEventRecord
 

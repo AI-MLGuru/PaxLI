@@ -3,22 +3,22 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 
-from apps.api.averiq_api.config import Settings, get_settings
-from apps.api.averiq_api.dependencies import (
+from apps.api.paxli_api.config import Settings, get_settings
+from apps.api.paxli_api.dependencies import (
     enforce_rate_limit,
     get_audit_service,
     get_credential_service,
     get_principal,
     get_rate_limiter,
 )
-from apps.api.averiq_api.routers.verification_sessions import request_id
-from apps.api.averiq_api.schemas.security import (
+from apps.api.paxli_api.routers.verification_sessions import request_id
+from apps.api.paxli_api.schemas.security import (
     IssueCredentialRequest,
     IssuedCredentialEnvelope,
     IssuedCredentialResponse,
     RotateCredentialRequest,
 )
-from apps.api.averiq_api.schemas.verification import ResponseMeta
+from apps.api.paxli_api.schemas.verification import ResponseMeta
 from core.audit.enums import AuditActorType, AuditEventType, AuditStatus
 from core.audit.service import AuditService
 from core.rate_limit.limiter import RateLimiterProtocol

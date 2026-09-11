@@ -11,7 +11,7 @@ import json
 
 import structlog
 
-from apps.api.averiq_api.config import Settings
+from apps.api.paxli_api.config import Settings
 from infrastructure.observability.logging import _sanitize_processor, configure_logging
 
 

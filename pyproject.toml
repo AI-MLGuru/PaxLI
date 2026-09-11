@@ -3,7 +3,7 @@ requires = ["setuptools>=70"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "averiq"
+name = "paxli"
 version = "0.1.0"
 description = "Identity verification and biometric trust infrastructure built by PaxAlpha."
 readme = "README.md"
@@ -50,7 +50,7 @@ line-length = 100
 select = ["E", "F", "I", "UP", "B"]
 
 [tool.ruff.lint.per-file-ignores]
-"apps/api/averiq_api/routers/*.py" = ["B008"]
+"apps/api/paxli_api/routers/*.py" = ["B008"]
 
 [tool.black]
 target-version = ["py312"]

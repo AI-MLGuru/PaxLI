@@ -92,7 +92,7 @@ containers.
 
 ## Files changed
 
-`apps/api/averiq_api/main.py`, `infrastructure/database/session.py`,
+`apps/api/paxli_api/main.py`, `infrastructure/database/session.py`,
 `infrastructure/storage/minio.py` (modified);
 `infrastructure/reliability/{__init__,_shared,postgres_policies,minio_policies,dependency_health}.py`,
 `infrastructure/observability/{logging,reliability_logging}.py` (new);

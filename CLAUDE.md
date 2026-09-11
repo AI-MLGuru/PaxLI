@@ -133,7 +133,7 @@ Relevant areas include:
 core/security/
 infrastructure/security/
 infrastructure/database/
-apps/api/averiq_api/
+apps/api/paxli_api/
 tests/security/
 tests/adversarial/
 tests/integration/

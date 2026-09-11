@@ -62,7 +62,7 @@ python -m venv .venv
 # Windows: .venv\\Scripts\\activate
 # Linux/macOS: source .venv/bin/activate
 pip install -e ".[dev]"
-uvicorn apps.api.averiq_api.main:app --reload
+uvicorn apps.api.paxli_api.main:app --reload
 ```
 
 API health endpoint:

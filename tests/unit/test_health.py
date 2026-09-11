@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 
-from apps.api.averiq_api.main import app
+from apps.api.paxli_api.main import app
 
 client = TestClient(app)
 

@@ -15,7 +15,7 @@ from uuid import uuid4
 
 import pytest
 
-from apps.api.averiq_api.config import get_settings
+from apps.api.paxli_api.config import get_settings
 from core.audit.service import AuditService
 from core.decision.enums import DecisionOutcome, EngineReasonCode
 from core.decision.orchestration import DecisionOrchestrator

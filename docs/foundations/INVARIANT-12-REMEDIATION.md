@@ -42,9 +42,9 @@ Invariant 12 governs the audit-before-effect contract every other invariant and 
 
 ## Files changed (by phase)
 
-**Phase 1:** `core/policy/{service,repository}.py`, `infrastructure/database/{models,repositories}/{policy,evidence_result,credential}.py`, `core/evidence_result/{service,repository}.py`, `core/security/{credentials,exceptions}.py`, `apps/api/averiq_api/{main,routers/management/credentials}.py`, 3 new migrations, 8 test files.
-**Phase 2:** `core/audit/enums.py`, `core/policy/service.py`, `core/security/{credentials,exceptions}.py`, `apps/api/averiq_api/{main,routers/management/credentials}.py`, new `infrastructure/audit/{__init__,independent}.py`, 4 test files.
-**Phase 3:** `core/audit/{repository,service}.py`, `infrastructure/database/repositories/audit_event.py`, new `apps/api/averiq_api/routers/management/audit.py`, `apps/api/averiq_api/main.py`, 1 new test file.
+**Phase 1:** `core/policy/{service,repository}.py`, `infrastructure/database/{models,repositories}/{policy,evidence_result,credential}.py`, `core/evidence_result/{service,repository}.py`, `core/security/{credentials,exceptions}.py`, `apps/api/paxli_api/{main,routers/management/credentials}.py`, 3 new migrations, 8 test files.
+**Phase 2:** `core/audit/enums.py`, `core/policy/service.py`, `core/security/{credentials,exceptions}.py`, `apps/api/paxli_api/{main,routers/management/credentials}.py`, new `infrastructure/audit/{__init__,independent}.py`, 4 test files.
+**Phase 3:** `core/audit/{repository,service}.py`, `infrastructure/database/repositories/audit_event.py`, new `apps/api/paxli_api/routers/management/audit.py`, `apps/api/paxli_api/main.py`, 1 new test file.
 **Phase 4:** `tests/contracts/security/test_audit_ordering.py`.
 
 ## Commits

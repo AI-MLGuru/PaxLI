@@ -10,8 +10,8 @@ from uuid import UUID
 
 from sqlalchemy import select
 
-from apps.api.averiq_api.dependencies import get_audit_service
-from apps.api.averiq_api.main import app
+from apps.api.paxli_api.dependencies import get_audit_service
+from apps.api.paxli_api.main import app
 from core.audit.models import AuditEvent
 from core.audit.service import AuditService
 from infrastructure.database.models.credential import CredentialRecordModel

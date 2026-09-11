@@ -15,7 +15,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import select
 
-from apps.api.averiq_api.config import get_settings
+from apps.api.paxli_api.config import get_settings
 from core.rate_limit.enums import RateLimitScope
 from core.rate_limit.exceptions import RateLimiterUnavailableError
 from core.rate_limit.models import RateLimitRule

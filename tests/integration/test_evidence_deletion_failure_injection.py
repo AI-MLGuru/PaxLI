@@ -19,7 +19,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from apps.api.averiq_api.config import get_settings
+from apps.api.paxli_api.config import get_settings
 from core.audit.enums import AuditEventType
 from core.audit.service import AuditPersistenceError, AuditService
 from core.deletion.enums import DeletionBasis

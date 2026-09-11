@@ -114,7 +114,7 @@ narrowly-scoped Protocol methods — not a generic query capability),
 checked in both services' `request_deletion()` immediately after the
 tenant-scoped existence check and before any tombstone is built. New
 `DeletionBlockedByDependentsError`, with a global exception handler
-(`apps/api/averiq_api/main.py`) mapping it to 409 — the same shape as the
+(`apps/api/paxli_api/main.py`) mapping it to 409 — the same shape as the
 existing `DeletionAlreadyRequestedError` handler.
 
 **Verification (post-fix, real Postgres, both classes):** the identical

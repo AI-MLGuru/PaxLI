@@ -2,7 +2,7 @@ import asyncio
 from io import BytesIO
 from typing import Any
 
-from apps.api.averiq_api.config import Settings
+from apps.api.paxli_api.config import Settings
 from infrastructure.reliability.minio_policies import guarded_delete, guarded_get, guarded_put
 
 

@@ -2,7 +2,7 @@ from collections.abc import AsyncIterator
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from apps.api.averiq_api.config import get_settings
+from apps.api.paxli_api.config import get_settings
 from infrastructure.reliability.postgres_policies import guarded_commit
 
 engine = create_async_engine(get_settings().database_url, pool_pre_ping=True)

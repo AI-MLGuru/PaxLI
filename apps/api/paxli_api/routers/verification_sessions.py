@@ -2,15 +2,15 @@ from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 
-from apps.api.averiq_api.config import Settings, get_settings
-from apps.api.averiq_api.dependencies import (
+from apps.api.paxli_api.config import Settings, get_settings
+from apps.api.paxli_api.dependencies import (
     enforce_rate_limit,
     get_audit_service,
     get_principal,
     get_rate_limiter,
     get_session_service,
 )
-from apps.api.averiq_api.schemas.verification import (
+from apps.api.paxli_api.schemas.verification import (
     CreateVerificationSessionRequest,
     ErrorEnvelope,
     ResponseMeta,

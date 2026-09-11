@@ -3,7 +3,7 @@
 No router exists yet for policy management (Foundation-009 deliberately
 excludes apps/ wiring, matching Foundation-008's precedent), so this proves
 the boundary at the core.security.authorization level directly -- the same
-mechanism apps/api/averiq_api/routers/management/credentials.py already
+mechanism apps/api/paxli_api/routers/management/credentials.py already
 relies on for credential:manage, and where a future policy router would
 plug in identically for policy:manage.
 """

@@ -8,28 +8,28 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
-from apps.api.averiq_api.config import get_settings
-from apps.api.averiq_api.routers.audit import router as audit_router
-from apps.api.averiq_api.routers.evidence import router as evidence_router
-from apps.api.averiq_api.routers.management.audit import (
+from apps.api.paxli_api.config import get_settings
+from apps.api.paxli_api.routers.audit import router as audit_router
+from apps.api.paxli_api.routers.evidence import router as evidence_router
+from apps.api.paxli_api.routers.management.audit import (
     router as management_audit_router,
 )
-from apps.api.averiq_api.routers.management.credentials import (
+from apps.api.paxli_api.routers.management.credentials import (
     router as management_credentials_router,
 )
-from apps.api.averiq_api.routers.management.evidence_results import (
+from apps.api.paxli_api.routers.management.evidence_results import (
     router as management_evidence_results_router,
 )
-from apps.api.averiq_api.routers.verification_sessions import request_id
-from apps.api.averiq_api.routers.verification_sessions import (
+from apps.api.paxli_api.routers.verification_sessions import request_id
+from apps.api.paxli_api.routers.verification_sessions import (
     router as verification_sessions_router,
 )
-from apps.api.averiq_api.schemas.verification import (
+from apps.api.paxli_api.schemas.verification import (
     ErrorBody,
     ErrorEnvelope,
     ResponseMeta,
 )
-from apps.api.averiq_api.transport_security import validate_production_transport_security
+from apps.api.paxli_api.transport_security import validate_production_transport_security
 from core.audit.enums import (
     UNATTRIBUTED_TENANT_ID,
     AuditActorType,
@@ -404,7 +404,7 @@ async def minio_operation_exception_handler(
 
 @app.get("/health", tags=["system"])
 async def health() -> dict[str, str]:
-    return {"status": "ok", "service": "averiq-api", "version": settings.app_version}
+    return {"status": "ok", "service": "paxli-api", "version": settings.app_version}
 
 
 @app.get("/ready", tags=["system"])

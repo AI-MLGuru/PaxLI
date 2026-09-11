@@ -15,7 +15,7 @@ from typing import Any
 import structlog
 from structlog.types import EventDict, WrappedLogger
 
-from apps.api.averiq_api.config import Settings
+from apps.api.paxli_api.config import Settings
 from core.security.classification import sanitize_metadata
 
 

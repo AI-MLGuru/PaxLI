@@ -7,8 +7,8 @@ fail-closed scoping, the 429 contract, and scope isolation.
 
 from uuid import UUID
 
-from apps.api.averiq_api.dependencies import get_credential_service, get_rate_limiter
-from apps.api.averiq_api.main import app
+from apps.api.paxli_api.dependencies import get_credential_service, get_rate_limiter
+from apps.api.paxli_api.main import app
 from core.rate_limit.exceptions import RateLimiterUnavailableError
 from core.rate_limit.models import RateLimitDecision, RateLimitRule
 from core.security.credentials import CredentialService

@@ -3,7 +3,7 @@ from collections.abc import AsyncIterator
 from fastapi import Depends, Header, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from apps.api.averiq_api.config import Settings, get_settings
+from apps.api.paxli_api.config import Settings, get_settings
 from core.audit.service import AuditService
 from core.evidence.service import EvidenceService
 from core.evidence_result.schema_catalog import EvidenceResultSchemaCatalog

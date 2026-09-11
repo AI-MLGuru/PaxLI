@@ -1,7 +1,7 @@
 import pytest
 
-from apps.api.averiq_api.config import Settings
-from apps.api.averiq_api.transport_security import (
+from apps.api.paxli_api.config import Settings
+from apps.api.paxli_api.transport_security import (
     InsecureProductionConfigurationError,
     validate_production_transport_security,
 )

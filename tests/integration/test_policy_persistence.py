@@ -13,7 +13,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from apps.api.averiq_api.config import get_settings
+from apps.api.paxli_api.config import get_settings
 from core.audit.service import AuditService
 from core.evidence_result.schema_catalog import EvidenceResultSchemaCatalog
 from core.policy.enums import PolicyStatus

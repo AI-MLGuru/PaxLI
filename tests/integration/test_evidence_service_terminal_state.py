@@ -13,7 +13,7 @@ from uuid import UUID, uuid4
 import pytest
 from sqlalchemy import select
 
-from apps.api.averiq_api.config import get_settings
+from apps.api.paxli_api.config import get_settings
 from core.audit.service import AuditService
 from core.evidence.enums import EvidenceType
 from core.evidence.service import EvidenceService, SessionExpiredError

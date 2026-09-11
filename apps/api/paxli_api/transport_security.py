@@ -15,7 +15,7 @@ wrong requirement when the real topology already confines that traffic to a
 private network. It's on the operator to attest that honestly.
 """
 
-from apps.api.averiq_api.config import Settings
+from apps.api.paxli_api.config import Settings
 
 
 class InsecureProductionConfigurationError(RuntimeError):

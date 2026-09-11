@@ -3,7 +3,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from apps.api.averiq_api.schemas.verification import ResponseMeta
+from apps.api.paxli_api.schemas.verification import ResponseMeta
 from core.security.models import CredentialScope
 
 

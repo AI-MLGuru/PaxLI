@@ -9,13 +9,13 @@ from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
-from apps.api.averiq_api.config import Settings, get_settings
-from apps.api.averiq_api.dependencies import (
+from apps.api.paxli_api.config import Settings, get_settings
+from apps.api.paxli_api.dependencies import (
     get_evidence_result_service,
     get_evidence_service,
     get_rate_limiter,
 )
-from apps.api.averiq_api.main import app
+from apps.api.paxli_api.main import app
 from core.audit.service import AuditService
 from core.evidence.service import EvidenceService
 from core.evidence_result.service import EvidenceResultService
@@ -110,7 +110,7 @@ async def _activate_standard_policy(session_factory, tenant_id: str) -> None:
     `issued_credentials` pre-seeds authentication. A raw PolicyRecord
     insert, not PolicyService.create_and_activate(): this is fixture setup,
     not something under test, and every api_client test uses STANDARD
-    (the schema default -- apps/api/averiq_api/schemas/verification.py)."""
+    (the schema default -- apps/api/paxli_api/schemas/verification.py)."""
     async with session_factory() as session:
         session.add(
             PolicyRecord(
