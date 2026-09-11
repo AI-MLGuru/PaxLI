@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from apps.api.averiq_api.config import Settings, get_settings
 from core.audit.service import AuditService
 from core.evidence.service import EvidenceService
+from core.evidence_result.service import EvidenceResultService
 from core.rate_limit.enums import RateLimitScope
 from core.rate_limit.evaluation import FailMode, evaluate_admission
 from core.rate_limit.keys import build_scope_key
@@ -19,10 +20,17 @@ from infrastructure.database.repositories.audit_event import (
 )
 from infrastructure.database.repositories.credential import SqlAlchemyCredentialStore
 from infrastructure.database.repositories.evidence import SqlAlchemyEvidenceRepository
+from infrastructure.database.repositories.evidence_result import (
+    SqlAlchemyEvidenceResultRepository,
+)
 from infrastructure.database.repositories.verification_session import (
     SqlAlchemyVerificationSessionRepository,
 )
 from infrastructure.database.session import get_db_session, session_factory
+from infrastructure.deletion.reconciliation import (
+    SqlAlchemyEvidenceDeletionReconciler,
+    SqlAlchemyEvidenceResultDeletionReconciler,
+)
 from infrastructure.rate_limit.network_source import (
     get_network_source_hmac_key,
     hash_network_source,
@@ -72,6 +80,26 @@ async def get_evidence_service(
         ),
         storage,
         AuditService(SqlAlchemyAuditEventRepository(db_session)),
+        deletion_reconciler=SqlAlchemyEvidenceDeletionReconciler(session_factory, storage),
+    )
+
+
+async def get_evidence_result_service(
+    db_session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    settings: Settings = Depends(get_settings),  # noqa: B008
+) -> AsyncIterator[EvidenceResultService]:
+    key_provider = get_local_key_provider(
+        key_id=settings.evidence_encryption_key_id,
+        encoded_key=settings.evidence_encryption_key,
+    )
+    yield EvidenceResultService(
+        SqlAlchemyEvidenceResultRepository(
+            db_session, key_provider, settings.evidence_encryption_key_id
+        ),
+        AuditService(SqlAlchemyAuditEventRepository(db_session)),
+        deletion_reconciler=SqlAlchemyEvidenceResultDeletionReconciler(
+            session_factory, key_provider, settings.evidence_encryption_key_id
+        ),
     )
 
 

@@ -4,6 +4,8 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 from core.audit.enums import AuditActorType, AuditEventType, AuditStatus
+from core.deletion.enums import DeletionBasis
+from core.deletion.validation import MAX_BASIS_REFERENCE_LENGTH
 from core.evidence.enums import EvidenceSource, EvidenceType
 from core.verification.enums import AssuranceLevel, VerificationStatus
 
@@ -63,6 +65,11 @@ class EvidenceResponse(BaseModel):
 class EvidenceListEnvelope(BaseModel):
     data: list[EvidenceResponse]
     meta: ResponseMeta
+
+
+class DeleteEvidenceRequest(BaseModel):
+    deletion_basis: DeletionBasis
+    basis_reference: str | None = Field(default=None, max_length=MAX_BASIS_REFERENCE_LENGTH)
 
 
 class AuditEventResponse(BaseModel):

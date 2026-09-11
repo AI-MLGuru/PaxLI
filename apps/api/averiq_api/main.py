@@ -17,6 +17,9 @@ from apps.api.averiq_api.routers.management.audit import (
 from apps.api.averiq_api.routers.management.credentials import (
     router as management_credentials_router,
 )
+from apps.api.averiq_api.routers.management.evidence_results import (
+    router as management_evidence_results_router,
+)
 from apps.api.averiq_api.routers.verification_sessions import request_id
 from apps.api.averiq_api.routers.verification_sessions import (
     router as verification_sessions_router,
@@ -35,6 +38,8 @@ from core.audit.enums import (
     AuditStatus,
 )
 from core.audit.service import AuditPersistenceError, AuditService
+from core.deletion.exceptions import DeletionAlreadyRequestedError
+from core.evidence.service import EvidenceDeletedError
 from core.rate_limit.exceptions import RateLimitExceededError
 from core.reliability.health import check_dependency
 from core.security.exceptions import (
@@ -138,6 +143,7 @@ app.include_router(evidence_router, prefix=settings.api_prefix)
 app.include_router(audit_router, prefix=settings.api_prefix)
 app.include_router(management_credentials_router, prefix=settings.api_prefix)
 app.include_router(management_audit_router, prefix=settings.api_prefix)
+app.include_router(management_evidence_results_router, prefix=settings.api_prefix)
 
 
 def error_response(request: Request, code: str, message: str, status_code: int) -> JSONResponse:
@@ -293,6 +299,41 @@ async def idempotent_replay_without_secret_exception_handler(
     # original secret is unrecoverable. A clear error beats a response the
     # caller could mistake for having received a secret it didn't get.
     return error_response(request, "IDEMPOTENT_REPLAY_SECRET_UNAVAILABLE", str(exception), 409)
+
+
+@app.exception_handler(EvidenceDeletedError)
+async def evidence_deleted_exception_handler(
+    request: Request, _: EvidenceDeletedError
+) -> JSONResponse:
+    # Invariant-06 remediation Phase 4, firm choice: a deleted evidence ID
+    # must remain distinguishable from one that never existed (410, not
+    # 404) -- but the response body must leak NO deletion metadata (no
+    # basis/actor/timestamps/object key/checksum). Deliberately NOT built
+    # through error_response()/ErrorEnvelope: the approved shape here is
+    # flat, not the app's usual {error: {...}, meta: {...}} nesting.
+    return JSONResponse(
+        status_code=410,
+        content={
+            "code": "EVIDENCE_DELETED",
+            "message": "This evidence has been deleted.",
+            "category": "NOT_FOUND",
+            "request_id": request_id(request),
+        },
+    )
+
+
+@app.exception_handler(DeletionAlreadyRequestedError)
+async def deletion_already_requested_exception_handler(
+    request: Request, exception: DeletionAlreadyRequestedError
+) -> JSONResponse:
+    # A concurrent deletion request lost the race for the same resource
+    # (core.deletion.exceptions.DeletionAlreadyRequestedError -- a
+    # translation of the tombstone table's primary key, same shape as
+    # PolicyActivationConflictError). The deletion the caller wanted still
+    # proceeds via the winning request; this is a retryable conflict, not a
+    # material governed-action failure, so no independent failure audit is
+    # recorded here.
+    return error_response(request, "DELETION_ALREADY_REQUESTED", str(exception), 409)
 
 
 @app.exception_handler(RateLimitExceededError)

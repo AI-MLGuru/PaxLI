@@ -27,6 +27,16 @@ class EvidenceNotFoundError(Exception):
     error, not a no-op (EVD-3.26.2)."""
 
 
+class EvidenceDeletedError(Exception):
+    """Raised by the read path when a tenant-scoped tombstone exists for
+    the requested evidence_id -- Invariant-06 remediation Phase 4's firm
+    choice: a deleted evidence ID must remain distinguishable from one that
+    never existed (410 Gone), never collapsed into an ordinary 404. Raised
+    regardless of whether the tombstone has executed_at set: once deletion
+    has been durably requested, the resource must stop being served as
+    live even if reconciliation hasn't physically caught up yet."""
+
+
 class EvidenceDeletionReconciler(Protocol):
     """Performs the Phase-2 (reconciliation) deletion transaction in a
     session independent of the caller's own unit of work: storage delete,
@@ -112,6 +122,14 @@ class EvidenceService:
     async def list(self, *, session_id: UUID, tenant_id: str) -> Sequence[Evidence]:
         await self.session_service.get(session_id=session_id, tenant_id=tenant_id)
         return await self.repository.list_for_session(session_id, tenant_id)
+
+    async def get(self, *, evidence_id: UUID, tenant_id: str) -> Evidence | None:
+        return await self.repository.get(evidence_id, tenant_id)
+
+    async def get_tombstone(
+        self, *, evidence_id: UUID, tenant_id: str
+    ) -> EvidenceTombstone | None:
+        return await self.repository.get_tombstone(evidence_id, tenant_id)
 
     async def request_deletion(
         self,

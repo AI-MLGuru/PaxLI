@@ -13,6 +13,7 @@ from fastapi import (
     status,
 )
 
+from apps.api.averiq_api.config import Settings, get_settings
 from apps.api.averiq_api.dependencies import (
     enforce_rate_limit,
     get_audit_service,
@@ -22,15 +23,17 @@ from apps.api.averiq_api.dependencies import (
 )
 from apps.api.averiq_api.routers.verification_sessions import request_id
 from apps.api.averiq_api.schemas.verification import (
+    DeleteEvidenceRequest,
     EvidenceListEnvelope,
     EvidenceResponse,
     ResponseMeta,
 )
 from core.audit.enums import AuditActorType, AuditEventType, AuditStatus
 from core.audit.service import AuditService
+from core.deletion.exceptions import InvalidDeletionRequestError
 from core.evidence.enums import EvidenceType
 from core.evidence.media_validation import UnsupportedMediaError
-from core.evidence.service import EvidenceService
+from core.evidence.service import EvidenceDeletedError, EvidenceNotFoundError, EvidenceService
 from core.rate_limit.limiter import RateLimiterProtocol
 from core.security.authentication import AuthenticatedPrincipal
 from core.security.authorization import Permission, require_permission
@@ -221,4 +224,100 @@ async def list_evidence(
     return EvidenceListEnvelope(
         data=[EvidenceResponse.model_validate(item) for item in evidence],
         meta=ResponseMeta(request_id=request_id(request)),
+    )
+
+
+@router.get("/{session_id}/evidence/{evidence_id}", response_model=EvidenceResponse)
+async def get_evidence(
+    session_id: UUID,
+    evidence_id: UUID,
+    request: Request,
+    service: EvidenceService = Depends(get_evidence_service),  # noqa: B008
+    principal: AuthenticatedPrincipal = Depends(get_principal),  # noqa: B008
+    audit_service: AuditService = Depends(get_audit_service),  # noqa: B008
+) -> EvidenceResponse:
+    """Individual evidence retrieval (Invariant-06 remediation Phase 4).
+    Tombstone existence is checked BEFORE the live row, and regardless of
+    executed_at -- once deletion has been durably requested, this endpoint
+    must stop serving the resource as live (EvidenceDeletedError -> 410,
+    handled globally so the response body carries no deletion metadata).
+    A resource belonging to another tenant, or never created at all, is an
+    ordinary 404 -- indistinguishable from "never existed" (never a
+    cross-tenant existence oracle)."""
+    require_permission(principal, Permission.EVIDENCE_READ, session_id=str(session_id))
+    tombstone = await service.get_tombstone(evidence_id=evidence_id, tenant_id=principal.tenant_id)
+    if tombstone is not None and tombstone.session_id == session_id:
+        raise EvidenceDeletedError
+    evidence = await service.get(evidence_id=evidence_id, tenant_id=principal.tenant_id)
+    if evidence is None or evidence.session_id != session_id:
+        raise HTTPException(status_code=404, detail="Evidence not found")
+    await audit_service.record(
+        tenant_id=principal.tenant_id,
+        session_id=session_id,
+        event_type=AuditEventType.EVIDENCE_RETRIEVED,
+        component="evidence_api",
+        action="get_evidence",
+        status=AuditStatus.SUCCESS,
+        actor_type=AuditActorType.CLIENT,
+        actor_id=str(principal.credential_id),
+        request_id=request_id(request),
+        correlation_id=request.headers.get("X-Correlation-ID"),
+        metadata={"evidence_id": str(evidence_id)},
+    )
+    return EvidenceResponse.model_validate(evidence)
+
+
+@router.delete("/{session_id}/evidence/{evidence_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_evidence(
+    session_id: UUID,
+    evidence_id: UUID,
+    payload: DeleteEvidenceRequest,
+    request: Request,
+    service: EvidenceService = Depends(get_evidence_service),  # noqa: B008
+    principal: AuthenticatedPrincipal = Depends(get_principal),  # noqa: B008
+    settings: Settings = Depends(get_settings),  # noqa: B008
+    limiter: RateLimiterProtocol = Depends(get_rate_limiter),  # noqa: B008
+) -> None:
+    """Two-phase deletion (Invariant-06 remediation), driven synchronously
+    within this one request since no worker/queue exists in v1: request_
+    deletion (Phase 1, durable intent + REQUIRED audit) followed by
+    reconcile_deletion (Phase 2, its own independent transaction). If
+    Phase 2 raises, Phase 1's commit already stands -- the client sees an
+    error but a retried DELETE safely resumes from the tombstone via each
+    phase's idempotent short-circuit, never re-doing completed work or
+    setting executed_at prematurely.
+
+    Administrative-only (Permission.EVIDENCE_DELETE); reuses the
+    credential-management rate-limit bucket under a distinct operation
+    name rather than adding a new Settings knob for a single admin route."""
+    require_permission(principal, Permission.EVIDENCE_DELETE, session_id=str(session_id))
+    await enforce_rate_limit(
+        principal,
+        operation="evidence_delete",
+        limit=settings.rate_limit_credential_manage_per_window,
+        window_seconds=settings.rate_limit_credential_manage_window_seconds,
+        fail_mode="closed",
+        limiter=limiter,
+    )
+    try:
+        tombstone = await service.request_deletion(
+            evidence_id=evidence_id,
+            tenant_id=principal.tenant_id,
+            deletion_basis=payload.deletion_basis,
+            basis_reference=payload.basis_reference,
+            authorized_by=str(principal.credential_id),
+            request_id=request_id(request),
+            correlation_id=request.headers.get("X-Correlation-ID"),
+        )
+    except EvidenceNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Evidence not found") from exc
+    except InvalidDeletionRequestError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if tombstone.session_id != session_id:
+        raise HTTPException(status_code=404, detail="Evidence not found")
+    await service.reconcile_deletion(
+        evidence_id=evidence_id,
+        tenant_id=principal.tenant_id,
+        request_id=request_id(request),
+        correlation_id=request.headers.get("X-Correlation-ID"),
     )

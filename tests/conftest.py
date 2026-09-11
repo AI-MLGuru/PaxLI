@@ -9,10 +9,15 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import StaticPool
 
 from apps.api.averiq_api.config import Settings, get_settings
-from apps.api.averiq_api.dependencies import get_evidence_service, get_rate_limiter
+from apps.api.averiq_api.dependencies import (
+    get_evidence_result_service,
+    get_evidence_service,
+    get_rate_limiter,
+)
 from apps.api.averiq_api.main import app
 from core.audit.service import AuditService
 from core.evidence.service import EvidenceService
+from core.evidence_result.service import EvidenceResultService
 from core.rate_limit.models import RateLimitDecision, RateLimitRule
 from core.security.credentials import CredentialService
 from core.security.models import CredentialScope
@@ -21,10 +26,17 @@ from infrastructure.database.base import Base
 from infrastructure.database.repositories.audit_event import SqlAlchemyAuditEventRepository
 from infrastructure.database.repositories.credential import SqlAlchemyCredentialStore
 from infrastructure.database.repositories.evidence import SqlAlchemyEvidenceRepository
+from infrastructure.database.repositories.evidence_result import (
+    SqlAlchemyEvidenceResultRepository,
+)
 from infrastructure.database.repositories.verification_session import (
     SqlAlchemyVerificationSessionRepository,
 )
 from infrastructure.database.session import get_db_session
+from infrastructure.deletion.reconciliation import (
+    SqlAlchemyEvidenceDeletionReconciler,
+    SqlAlchemyEvidenceResultDeletionReconciler,
+)
 from infrastructure.security.hashing import ScryptSecretHasher
 from infrastructure.security.local_key_provider import LocalAesGcmKeyProvider
 from infrastructure.storage.encrypted import EncryptedObjectStorage
@@ -114,10 +126,23 @@ def api_client(session_factory, raw_storage):
             ),
             storage,
             AuditService(SqlAlchemyAuditEventRepository(db_session)),
+            deletion_reconciler=SqlAlchemyEvidenceDeletionReconciler(session_factory, storage),
+        )
+
+    async def override_get_evidence_result_service(
+        db_session: AsyncSession = Depends(override_get_db_session),  # noqa: B008
+    ) -> AsyncIterator[EvidenceResultService]:
+        yield EvidenceResultService(
+            SqlAlchemyEvidenceResultRepository(db_session, key_provider, "test-evidence-key"),
+            AuditService(SqlAlchemyAuditEventRepository(db_session)),
+            deletion_reconciler=SqlAlchemyEvidenceResultDeletionReconciler(
+                session_factory, key_provider, "test-evidence-key"
+            ),
         )
 
     app.dependency_overrides[get_db_session] = override_get_db_session
     app.dependency_overrides[get_evidence_service] = override_get_evidence_service
+    app.dependency_overrides[get_evidence_result_service] = override_get_evidence_result_service
     app.dependency_overrides[get_rate_limiter] = lambda: AlwaysAllowRateLimiter()
     original_db_session_factory = app.state.db_session_factory
     app.state.db_session_factory = session_factory
@@ -138,6 +163,7 @@ async def issued_credentials(session_factory) -> dict[str, str]:
             ("tenant_a_operational", "tenant-a", CredentialScope.OPERATIONAL),
             ("tenant_a_admin", "tenant-a", CredentialScope.ADMINISTRATIVE),
             ("tenant_b_operational", "tenant-b", CredentialScope.OPERATIONAL),
+            ("tenant_b_admin", "tenant-b", CredentialScope.ADMINISTRATIVE),
         ):
             issued = await service.issue(
                 tenant_id=tenant_id, name=label, scope=scope, expires_in=timedelta(days=1)

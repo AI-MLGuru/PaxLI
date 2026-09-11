@@ -42,11 +42,22 @@ class SqlAlchemyEvidenceRepository:
         return record.to_domain()
 
     async def list_for_session(self, session_id: UUID, tenant_id: str) -> Sequence[Evidence]:
+        # Excludes evidence with any tombstone (requested or executed): once
+        # deletion has been durably requested, the resource must stop
+        # appearing as live through every read path, not just the
+        # single-item GET (Invariant-06 remediation Phase 4 consistency --
+        # the row can still physically exist here for a short window before
+        # reconciliation executes, or indefinitely if reconciliation is
+        # retrying after a failure).
+        already_tombstoned = select(EvidenceTombstoneRecord.evidence_id).where(
+            EvidenceTombstoneRecord.evidence_id == EvidenceRecord.id
+        )
         statement = (
             select(EvidenceRecord)
             .where(
                 EvidenceRecord.session_id == str(session_id),
                 EvidenceRecord.tenant_id == tenant_id,
+                ~already_tombstoned.exists(),
             )
             .order_by(EvidenceRecord.created_at)
         )
