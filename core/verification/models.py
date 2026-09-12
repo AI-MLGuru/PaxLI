@@ -46,12 +46,21 @@ class VerificationSession(BaseModel):
         if status in TERMINAL_STATUSES:
             self.completed_at = datetime.now(UTC)
 
-    def expire_if_needed(self, now: datetime | None = None) -> bool:
+    def is_past_expiry(self, now: datetime | None = None) -> bool:
+        """Timezone-normalized `expires_at` comparison, with no transition
+        side effect -- shared by expire_if_needed() (pre-processing lazy
+        expiry, below) and VerificationWorkflowService's PROCESSING-
+        recovery branch (WF-001 §7), which needs the identical comparison
+        to select EvaluationReason.EXPIRATION vs NORMAL without itself
+        performing any transition (PROCESSING has no EXPIRED edge)."""
         current_time = now or datetime.now(UTC)
         expires_at = self.expires_at
         if expires_at.tzinfo is None:
             expires_at = expires_at.replace(tzinfo=UTC)
-        if self.status in PRE_PROCESSING_STATUSES and current_time >= expires_at:
+        return current_time >= expires_at
+
+    def expire_if_needed(self, now: datetime | None = None) -> bool:
+        if self.status in PRE_PROCESSING_STATUSES and self.is_past_expiry(now):
             self.transition_to(VerificationStatus.EXPIRED)
             return True
         return False

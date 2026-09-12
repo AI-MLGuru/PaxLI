@@ -248,6 +248,20 @@ class DecisionOrchestrator:
             candidate, request_id=request_id, correlation_id=correlation_id
         )
 
+    async def get_for_session(
+        self, *, session_id: UUID, tenant_id: str
+    ) -> DecisionProvenance | None:
+        """A pure-read passthrough to persistence_service.get_for_session()
+        -- exists so WF-001 §4's PROCESSING/COMPLETED dispatch in
+        VerificationWorkflowService.submit() can reach the durable
+        decision through its one-way dependency on DecisionOrchestrator
+        (§3's diagram), rather than the workflow layer needing its own,
+        second direct dependency on DecisionPersistenceService for this
+        one read."""
+        return await self.persistence_service.get_for_session(
+            session_id=session_id, tenant_id=tenant_id
+        )
+
     async def _persist_engine_failure(
         self,
         *,

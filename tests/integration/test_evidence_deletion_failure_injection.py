@@ -101,8 +101,14 @@ def _evidence_storage() -> EncryptedObjectStorage:
 
 async def _seed_requested_deletion(*, tenant_id: str, storage: EncryptedObjectStorage):
     """Creates and request_deletion()s one evidence item; returns
-    (evidence, session_id) with the tombstone durably requested but not
-    yet executed -- the common Phase-5 starting state."""
+    (evidence, session_id, status_after_seeding) with the tombstone
+    durably requested but not yet executed -- the common Phase-5 starting
+    state. `status_after_seeding` is CAPTURING, not CREATED (WF-001 §2's
+    auto-transition on first accepted evidence submission) -- callers
+    comparing the post-reconciliation status against this captured value,
+    rather than a hardcoded literal, correctly test "deletion
+    reconciliation doesn't itself touch session lifecycle state"
+    regardless of what evidence submission's own side effects are."""
     async with session_factory() as session:
         session_id = await _create_session_row(session, tenant_id)
         session_repository = SqlAlchemyVerificationSessionRepository(session)
@@ -128,7 +134,9 @@ async def _seed_requested_deletion(*, tenant_id: str, storage: EncryptedObjectSt
             authorized_by="admin-phase5",
         )
         await session.commit()
-    return evidence, session_id
+        seeded_session = await session_repository.get(UUID(session_id), tenant_id)
+        assert seeded_session is not None
+    return evidence, session_id, seeded_session.status.value
 
 
 async def test_scenario_1_minio_succeeds_db_fails_then_retry_converges() -> None:
@@ -139,7 +147,9 @@ async def test_scenario_1_minio_succeeds_db_fails_then_retry_converges() -> None
     exactly once with sensitive content gone from both stores."""
     tenant_id = f"tenant-phase5-s1-{uuid4()}"
     storage = _evidence_storage()
-    evidence, session_id = await _seed_requested_deletion(tenant_id=tenant_id, storage=storage)
+    evidence, session_id, seeded_status = await _seed_requested_deletion(
+        tenant_id=tenant_id, storage=storage
+    )
 
     reconciler = SqlAlchemyEvidenceDeletionReconciler(session_factory, storage)
     with patch.object(
@@ -182,7 +192,7 @@ async def test_scenario_1_minio_succeeds_db_fails_then_retry_converges() -> None
         session_repo = SqlAlchemyVerificationSessionRepository(session)
         verification_session = await session_repo.get(UUID(session_id), tenant_id)
         assert verification_session is not None
-        assert verification_session.status.value == "CREATED"
+        assert verification_session.status.value == seeded_status
 
 
 async def test_scenario_2_db_succeeds_audit_fails_then_retry_converges() -> None:
@@ -196,7 +206,9 @@ async def test_scenario_2_db_succeeds_audit_fails_then_retry_converges() -> None
     is not merely an application-level promise."""
     tenant_id = f"tenant-phase5-s2-{uuid4()}"
     storage = _evidence_storage()
-    evidence, session_id = await _seed_requested_deletion(tenant_id=tenant_id, storage=storage)
+    evidence, session_id, _seeded_status = await _seed_requested_deletion(
+        tenant_id=tenant_id, storage=storage
+    )
 
     reconciler = SqlAlchemyEvidenceDeletionReconciler(session_factory, storage)
     with patch.object(
@@ -250,7 +262,9 @@ async def test_scenario_3_process_interruption_then_fresh_reconciler_recovers() 
     verification outcome."""
     tenant_id = f"tenant-phase5-s3-{uuid4()}"
     storage = _evidence_storage()
-    evidence, session_id = await _seed_requested_deletion(tenant_id=tenant_id, storage=storage)
+    evidence, session_id, seeded_status = await _seed_requested_deletion(
+        tenant_id=tenant_id, storage=storage
+    )
 
     # The interruption: only the storage side completed before the process
     # died. No DB reconciliation transaction was ever opened.
@@ -283,7 +297,7 @@ async def test_scenario_3_process_interruption_then_fresh_reconciler_recovers() 
         session_repo = SqlAlchemyVerificationSessionRepository(session)
         verification_session = await session_repo.get(UUID(session_id), tenant_id)
         assert verification_session is not None
-        assert verification_session.status.value == "CREATED"  # no fabricated outcome
+        assert verification_session.status.value == seeded_status  # no fabricated outcome
 
     with pytest.raises(Exception):  # noqa: B017 -- MinIO S3Error, not-found
         await storage.get(evidence.object_key)  # sensitive object content gone

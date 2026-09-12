@@ -142,7 +142,11 @@ class FakeSessionRepository:
             raise ConcurrentTransitionError(
                 f"session_id={session.id!s} was not in status {expected_status.value!r}"
             )
-        self.sessions[session.id] = session
+        # A copy, deliberately -- see test_verification_session_service.py's
+        # identical fake for why storing the caller's own live object
+        # here would let a later transition_to() call corrupt what this
+        # dict believes is "currently stored."
+        self.sessions[session.id] = session.model_copy()
         return session
 
 

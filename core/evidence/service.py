@@ -20,7 +20,9 @@ from core.evidence.exceptions import (
 from core.evidence.media_validation import verify_evidence_media
 from core.evidence.models import Evidence, EvidenceTombstone
 from core.evidence.repository import EvidenceRepository
-from core.verification.enums import EVIDENCE_SUBMISSION_ALLOWED_STATUSES
+from core.verification.enums import EVIDENCE_SUBMISSION_ALLOWED_STATUSES, VerificationStatus
+from core.verification.exceptions import ConcurrentTransitionError
+from core.verification.models import VerificationSession
 from core.verification.service import SessionExpiredError, VerificationSessionService
 
 if TYPE_CHECKING:
@@ -36,6 +38,7 @@ __all__ = [
 ]
 
 _SYSTEM_COMPONENT = "evidence"
+_SYSTEM_ACTOR_ID = "evidence-service"
 
 
 def _compute_evidence_submission_fingerprint(
@@ -185,7 +188,7 @@ class EvidenceService:
             fingerprint=fingerprint,
         )
         try:
-            return await self.repository.add(evidence, idempotency_key)
+            saved = await self.repository.add(evidence, idempotency_key)
         except IdempotencyKeyConflictError:
             await self.storage.delete(object_key)
             if idempotency_key is None:
@@ -207,10 +210,55 @@ class EvidenceService:
                 idempotency_key=idempotency_key,
                 session_id=session_id,
             )
+            # A converged replay: the CAPTURING advance below (if needed
+            # at all) already happened as part of the WINNING attempt's
+            # own execution -- nothing new to advance here.
             return winner
         except Exception:
             await self.storage.delete(object_key)
             raise
+
+        try:
+            await self._advance_to_capturing_if_needed(session)
+        except Exception:
+            await self.storage.delete(object_key)
+            raise
+        return saved
+
+    async def _advance_to_capturing_if_needed(self, session: VerificationSession) -> None:
+        """WF-001 §2: the one automatic transition in the whole lifecycle
+        model -- a session's first accepted evidence submission silently
+        advances it from CREATED to CAPTURING. Opportunistic, like
+        VerificationSessionService.get()'s own lazy-expire side effect: a
+        lost CAS race here means a concurrent submission already made the
+        identical transition, which is success from this caller's
+        perspective, not a conflict to surface -- the evidence itself was
+        already durably staged by the time this runs. A required-audit
+        failure, unlike the CAS race, is NOT swallowed: it propagates and
+        the caller's ambient transaction does not commit, taking this
+        opportunistic transition (and the evidence write staged alongside
+        it) back out together, same audit-before-effect discipline as
+        every other required lifecycle event."""
+        if session.status is not VerificationStatus.CREATED:
+            return
+        try:
+            await self.session_service.transition(
+                session=session, new_status=VerificationStatus.CAPTURING
+            )
+        except ConcurrentTransitionError:
+            return
+        await self.audit_service.record(
+            tenant_id=session.tenant_id,
+            session_id=session.id,
+            event_type=AuditEventType.SESSION_CAPTURING_STARTED,
+            component=_SYSTEM_COMPONENT,
+            action="add",
+            status=AuditStatus.SUCCESS,
+            actor_type=AuditActorType.SYSTEM,
+            actor_id=_SYSTEM_ACTOR_ID,
+            metadata={"from_status": "CREATED", "to_status": "CAPTURING"},
+            durability=AuditDurability.REQUIRED,
+        )
 
     async def list(self, *, session_id: UUID, tenant_id: str) -> Sequence[Evidence]:
         await self.session_service.get(session_id=session_id, tenant_id=tenant_id)

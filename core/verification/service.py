@@ -204,6 +204,22 @@ class VerificationSessionService:
                 f"session_id={session_id!s} is already {session.status.value} "
                 "and cannot be cancelled"
             )
+        return await self.transition(session=session, new_status=VerificationStatus.CANCELLED)
+
+    async def transition(
+        self, *, session: VerificationSession, new_status: VerificationStatus
+    ) -> VerificationSession:
+        """WF-001 §4/§11: the generic CAS-based transition every specific
+        one (cancel() above, and the multi-hop advance VerificationWorkflowService.
+        submit() drives through SUBMITTED/PROCESSING/COMPLETED) shares.
+        Legality is enforced by VerificationSession.transition_to()'s own
+        table lookup; this method adds only the compare-and-swap write --
+        `session` must be the caller's own current, trusted snapshot (its
+        `status` before transition_to() mutates it in place is exactly
+        the CAS `expected_status`). A ConcurrentTransitionError from a
+        losing race propagates unchanged; deciding whether that is a
+        conflict to surface or a harmless lost race is the caller's call
+        (see get()'s swallow above vs. cancel()'s propagate)."""
         original_status = session.status
-        session.transition_to(VerificationStatus.CANCELLED)
+        session.transition_to(new_status)
         return await self.repository.update(session, expected_status=original_status)

@@ -74,7 +74,13 @@ class FakeSessionRepository:
             raise ConcurrentTransitionError(
                 f"session_id={session.id!s} was not in status {expected_status.value!r}"
             )
-        self.sessions[session.id] = session
+        # A copy, deliberately -- storing the caller's own live object
+        # here would let a LATER transition_to() call on that same
+        # reference retroactively mutate what this dict believes is
+        # "currently stored," corrupting a later CAS check's `current`
+        # read before that later update() ever runs. Same aliasing shape
+        # get()/add() already guard against (see above).
+        self.sessions[session.id] = session.model_copy()
         return session
 
 

@@ -20,6 +20,7 @@ from core.evidence.exceptions import IdempotencyKeyConflictError, IdempotencyKey
 from core.evidence.models import Evidence
 from core.evidence.service import EvidenceService
 from core.verification.enums import AssuranceLevel, VerificationStatus
+from core.verification.exceptions import ConcurrentTransitionError
 from core.verification.models import VerificationSession
 from core.verification.service import VerificationSessionService
 
@@ -48,8 +49,20 @@ class FakeVerificationSessionRepository:
     async def list(self, tenant_id: str):
         return [s for s in self.sessions.values() if s.tenant_id == tenant_id]
 
-    async def update(self, session: VerificationSession, *, expected_status):
-        raise NotImplementedError
+    async def update(
+        self, session: VerificationSession, *, expected_status: VerificationStatus
+    ) -> VerificationSession:
+        current = self.sessions.get(session.id)
+        if current is None or current.status != expected_status:
+            raise ConcurrentTransitionError(
+                f"session_id={session.id!s} was not in status {expected_status.value!r}"
+            )
+        # A copy, deliberately -- see test_verification_session_service.py's
+        # identical fake for why storing the caller's own live object
+        # here would let a later transition_to() call corrupt what this
+        # dict believes is "currently stored."
+        self.sessions[session.id] = session.model_copy()
+        return session
 
 
 class FakeEvidenceRepository:
