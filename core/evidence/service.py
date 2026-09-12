@@ -1,3 +1,5 @@
+import hashlib
+import json
 from collections.abc import Sequence
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Protocol
@@ -9,6 +11,12 @@ from core.deletion.enums import DeletionBasis
 from core.deletion.exceptions import DeletionBlockedByDependentsError
 from core.deletion.validation import validate_deletion_request
 from core.evidence.enums import EvidenceSource, EvidenceType
+from core.evidence.exceptions import (
+    EvidenceDeletedError,
+    EvidenceNotFoundError,
+    IdempotencyKeyConflictError,
+    IdempotencyKeyReusedError,
+)
 from core.evidence.media_validation import verify_evidence_media
 from core.evidence.models import Evidence, EvidenceTombstone
 from core.evidence.repository import EvidenceRepository
@@ -18,25 +26,63 @@ from core.verification.service import SessionExpiredError, VerificationSessionSe
 if TYPE_CHECKING:
     from infrastructure.storage.interface import ObjectStorage
 
+__all__ = [
+    "EvidenceDeletedError",
+    "EvidenceDeletionReconciler",
+    "EvidenceNotFoundError",
+    "EvidenceService",
+    "IdempotencyKeyConflictError",
+    "IdempotencyKeyReusedError",
+]
+
 _SYSTEM_COMPONENT = "evidence"
 
 
-class EvidenceNotFoundError(Exception):
-    """Raised by write-path operations (deletion) that cannot proceed
-    without an existing, tenant-scoped evidence row -- unlike list()/get(),
-    which return an empty/None result, a deletion request against evidence
-    that was never created (or belongs to another tenant) is a genuine
-    error, not a no-op (EVD-3.26.2)."""
+def _compute_evidence_submission_fingerprint(
+    *,
+    tenant_id: str,
+    session_id: UUID,
+    evidence_type: EvidenceType,
+    checksum: str,
+) -> str:
+    """WF-001 §10: the canonical fingerprint of an evidence submission
+    request -- same canonical-JSON/SHA-256 technique as
+    core.policy.canonicalization and evidence_result.service's
+    _compute_integrity_reference, applied to the four fields that define
+    "what was being submitted." `checksum` is the server-computed hash of
+    the actual uploaded bytes (never client-supplied), so two requests
+    with the same idempotency key but different file content always
+    fingerprint differently, even if every other field matches."""
+    canonical = json.dumps(
+        {
+            "tenant_id": tenant_id,
+            "session_id": str(session_id),
+            "evidence_type": evidence_type.value,
+            "checksum": checksum,
+        },
+        sort_keys=True,
+        default=str,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-class EvidenceDeletedError(Exception):
-    """Raised by the read path when a tenant-scoped tombstone exists for
-    the requested evidence_id -- Invariant-06 remediation Phase 4's firm
-    choice: a deleted evidence ID must remain distinguishable from one that
-    never existed (410 Gone), never collapsed into an ordinary 404. Raised
-    regardless of whether the tombstone has executed_at set: once deletion
-    has been durably requested, the resource must stop being served as
-    live even if reconciliation hasn't physically caught up yet."""
+def _reject_if_fingerprint_mismatch(
+    *,
+    existing_fingerprint: str | None,
+    expected_fingerprint: str,
+    idempotency_key: str,
+    session_id: UUID,
+) -> None:
+    """WF-001 §10 / WF-4.9.3: the one comparison both the upfront
+    idempotency check and the concurrent-insert recovery path must apply
+    identically -- convergence (fingerprints match) or rejection
+    (IdempotencyKeyReusedError) must never depend on which of two racing
+    requests happened to observe the existing row first."""
+    if existing_fingerprint != expected_fingerprint:
+        raise IdempotencyKeyReusedError(
+            f"idempotency_key={idempotency_key!r} was already used for a "
+            f"materially different evidence submission in session_id={session_id!s}"
+        )
 
 
 class EvidenceDeletionReconciler(Protocol):
@@ -100,11 +146,24 @@ class EvidenceService:
         # to be remembered and extended.
         if session.status not in EVIDENCE_SUBMISSION_ALLOWED_STATUSES:
             raise SessionExpiredError
+
+        fingerprint = _compute_evidence_submission_fingerprint(
+            tenant_id=tenant_id,
+            session_id=session_id,
+            evidence_type=evidence_type,
+            checksum=checksum,
+        )
         if idempotency_key:
             existing = await self.repository.get_by_idempotency_key(
                 tenant_id, session_id, idempotency_key
             )
             if existing is not None:
+                _reject_if_fingerprint_mismatch(
+                    existing_fingerprint=existing.fingerprint,
+                    expected_fingerprint=fingerprint,
+                    idempotency_key=idempotency_key,
+                    session_id=session_id,
+                )
                 return existing
 
         # The client-supplied mime_type is never trusted for storage/response
@@ -123,9 +182,32 @@ class EvidenceService:
             size_bytes=len(content),
             metadata=metadata,
             retention_until=session.created_at + timedelta(days=self.retention_days),
+            fingerprint=fingerprint,
         )
         try:
             return await self.repository.add(evidence, idempotency_key)
+        except IdempotencyKeyConflictError:
+            await self.storage.delete(object_key)
+            if idempotency_key is None:
+                # Only ever raised when an idempotency_key drove the
+                # unique-constraint conflict -- should be unreachable.
+                # Surfacing the error rather than fabricating a result
+                # keeps that assumption honest (same posture as
+                # DecisionPersistenceService.persist()'s identical
+                # "should be unreachable" branch).
+                raise
+            winner = await self.repository.get_by_idempotency_key(
+                tenant_id, session_id, idempotency_key
+            )
+            if winner is None:
+                raise
+            _reject_if_fingerprint_mismatch(
+                existing_fingerprint=winner.fingerprint,
+                expected_fingerprint=fingerprint,
+                idempotency_key=idempotency_key,
+                session_id=session_id,
+            )
+            return winner
         except Exception:
             await self.storage.delete(object_key)
             raise

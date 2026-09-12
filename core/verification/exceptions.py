@@ -32,3 +32,30 @@ class ConcurrentTransitionError(Exception):
     discipline as PolicyActivationConflictError/DeletionAlreadyRequestedError,
     both translations of a real database-level conflict, never a
     substitute for one via check-then-write."""
+
+
+class IdempotencyKeyConflictError(Exception):
+    """Raised by the repository (WF-001 §10/§11-adjacent) when a concurrent
+    INSERT already claimed this (tenant_id, idempotency_key) between this
+    call's own upfront get_by_idempotency_key() check and its INSERT
+    attempt -- a translation of the table's UNIQUE constraint, same
+    discipline as DecisionAlreadyExistsError/PolicyActivationConflictError.
+    Purely mechanical: it says nothing about whether the two competing
+    requests agree on WHAT they were creating. VerificationSessionService.
+    create() catches this and re-fetches the winning row, then applies the
+    same fingerprint comparison as the upfront check -- convergence and
+    reuse-rejection must behave identically regardless of which of the two
+    racing requests happened to win the INSERT."""
+
+
+class IdempotencyKeyReusedError(Exception):
+    """Raised when an `Idempotency-Key` is replayed against a request whose
+    canonical fingerprint (WF-001 §10 / WF-4.9.3) does not match the
+    fingerprint stored on the original write -- materially different reuse
+    of the same key, mapped to `409 IDEMPOTENCY_KEY_REUSED`. Distinct from
+    IdempotencyKeyConflictError: that one is the database's mechanical
+    "someone else's INSERT already claimed this key" signal; this one is
+    the service's semantic verdict, reached only after comparing the
+    recomputed fingerprint of the new request against the stored
+    fingerprint of whichever row -- the caller's own successful insert's
+    predecessor, or the winner of a concurrent race -- actually exists."""

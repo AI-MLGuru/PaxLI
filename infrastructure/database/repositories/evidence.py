@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.deletion.exceptions import DeletionAlreadyRequestedError, TombstoneNotFoundError
+from core.evidence.exceptions import IdempotencyKeyConflictError
 from core.evidence.models import Evidence, EvidenceTombstone
 from infrastructure.database.models.evidence import EvidenceRecord
 from infrastructure.database.models.evidence_result import EvidenceResultRecord
@@ -20,9 +21,23 @@ class SqlAlchemyEvidenceRepository:
         self.session = session
 
     async def add(self, evidence: Evidence, idempotency_key: str | None = None) -> Evidence:
+        """WF-001 §10: a SAVEPOINT around the insert (session.begin_nested()),
+        same technique as SqlAlchemyDecisionRepository.add() -- confines a
+        UNIQUE(tenant_id, session_id, idempotency_key) violation's rollback
+        to exactly this insert, leaving the rest of the caller's
+        request-scoped transaction (and the recovery fetch EvidenceService.
+        add() performs next) unaffected."""
         record = EvidenceRecord.from_domain(evidence, idempotency_key)
-        self.session.add(record)
-        await self.session.flush()
+        try:
+            async with self.session.begin_nested():
+                self.session.add(record)
+                await self.session.flush()
+        except IntegrityError as exception:
+            raise IdempotencyKeyConflictError(
+                f"tenant={evidence.tenant_id!r} session_id={evidence.session_id!s} "
+                f"idempotency_key={idempotency_key!r} was already claimed by a "
+                "concurrent insert"
+            ) from exception
         return record.to_domain()
 
     async def get_by_idempotency_key(

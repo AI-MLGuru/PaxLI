@@ -31,6 +31,13 @@ class VerificationSession(BaseModel):
     policy_id: str | None = None
     policy_version: int | None = None
     policy_hash: str | None = None
+    # WF-001 §10: the canonical fingerprint of the request that created
+    # this session -- sha256(canonical_json({tenant_id, assurance_level,
+    # external_reference})), set once at create() and never recomputed.
+    # Nullable here for the same migration-safety reason as the policy
+    # triple above (rows created before this field existed have none);
+    # every new session going forward always has one.
+    fingerprint: str | None = None
 
     def transition_to(self, status: VerificationStatus) -> None:
         if status not in VALID_STATUS_TRANSITIONS[self.status]:
@@ -60,6 +67,7 @@ class VerificationSession(BaseModel):
         policy_id: str,
         policy_version: int,
         policy_hash: str,
+        fingerprint: str,
     ) -> "VerificationSession":
         """The policy_id/version/hash triple is required here, unlike on
         the bare model fields above: every NEW session must carry a pin
@@ -67,7 +75,11 @@ class VerificationSession(BaseModel):
         before this factory is ever invoked. This is the one and only place
         a session's pin is ever set -- there is no corresponding
         transition/update path, matching Invariant 07's "never re-resolve"
-        rule for early binding."""
+        rule for early binding. `fingerprint` (WF-001 §10) is likewise
+        required here: the caller has already computed it from the exact
+        same request fields passed above, and this factory does not
+        recompute it -- keeping fingerprint computation in exactly one
+        place (VerificationSessionService.create())."""
         now = datetime.now(UTC)
         return cls(
             tenant_id=tenant_id,
@@ -78,4 +90,5 @@ class VerificationSession(BaseModel):
             policy_id=policy_id,
             policy_version=policy_version,
             policy_hash=policy_hash,
+            fingerprint=fingerprint,
         )

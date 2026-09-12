@@ -1,3 +1,5 @@
+import hashlib
+import json
 from uuid import UUID
 
 from core.policy.exceptions import NoActivePolicyError
@@ -5,6 +7,8 @@ from core.policy.service import PolicyService
 from core.verification.enums import TERMINAL_STATUSES, AssuranceLevel, VerificationStatus
 from core.verification.exceptions import (
     ConcurrentTransitionError,
+    IdempotencyKeyConflictError,
+    IdempotencyKeyReusedError,
     SessionAlreadyTerminalError,
     SessionExpiredError,
     SessionNotFoundError,
@@ -14,11 +18,47 @@ from core.verification.repository import VerificationSessionRepository
 
 __all__ = [
     "ConcurrentTransitionError",
+    "IdempotencyKeyConflictError",
+    "IdempotencyKeyReusedError",
     "SessionAlreadyTerminalError",
     "SessionExpiredError",
     "SessionNotFoundError",
     "VerificationSessionService",
 ]
+
+
+def _compute_session_creation_fingerprint(
+    *, tenant_id: str, assurance_level: AssuranceLevel, external_reference: str | None
+) -> str:
+    """WF-001 §10: the canonical fingerprint of a session-creation request
+    -- same canonical-JSON/SHA-256 technique as core.policy.canonicalization
+    and evidence_result.service's _compute_integrity_reference, applied to
+    the three fields that define "what was being created.\""""
+    canonical = json.dumps(
+        {
+            "tenant_id": tenant_id,
+            "assurance_level": assurance_level.value,
+            "external_reference": external_reference,
+        },
+        sort_keys=True,
+        default=str,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _reject_if_fingerprint_mismatch(
+    *, existing_fingerprint: str | None, expected_fingerprint: str, idempotency_key: str
+) -> None:
+    """WF-001 §10 / WF-4.9.3: the one comparison both the upfront
+    idempotency check and the concurrent-insert recovery path must apply
+    identically -- convergence (fingerprints match) or rejection
+    (IdempotencyKeyReusedError) must never depend on which of two racing
+    requests happened to observe the existing row first."""
+    if existing_fingerprint != expected_fingerprint:
+        raise IdempotencyKeyReusedError(
+            f"idempotency_key={idempotency_key!r} was already used for a "
+            "materially different session-creation request"
+        )
 
 
 class VerificationSessionService:
@@ -57,10 +97,23 @@ class VerificationSessionService:
         original session -- its original pin, unchanged, never re-resolved
         against whatever policy happens to be active now (idempotency is
         already free here: the persisted row already carries the pin from
-        the first, real attempt)."""
+        the first, real attempt). A replay whose canonical fingerprint
+        (WF-001 §10) does not match the original request's raises
+        IdempotencyKeyReusedError instead -- materially different reuse of
+        the same key, never silently resolved to the first write."""
+        fingerprint = _compute_session_creation_fingerprint(
+            tenant_id=tenant_id,
+            assurance_level=assurance_level,
+            external_reference=external_reference,
+        )
         if idempotency_key:
             existing = await self.repository.get_by_idempotency_key(tenant_id, idempotency_key)
             if existing is not None:
+                _reject_if_fingerprint_mismatch(
+                    existing_fingerprint=existing.fingerprint,
+                    expected_fingerprint=fingerprint,
+                    idempotency_key=idempotency_key,
+                )
                 return existing
 
         if self.policy_service is None:
@@ -84,8 +137,34 @@ class VerificationSessionService:
             policy_id=policy.policy_id,
             policy_version=policy.version,
             policy_hash=policy.canonical_hash,
+            fingerprint=fingerprint,
         )
-        return await self.repository.add(session, idempotency_key)
+        try:
+            return await self.repository.add(session, idempotency_key)
+        except IdempotencyKeyConflictError:
+            if idempotency_key is None:
+                # Only ever raised when an idempotency_key drove the
+                # unique-constraint conflict -- should be unreachable.
+                # Surfacing the error rather than fabricating a result
+                # keeps that assumption honest (same posture as
+                # DecisionPersistenceService.persist()'s identical
+                # "should be unreachable" branch).
+                raise
+            # A concurrent request with the same idempotency key won the
+            # INSERT race between our own upfront check and this attempt's
+            # insert. Recover exactly like the upfront check: fetch the
+            # winner and apply the identical fingerprint comparison, so
+            # convergence/rejection never depends on which racing request
+            # happened to win.
+            winner = await self.repository.get_by_idempotency_key(tenant_id, idempotency_key)
+            if winner is None:
+                raise
+            _reject_if_fingerprint_mismatch(
+                existing_fingerprint=winner.fingerprint,
+                expected_fingerprint=fingerprint,
+                idempotency_key=idempotency_key,
+            )
+            return winner
 
     async def get(self, *, session_id: UUID, tenant_id: str) -> VerificationSession:
         session = await self.repository.get(session_id, tenant_id)

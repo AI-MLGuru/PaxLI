@@ -34,6 +34,11 @@ class VerificationSessionRecord(Base):
     policy_id: Mapped[str | None] = mapped_column(String(128))
     policy_version: Mapped[int | None] = mapped_column(Integer)
     policy_hash: Mapped[str | None] = mapped_column(String(128))
+    # WF-001 §10: nullable for the same migration-safety reason as the
+    # policy triple above -- rows created before this column existed have
+    # no fingerprint and stay that way; every new row going forward always
+    # has one, enforced at VerificationSession.create(), not here.
+    fingerprint: Mapped[str | None] = mapped_column(String(128))
 
     @classmethod
     def from_domain(
@@ -52,6 +57,7 @@ class VerificationSessionRecord(Base):
             policy_id=session.policy_id,
             policy_version=session.policy_version,
             policy_hash=session.policy_hash,
+            fingerprint=session.fingerprint,
         )
 
     def to_domain(self) -> VerificationSession:
@@ -67,6 +73,7 @@ class VerificationSessionRecord(Base):
             policy_id=self.policy_id,
             policy_version=self.policy_version,
             policy_hash=self.policy_hash,
+            fingerprint=self.fingerprint,
         )
 
     def update_from_domain(self, session: VerificationSession) -> None:

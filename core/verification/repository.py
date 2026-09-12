@@ -9,7 +9,16 @@ from core.verification.models import VerificationSession
 class VerificationSessionRepository(Protocol):
     async def add(
         self, session: VerificationSession, idempotency_key: str | None = None
-    ) -> VerificationSession: ...
+    ) -> VerificationSession:
+        """Raises IdempotencyKeyConflictError (WF-001 §10) if a concurrent
+        INSERT already claimed this (tenant_id, idempotency_key) -- the
+        table's UNIQUE constraint is the final arbiter, never an
+        application-level check-then-insert. The caller
+        (VerificationSessionService.create()) recovers by re-fetching the
+        winning row and comparing fingerprints, exactly like
+        DecisionPersistenceService.persist() recovers from
+        DecisionAlreadyExistsError."""
+        ...
 
     async def get(self, session_id: UUID, tenant_id: str) -> VerificationSession | None: ...
 

@@ -33,7 +33,12 @@ from core.audit.service import AuditService
 from core.deletion.exceptions import InvalidDeletionRequestError
 from core.evidence.enums import EvidenceType
 from core.evidence.media_validation import UnsupportedMediaError
-from core.evidence.service import EvidenceDeletedError, EvidenceNotFoundError, EvidenceService
+from core.evidence.service import (
+    EvidenceDeletedError,
+    EvidenceNotFoundError,
+    EvidenceService,
+    IdempotencyKeyReusedError,
+)
 from core.rate_limit.limiter import RateLimiterProtocol
 from core.security.authentication import AuthenticatedPrincipal
 from core.security.authorization import Permission, require_permission
@@ -87,6 +92,13 @@ async def store_upload(
         raise HTTPException(status_code=404, detail="Verification session not found") from exc
     except SessionExpiredError as exc:
         raise HTTPException(status_code=409, detail="Verification session is not active") from exc
+    except IdempotencyKeyReusedError as exc:
+        # WF-001 §10 / WF-4.9.3: materially different reuse of the same
+        # Idempotency-Key, never silently resolved to the first write.
+        raise HTTPException(
+            status_code=409,
+            detail="Idempotency-Key was already used for a materially different request",
+        ) from exc
     except UnsupportedMediaError as exc:
         raise HTTPException(
             status_code=415, detail="Unsupported or unrecognized file format"

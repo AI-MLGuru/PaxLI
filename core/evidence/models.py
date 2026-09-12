@@ -21,6 +21,13 @@ class Evidence(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     retention_until: datetime | None = None
+    # WF-001 §10: the canonical fingerprint of the submission request that
+    # created this row -- sha256(canonical_json({tenant_id, session_id,
+    # evidence_type, checksum})), set once by EvidenceService.add() and
+    # never recomputed. Nullable for the same migration-safety reason as
+    # every other additive column this project has added to a non-empty
+    # table; every new row going forward always has one.
+    fingerprint: str | None = None
 
 
 class EvidenceTombstone(BaseModel):

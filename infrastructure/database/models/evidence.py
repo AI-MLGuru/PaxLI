@@ -45,6 +45,11 @@ class EvidenceRecord(Base):
     idempotency_key: Mapped[str | None] = mapped_column(String(256))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     retention_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # WF-001 §10: nullable for the same migration-safety reason as every
+    # other additive column this project has added to a non-empty table;
+    # every new row going forward always has one, enforced at
+    # EvidenceService.add(), not here.
+    fingerprint: Mapped[str | None] = mapped_column(String(128))
 
     @classmethod
     def from_domain(
@@ -64,6 +69,7 @@ class EvidenceRecord(Base):
             idempotency_key=idempotency_key,
             created_at=evidence.created_at,
             retention_until=evidence.retention_until,
+            fingerprint=evidence.fingerprint,
         )
 
     def to_domain(self) -> Evidence:
@@ -80,4 +86,5 @@ class EvidenceRecord(Base):
             metadata=self.metadata_json,
             created_at=self.created_at,
             retention_until=self.retention_until,
+            fingerprint=self.fingerprint,
         )

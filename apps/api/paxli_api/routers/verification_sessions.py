@@ -24,6 +24,7 @@ from core.security.authentication import AuthenticatedPrincipal
 from core.security.authorization import Permission, require_permission
 from core.verification.service import (
     ConcurrentTransitionError,
+    IdempotencyKeyReusedError,
     SessionAlreadyTerminalError,
     SessionNotFoundError,
     VerificationSessionService,
@@ -64,12 +65,20 @@ async def create_session(
         fail_mode="open",
         limiter=limiter,
     )
-    session = await service.create(
-        tenant_id=principal.tenant_id,
-        external_reference=payload.external_reference,
-        assurance_level=payload.assurance_level,
-        idempotency_key=idempotency_key,
-    )
+    try:
+        session = await service.create(
+            tenant_id=principal.tenant_id,
+            external_reference=payload.external_reference,
+            assurance_level=payload.assurance_level,
+            idempotency_key=idempotency_key,
+        )
+    except IdempotencyKeyReusedError as exc:
+        # WF-001 §10 / WF-4.9.3: materially different reuse of the same
+        # Idempotency-Key, never silently resolved to the first write.
+        raise HTTPException(
+            status_code=409,
+            detail="Idempotency-Key was already used for a materially different request",
+        ) from exc
     await audit_service.record(
         tenant_id=principal.tenant_id,
         session_id=session.id,

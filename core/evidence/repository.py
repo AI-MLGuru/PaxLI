@@ -7,7 +7,15 @@ from core.evidence.models import Evidence, EvidenceTombstone
 
 
 class EvidenceRepository(Protocol):
-    async def add(self, evidence: Evidence, idempotency_key: str | None = None) -> Evidence: ...
+    async def add(self, evidence: Evidence, idempotency_key: str | None = None) -> Evidence:
+        """Raises IdempotencyKeyConflictError (WF-001 §10, EvidenceService's
+        own copy -- core.evidence.service.IdempotencyKeyConflictError) if a
+        concurrent INSERT already claimed this (tenant_id, session_id,
+        idempotency_key) -- the table's UNIQUE constraint is the final
+        arbiter, never an application-level check-then-insert. The caller
+        (EvidenceService.add()) recovers by re-fetching the winning row and
+        comparing fingerprints."""
+        ...
 
     async def get_by_idempotency_key(
         self, tenant_id: str, session_id: UUID, idempotency_key: str

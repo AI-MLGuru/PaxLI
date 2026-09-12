@@ -5,10 +5,11 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy import update as sql_update
 from sqlalchemy.engine import CursorResult
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.verification.enums import VerificationStatus
-from core.verification.exceptions import ConcurrentTransitionError
+from core.verification.exceptions import ConcurrentTransitionError, IdempotencyKeyConflictError
 from core.verification.models import VerificationSession
 from infrastructure.database.models.verification_session import (
     VerificationSessionRecord,
@@ -22,9 +23,22 @@ class SqlAlchemyVerificationSessionRepository:
     async def add(
         self, session: VerificationSession, idempotency_key: str | None = None
     ) -> VerificationSession:
+        """WF-001 §10: a SAVEPOINT around the insert (session.begin_nested()),
+        same technique as SqlAlchemyDecisionRepository.add() -- confines a
+        UNIQUE(tenant_id, idempotency_key) violation's rollback to exactly
+        this insert, leaving the rest of the caller's request-scoped
+        transaction (and the recovery fetch VerificationSessionService.
+        create() performs next) unaffected."""
         record = VerificationSessionRecord.from_domain(session, idempotency_key)
-        self.session.add(record)
-        await self.session.flush()
+        try:
+            async with self.session.begin_nested():
+                self.session.add(record)
+                await self.session.flush()
+        except IntegrityError as exception:
+            raise IdempotencyKeyConflictError(
+                f"tenant={session.tenant_id!r} idempotency_key={idempotency_key!r} "
+                "was already claimed by a concurrent insert"
+            ) from exception
         return record.to_domain()
 
     async def get(self, session_id: UUID, tenant_id: str) -> VerificationSession | None:
