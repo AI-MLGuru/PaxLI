@@ -49,11 +49,45 @@ def _compute_integrity_reference(
     result: dict[str, Any] | None,
     producer: str,
     producer_version: str,
+    score: float | None,
+    quality: float | None,
 ) -> str:
+    """WF-HV-009: covers every field the Decision Engine actually reads
+    off an EvidenceResult -- `status`/`score`/`quality` are the three
+    "universal" attributes core.decision.condition_eval._resolve_field()
+    evaluates directly (everything else a condition can reference comes
+    from inside `result`, already covered), so all three must be part of
+    this fingerprint for EVD-3.9.2 ("integrity metadata MUST correspond
+    to actual persisted content") to hold for decision-relevant content,
+    not just the result payload. Before this fix, two results with
+    identical status/result but different score/quality -- exactly the
+    fields a threshold-based policy condition evaluates -- collided on
+    an identical integrity_reference.
+
+    Deliberately NOT extended to reason_codes/model_reference/etc.:
+    condition_eval never reads them directly (confirmed by inspection of
+    _resolve_field's own field list), so including them would widen this
+    fingerprint's scope beyond what's demonstrably decision-relevant.
+
+    Migration/compatibility note: this changes the resulting hash for
+    every NEW EvidenceResult from this point on. integrity_reference is
+    write-once (EvidenceResult has no update() path) and nothing in this
+    codebase ever recomputes or re-verifies it against live content
+    (confirmed: no read-time comparison exists anywhere) -- so existing
+    persisted rows keep whatever value the old formula produced,
+    permanently, with no code path that would notice or care about the
+    formula having changed underneath them. Safe today; a future feature
+    that DOES re-derive and compare integrity_reference against stored
+    content would need to account for this formula's evolution (e.g. by
+    keying off schema_version) rather than assuming one universal rule
+    applies to every row ever written.
+    """
     canonical = json.dumps(
         {
             "evidence_type": evidence_type.value,
             "status": status.value,
+            "score": score,
+            "quality": quality,
             "result": result,
             "producer": producer,
             "producer_version": producer_version,
@@ -180,6 +214,8 @@ class EvidenceResultService:
                 result=result,
                 producer=producer,
                 producer_version=producer_version,
+                score=score,
+                quality=quality,
             ),
             retention_until=retention_until,
         )
@@ -300,6 +336,8 @@ class EvidenceResultService:
                 result=result,
                 producer=producer,
                 producer_version=producer_version,
+                score=score,
+                quality=quality,
             ),
         )
         superseded = await self.repository.mark_not_effective(

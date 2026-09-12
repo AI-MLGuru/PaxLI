@@ -508,6 +508,104 @@ async def test_integrity_reference_is_server_computed_and_deterministic(service)
 
 
 @pytest.mark.asyncio
+async def test_integrity_reference_changes_with_score(service) -> None:
+    """WF-HV-009 integrity/checksum: score is one of the three "universal"
+    EvidenceResult attributes core.decision.condition_eval evaluates
+    directly (alongside status/quality) -- a threshold-based policy
+    condition can fire differently purely because of score. Before this
+    fix, two results differing ONLY in score collided on an identical
+    integrity_reference, silently failing to correspond to actual
+    decision-relevant persisted content (EVD-3.9.2)."""
+    svc, _repo, _audit_repo = service
+    session_id = uuid4()
+
+    lower = await svc.create(
+        tenant_id="tenant-a",
+        session_id=session_id,
+        evidence_type=EvidenceResultType.FACE_MATCH,
+        status=EvidenceResultStatus.PASS,
+        producer="face-provider",
+        producer_version="1.0.0",
+        score=0.5,
+    )
+    higher = await svc.create(
+        tenant_id="tenant-a",
+        session_id=session_id,
+        evidence_type=EvidenceResultType.FACE_MATCH,
+        status=EvidenceResultStatus.PASS,
+        producer="face-provider",
+        producer_version="1.0.0",
+        score=0.95,
+    )
+
+    assert lower.integrity_reference != higher.integrity_reference
+
+
+@pytest.mark.asyncio
+async def test_integrity_reference_changes_with_quality(service) -> None:
+    """Same property, on quality instead of score -- the other field
+    condition_eval treats as universal."""
+    svc, _repo, _audit_repo = service
+    session_id = uuid4()
+
+    lower = await svc.create(
+        tenant_id="tenant-a",
+        session_id=session_id,
+        evidence_type=EvidenceResultType.FACE_QUALITY,
+        status=EvidenceResultStatus.PASS,
+        producer="face-provider",
+        producer_version="1.0.0",
+        quality=0.3,
+    )
+    higher = await svc.create(
+        tenant_id="tenant-a",
+        session_id=session_id,
+        evidence_type=EvidenceResultType.FACE_QUALITY,
+        status=EvidenceResultStatus.PASS,
+        producer="face-provider",
+        producer_version="1.0.0",
+        quality=0.9,
+    )
+
+    assert lower.integrity_reference != higher.integrity_reference
+
+
+@pytest.mark.asyncio
+async def test_integrity_reference_stable_when_score_and_quality_match(service) -> None:
+    """The other half of the same property: matching score/quality (not
+    merely omitting both) still converges on an identical
+    integrity_reference -- this is a completeness fix, not a change to
+    the "same logical content -> same reference" determinism guarantee
+    test_integrity_reference_is_server_computed_and_deterministic already
+    covers for the score=None/quality=None default case."""
+    svc, _repo, _audit_repo = service
+    session_id = uuid4()
+
+    first = await svc.create(
+        tenant_id="tenant-a",
+        session_id=session_id,
+        evidence_type=EvidenceResultType.FACE_MATCH,
+        status=EvidenceResultStatus.PASS,
+        producer="face-provider",
+        producer_version="1.0.0",
+        score=0.77,
+        quality=0.88,
+    )
+    second = await svc.create(
+        tenant_id="tenant-a",
+        session_id=session_id,
+        evidence_type=EvidenceResultType.FACE_MATCH,
+        status=EvidenceResultStatus.PASS,
+        producer="face-provider",
+        producer_version="1.0.0",
+        score=0.77,
+        quality=0.88,
+    )
+
+    assert first.integrity_reference == second.integrity_reference
+
+
+@pytest.mark.asyncio
 async def test_list_for_session_is_tenant_scoped(service) -> None:
     svc, _repo, _audit_repo = service
     session_id = uuid4()

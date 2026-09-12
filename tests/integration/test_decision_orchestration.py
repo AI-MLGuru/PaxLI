@@ -194,6 +194,124 @@ async def test_full_pipeline_verified_outcome_against_real_infrastructure() -> N
         assert len(produced) == 1
 
 
+async def test_persisted_decisions_evidence_reference_integrity_differs_by_score() -> None:
+    """WF-HV-009 integrity/checksum: the unit-level tests in
+    test_evidence_result_service.py prove _compute_integrity_reference()
+    itself is score/quality-sensitive; this proves that sensitivity
+    survives the FULL real-infrastructure pipeline into the persisted
+    decision's own provenance snapshot (DecisionProvenance.
+    evidence_references[*].integrity_reference), not just the
+    in-memory EvidenceResult object create() returns. Two sessions,
+    identical policy/status/result, differing only in score -- their
+    persisted decisions' evidence_references must NOT share an
+    integrity_reference."""
+    tenant_id = f"tenant-orchestration-integrity-{uuid4()}"
+    key_provider = LocalAesGcmKeyProvider({"test-orchestration-key": b"0" * 32})
+
+    async with session_factory() as session:
+        policy_service = PolicyService(
+            SqlAlchemyVerificationPolicyRepository(session),
+            AuditService(SqlAlchemyAuditEventRepository(session)),
+            EvidenceResultSchemaCatalog(),
+        )
+        await policy_service.create_and_activate(
+            tenant_id=tenant_id,
+            policy_id="policy-orchestration-integrity",
+            assurance_level=AssuranceLevel.STANDARD,
+            created_by="admin",
+            evidence_requirements=(
+                EvidenceRequirement(
+                    evidence_type="FACE_MATCH", level=EvidenceRequirementLevel.REQUIRED
+                ),
+            ),
+            rules=(
+                Rule(
+                    id="r1",
+                    condition=EvidenceCondition(
+                        evidence_type="FACE_MATCH",
+                        field="status",
+                        operator="==",
+                        expected_value="PASS",
+                    ),
+                    outcome=DecisionOutcome.VERIFIED,
+                    priority=10,
+                    reason_code="POLICY:FACE_MATCH_OK",
+                ),
+            ),
+        )
+        await session.commit()
+
+    async def _decide_with_score(score: float):
+        async with session_factory() as session:
+            policy_service = PolicyService(
+                SqlAlchemyVerificationPolicyRepository(session),
+                AuditService(SqlAlchemyAuditEventRepository(session)),
+                EvidenceResultSchemaCatalog(),
+            )
+            session_service = VerificationSessionService(
+                SqlAlchemyVerificationSessionRepository(session),
+                audit_service=AuditService(SqlAlchemyAuditEventRepository(session)),
+                policy_service=policy_service,
+                session_ttl_minutes=30,
+            )
+            created_session = await session_service.create(
+                tenant_id=tenant_id,
+                external_reference=None,
+                assurance_level=AssuranceLevel.STANDARD,
+            )
+            await session.commit()
+
+        async with session_factory() as session:
+            evidence_result_service = EvidenceResultService(
+                SqlAlchemyEvidenceResultRepository(session, key_provider, "test-orchestration-key"),
+                AuditService(SqlAlchemyAuditEventRepository(session)),
+                SqlAlchemyEvidenceRepository(session),
+            )
+            await evidence_result_service.create(
+                tenant_id=tenant_id,
+                session_id=created_session.id,
+                evidence_type=EvidenceResultType.FACE_MATCH,
+                status=EvidenceResultStatus.PASS,
+                producer="face-provider",
+                producer_version="1.0",
+                score=score,
+            )
+            await session.commit()
+
+        async with session_factory() as session:
+            orchestrator = _orchestrator(session, key_provider, "test-orchestration-key")
+            decision = await orchestrator.evaluate_and_persist(
+                session_id=created_session.id, tenant_id=tenant_id
+            )
+            await session.commit()
+        return decision
+
+    low_score_decision = await _decide_with_score(0.4)
+    high_score_decision = await _decide_with_score(0.99)
+
+    assert len(low_score_decision.evidence_references) == 1
+    assert len(high_score_decision.evidence_references) == 1
+    assert (
+        low_score_decision.evidence_references[0].integrity_reference
+        != high_score_decision.evidence_references[0].integrity_reference
+    )
+
+    # And it's durable, not just an in-memory artifact of this call.
+    async with session_factory() as verify_session:
+        persisted_low = await SqlAlchemyDecisionRepository(verify_session).get(
+            low_score_decision.decision_id, tenant_id
+        )
+        persisted_high = await SqlAlchemyDecisionRepository(verify_session).get(
+            high_score_decision.decision_id, tenant_id
+        )
+        assert persisted_low is not None
+        assert persisted_high is not None
+        assert (
+            persisted_low.evidence_references[0].integrity_reference
+            != persisted_high.evidence_references[0].integrity_reference
+        )
+
+
 async def test_expiration_short_circuits_to_inconclusive_against_real_infrastructure() -> None:
     """Evidence that would otherwise VERIFY is present, but
     evaluation_reason=EXPIRATION must still produce INCONCLUSIVE
