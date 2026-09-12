@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from uuid import UUID
@@ -69,6 +70,8 @@ from infrastructure.reliability.postgres_policies import PostgresOperationError,
 settings = get_settings()
 validate_production_transport_security(settings)
 configure_logging(settings)
+
+logger = logging.getLogger(__name__)
 
 _health_minio_client: object | None = None
 
@@ -399,6 +402,31 @@ async def minio_operation_exception_handler(
 ) -> JSONResponse:
     return error_response(
         request, "STORAGE_OPERATION_FAILED", "The storage operation could not be completed.", 503
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exception: Exception) -> JSONResponse:
+    # WF-006 Finding E / WF-HV-006: closes the gap where a genuine,
+    # unclassified infrastructure failure (e.g. a raw DB exception from
+    # one of DecisionOrchestrator.evaluate_and_persist()'s read steps,
+    # which sit outside PostgresOperationError's guarded-commit-only
+    # wrapping) previously propagated past every specific handler above
+    # and fell through to Starlette's bare, non-JSON "Internal Server
+    # Error" text -- a real client-visible violation of this app's own
+    # {error: {...}, meta: {...}} contract every other response follows,
+    # confirmed live by injecting exactly this failure through the real
+    # /submit path. Logged server-side with full detail for observability
+    # (SEC-7.29's "underlying failure MUST remain observable... without
+    # exposing sensitive internals to clients"); the client only ever
+    # sees a generic message, never the exception's own text.
+    logger.error(
+        "unhandled_exception",
+        extra={"path": request.url.path, "method": request.method},
+        exc_info=True,
+    )
+    return error_response(
+        request, "INTERNAL_ERROR", "An unexpected error occurred.", 500
     )
 
 
