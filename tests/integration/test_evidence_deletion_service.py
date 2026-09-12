@@ -281,6 +281,7 @@ async def test_request_deletion_is_blocked_by_a_dependent_evidence_result() -> N
         result_svc = EvidenceResultService(
             SqlAlchemyEvidenceResultRepository(session, key_provider, "test-deletion-svc-key"),
             AuditService(SqlAlchemyAuditEventRepository(session)),
+            SqlAlchemyEvidenceRepository(session),
         )
         await result_svc.create(
             tenant_id=tenant_id,
@@ -330,10 +331,12 @@ async def test_evidence_result_request_deletion_is_blocked_by_dependent_superses
 
     async with session_factory() as session:
         session_id = await _create_session(session, tenant_id)
-        repo = SqlAlchemyEvidenceResultRepository(
-            session, key_provider, "test-deletion-result-key"
+        repo = SqlAlchemyEvidenceResultRepository(session, key_provider, "test-deletion-result-key")
+        svc = EvidenceResultService(
+            repo,
+            AuditService(SqlAlchemyAuditEventRepository(session)),
+            SqlAlchemyEvidenceRepository(session),
         )
-        svc = EvidenceResultService(repo, AuditService(SqlAlchemyAuditEventRepository(session)))
         original = await svc.create(
             tenant_id=tenant_id,
             session_id=UUID(session_id),
@@ -354,10 +357,12 @@ async def test_evidence_result_request_deletion_is_blocked_by_dependent_superses
         await session.commit()
 
     async with session_factory() as session:
-        repo = SqlAlchemyEvidenceResultRepository(
-            session, key_provider, "test-deletion-result-key"
+        repo = SqlAlchemyEvidenceResultRepository(session, key_provider, "test-deletion-result-key")
+        svc = EvidenceResultService(
+            repo,
+            AuditService(SqlAlchemyAuditEventRepository(session)),
+            SqlAlchemyEvidenceRepository(session),
         )
-        svc = EvidenceResultService(repo, AuditService(SqlAlchemyAuditEventRepository(session)))
         with pytest.raises(DeletionBlockedByDependentsError):
             await svc.request_deletion(
                 evidence_result_id=original.id,
@@ -368,9 +373,7 @@ async def test_evidence_result_request_deletion_is_blocked_by_dependent_superses
             )
 
     async with session_factory() as session:
-        repo = SqlAlchemyEvidenceResultRepository(
-            session, key_provider, "test-deletion-result-key"
-        )
+        repo = SqlAlchemyEvidenceResultRepository(session, key_provider, "test-deletion-result-key")
         assert await repo.get_tombstone(original.id, tenant_id) is None
         assert await repo.get(original.id, tenant_id) is not None
 
@@ -478,10 +481,12 @@ async def test_evidence_result_full_lifecycle_deletes_db_and_audits_both_phases(
 
     async with session_factory() as session:
         session_id = await _create_session(session, tenant_id)
-        repo = SqlAlchemyEvidenceResultRepository(
-            session, key_provider, "test-deletion-result-key"
+        repo = SqlAlchemyEvidenceResultRepository(session, key_provider, "test-deletion-result-key")
+        svc = EvidenceResultService(
+            repo,
+            AuditService(SqlAlchemyAuditEventRepository(session)),
+            SqlAlchemyEvidenceRepository(session),
         )
-        svc = EvidenceResultService(repo, AuditService(SqlAlchemyAuditEventRepository(session)))
         result = await svc.create(
             tenant_id=tenant_id,
             session_id=UUID(session_id),
@@ -506,9 +511,7 @@ async def test_evidence_result_full_lifecycle_deletes_db_and_audits_both_phases(
     assert tombstone.executed_at is not None
 
     async with session_factory() as session:
-        repo = SqlAlchemyEvidenceResultRepository(
-            session, key_provider, "test-deletion-result-key"
-        )
+        repo = SqlAlchemyEvidenceResultRepository(session, key_provider, "test-deletion-result-key")
         assert await repo.get(result.id, tenant_id) is None
 
         audit_service = AuditService(SqlAlchemyAuditEventRepository(session))
@@ -524,10 +527,12 @@ async def test_evidence_result_reconcile_deletion_is_idempotent() -> None:
 
     async with session_factory() as session:
         session_id = await _create_session(session, tenant_id)
-        repo = SqlAlchemyEvidenceResultRepository(
-            session, key_provider, "test-deletion-result-key"
+        repo = SqlAlchemyEvidenceResultRepository(session, key_provider, "test-deletion-result-key")
+        svc = EvidenceResultService(
+            repo,
+            AuditService(SqlAlchemyAuditEventRepository(session)),
+            SqlAlchemyEvidenceRepository(session),
         )
-        svc = EvidenceResultService(repo, AuditService(SqlAlchemyAuditEventRepository(session)))
         result = await svc.create(
             tenant_id=tenant_id,
             session_id=UUID(session_id),

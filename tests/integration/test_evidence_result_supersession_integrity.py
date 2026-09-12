@@ -38,6 +38,7 @@ from core.evidence_result.exceptions import InvalidSupersessionError
 from core.evidence_result.service import EvidenceResultService
 from infrastructure.database.models.verification_session import VerificationSessionRecord
 from infrastructure.database.repositories.audit_event import SqlAlchemyAuditEventRepository
+from infrastructure.database.repositories.evidence import SqlAlchemyEvidenceRepository
 from infrastructure.database.repositories.evidence_result import SqlAlchemyEvidenceResultRepository
 from infrastructure.database.session import session_factory
 from infrastructure.security.local_key_provider import LocalAesGcmKeyProvider
@@ -85,7 +86,11 @@ async def _create_session(session, tenant_id: str) -> str:
 def _service(session) -> EvidenceResultService:
     key_provider = LocalAesGcmKeyProvider({"test-hv009-key": b"0" * 32})
     repo = SqlAlchemyEvidenceResultRepository(session, key_provider, "test-hv009-key")
-    return EvidenceResultService(repo, AuditService(SqlAlchemyAuditEventRepository(session)))
+    return EvidenceResultService(
+        repo,
+        AuditService(SqlAlchemyAuditEventRepository(session)),
+        SqlAlchemyEvidenceRepository(session),
+    )
 
 
 async def test_supersede_cannot_deactivate_another_sessions_effective_evidence() -> None:

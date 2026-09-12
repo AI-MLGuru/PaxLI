@@ -24,3 +24,18 @@ class InvalidSupersessionError(ValueError):
     silently deactivate an unrelated session's effective evidence purely
     by supplying its ID, corrupting the Decision Engine's effective-
     evidence input for a session it has no authority over."""
+
+
+class InvalidProvenanceReferenceError(ValueError):
+    """Raised by EvidenceResultService.create() when a caller-supplied
+    `source_reference` or `parent_evidence_result_ids` entry does not
+    belong to the SAME (tenant_id, session_id) as the EvidenceResult
+    being created (WF-HV-009 Finding B). The DB-level foreign keys behind
+    these fields only prove the referenced row exists somewhere -- for
+    `source_reference` that's a single-column FK to evidence.id with no
+    tenant/session predicate, and `parent_evidence_result_ids` has no FK
+    at all (a bare JSON array). Confirmed live: without this check, a
+    caller in one tenant could create an EvidenceResult that falsely
+    claims derivation from another tenant's raw evidence or processed
+    results, fabricating an audit/lineage trail with no signal that it
+    is forged."""

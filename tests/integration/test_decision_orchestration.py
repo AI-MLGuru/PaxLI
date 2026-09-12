@@ -29,6 +29,7 @@ from core.verification.service import VerificationSessionService
 from infrastructure.database.models.decision import DecisionRecord
 from infrastructure.database.repositories.audit_event import SqlAlchemyAuditEventRepository
 from infrastructure.database.repositories.decision import SqlAlchemyDecisionRepository
+from infrastructure.database.repositories.evidence import SqlAlchemyEvidenceRepository
 from infrastructure.database.repositories.evidence_result import SqlAlchemyEvidenceResultRepository
 from infrastructure.database.repositories.policy import SqlAlchemyVerificationPolicyRepository
 from infrastructure.database.repositories.verification_session import (
@@ -76,6 +77,7 @@ def _orchestrator(session, key_provider, key_id) -> DecisionOrchestrator:
     evidence_result_service = EvidenceResultService(
         SqlAlchemyEvidenceResultRepository(session, key_provider, key_id),
         AuditService(SqlAlchemyAuditEventRepository(session)),
+        SqlAlchemyEvidenceRepository(session),
     )
     audit_service = AuditService(SqlAlchemyAuditEventRepository(session))
     persistence_service = DecisionPersistenceService(
@@ -149,6 +151,7 @@ async def test_full_pipeline_verified_outcome_against_real_infrastructure() -> N
         evidence_result_service = EvidenceResultService(
             SqlAlchemyEvidenceResultRepository(session, key_provider, "test-orchestration-key"),
             AuditService(SqlAlchemyAuditEventRepository(session)),
+            SqlAlchemyEvidenceRepository(session),
         )
         await evidence_result_service.create(
             tenant_id=tenant_id,
@@ -245,6 +248,7 @@ async def test_expiration_short_circuits_to_inconclusive_against_real_infrastruc
         evidence_result_service = EvidenceResultService(
             SqlAlchemyEvidenceResultRepository(session, key_provider, "test-orchestration-key"),
             AuditService(SqlAlchemyAuditEventRepository(session)),
+            SqlAlchemyEvidenceRepository(session),
         )
         await evidence_result_service.create(
             tenant_id=tenant_id,

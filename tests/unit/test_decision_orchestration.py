@@ -142,6 +142,15 @@ class NullSchemaCatalog:
         return True
 
 
+class FakeEvidenceRepository:
+    """Minimal stub -- WF-HV-009 Finding B's provenance validation isn't
+    exercised by this orchestration-focused suite (no test here passes
+    source_reference), so get() is never actually called."""
+
+    async def get(self, evidence_id, tenant_id):
+        return None
+
+
 class FakeEvidenceResultRepository:
     def __init__(self) -> None:
         self.records: dict[UUID, EvidenceResult] = {}
@@ -317,7 +326,7 @@ class _Harness:
             session_ttl_minutes=30,
         )
         self.evidence_result_service = EvidenceResultService(
-            self.evidence_repo, AuditService(FakeAuditRepository())
+            self.evidence_repo, AuditService(FakeAuditRepository()), FakeEvidenceRepository()
         )
         self.audit_service = AuditService(self.audit_repo)
         self.persistence_service = DecisionPersistenceService(

@@ -4,13 +4,57 @@ import pytest
 
 from core.audit.models import AuditEvent
 from core.audit.service import AuditService
+from core.evidence.enums import EvidenceSource, EvidenceType
+from core.evidence.models import Evidence
 from core.evidence_result.enums import EvidenceResultStatus, EvidenceResultType
 from core.evidence_result.exceptions import (
     InvalidEvidenceResultError,
+    InvalidProvenanceReferenceError,
     InvalidSupersessionError,
 )
 from core.evidence_result.models import EvidenceResult
 from core.evidence_result.service import EvidenceResultService
+
+
+class FakeEvidenceRepository:
+    """Minimal in-memory fake of core.evidence.repository.EvidenceRepository
+    -- only get() is exercised by EvidenceResultService's provenance
+    validation (WF-HV-009 Finding B); the rest raise NotImplementedError,
+    matching this suite's existing fake-repository convention."""
+
+    def __init__(self) -> None:
+        self.records: dict[UUID, Evidence] = {}
+
+    async def add(self, evidence: Evidence, idempotency_key: str | None = None) -> Evidence:
+        raise NotImplementedError
+
+    async def get_by_idempotency_key(self, tenant_id, session_id, idempotency_key):
+        raise NotImplementedError
+
+    async def get(self, evidence_id: UUID, tenant_id: str) -> Evidence | None:
+        record = self.records.get(evidence_id)
+        return record if record and record.tenant_id == tenant_id else None
+
+    async def list_for_session(self, session_id, tenant_id):
+        raise NotImplementedError
+
+    async def list_expired(self, tenant_id, as_of):
+        raise NotImplementedError
+
+    async def has_dependent_evidence_results(self, evidence_id, tenant_id):
+        raise NotImplementedError
+
+    async def delete_content(self, evidence_id, tenant_id):
+        raise NotImplementedError
+
+    async def add_tombstone(self, tombstone):
+        raise NotImplementedError
+
+    async def get_tombstone(self, evidence_id, tenant_id):
+        raise NotImplementedError
+
+    async def mark_tombstone_executed(self, evidence_id, tenant_id, executed_at):
+        raise NotImplementedError
 
 
 class FakeEvidenceResultRepository:
@@ -118,7 +162,9 @@ class FakeAuditRepository:
 def service() -> tuple[EvidenceResultService, FakeEvidenceResultRepository, FakeAuditRepository]:
     repo = FakeEvidenceResultRepository()
     audit_repo = FakeAuditRepository()
-    return EvidenceResultService(repo, AuditService(audit_repo)), repo, audit_repo
+    evidence_repo = FakeEvidenceRepository()
+    svc = EvidenceResultService(repo, AuditService(audit_repo), evidence_repo)
+    return svc, repo, audit_repo
 
 
 @pytest.mark.asyncio
@@ -360,6 +406,77 @@ async def test_supersede_rejects_a_nonexistent_evidence_result_id(service) -> No
         )
 
     assert repo.add_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_create_rejects_a_source_reference_from_a_different_session(service) -> None:
+    """WF-HV-009 Finding B: source_reference's DB foreign key only proves
+    the Evidence row exists somewhere -- not that it belongs to this
+    session. Confirmed live before this check existed: a caller could
+    create a result that falsely claims derivation from another
+    session's (or tenant's) raw evidence capture, with no error."""
+    svc, repo, _audit_repo = service
+    own_session = uuid4()
+    other_session = uuid4()
+    foreign_evidence_id = uuid4()
+    svc.evidence_repository.records[foreign_evidence_id] = Evidence(
+        id=foreign_evidence_id,
+        session_id=other_session,
+        tenant_id="tenant-a",
+        evidence_type=EvidenceType.SELFIE,
+        source=EvidenceSource.CLIENT,
+        object_key="tenant-a/other/selfie.jpg",
+        checksum="deadbeef",
+        mime_type="image/jpeg",
+        size_bytes=100,
+    )
+
+    with pytest.raises(InvalidProvenanceReferenceError):
+        await svc.create(
+            tenant_id="tenant-a",
+            session_id=own_session,
+            evidence_type=EvidenceResultType.FACE_MATCH,
+            status=EvidenceResultStatus.PASS,
+            producer="face-provider",
+            producer_version="1.0.0",
+            source_reference=foreign_evidence_id,
+        )
+
+    assert repo.add_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_create_rejects_a_parent_evidence_result_from_a_different_session(service) -> None:
+    """Same defect, on the result-to-result lineage field instead of the
+    capture-to-result one -- parent_evidence_result_ids has no FK
+    enforcement at all, so this is the only check standing between a
+    caller and a fabricated cross-session/cross-tenant lineage claim."""
+    svc, repo, _audit_repo = service
+    own_session = uuid4()
+    other_session = uuid4()
+
+    foreign_result = await svc.create(
+        tenant_id="tenant-a",
+        session_id=other_session,
+        evidence_type=EvidenceResultType.FACE_MATCH,
+        status=EvidenceResultStatus.PASS,
+        producer="face-provider",
+        producer_version="1.0.0",
+    )
+    assert repo.add_calls == 1
+
+    with pytest.raises(InvalidProvenanceReferenceError):
+        await svc.create(
+            tenant_id="tenant-a",
+            session_id=own_session,
+            evidence_type=EvidenceResultType.FACE_MATCH,
+            status=EvidenceResultStatus.PASS,
+            producer="face-provider",
+            producer_version="1.0.0",
+            parent_evidence_result_ids=(foreign_result.id,),
+        )
+
+    assert repo.add_calls == 1  # only the legitimate foreign_result, no forged row
 
 
 @pytest.mark.asyncio

@@ -181,6 +181,7 @@ async def api_client(session_factory, raw_storage):
         yield EvidenceResultService(
             SqlAlchemyEvidenceResultRepository(db_session, key_provider, "test-evidence-key"),
             AuditService(SqlAlchemyAuditEventRepository(db_session)),
+            SqlAlchemyEvidenceRepository(db_session),
             deletion_reconciler=SqlAlchemyEvidenceResultDeletionReconciler(
                 session_factory, key_provider, "test-evidence-key"
             ),

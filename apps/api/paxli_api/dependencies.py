@@ -112,6 +112,7 @@ async def get_evidence_result_service(
             db_session, key_provider, settings.evidence_encryption_key_id
         ),
         AuditService(SqlAlchemyAuditEventRepository(db_session)),
+        SqlAlchemyEvidenceRepository(db_session),
         deletion_reconciler=SqlAlchemyEvidenceResultDeletionReconciler(
             session_factory, key_provider, settings.evidence_encryption_key_id
         ),
@@ -156,6 +157,7 @@ async def get_workflow_service(
             db_session, key_provider, settings.evidence_encryption_key_id
         ),
         AuditService(SqlAlchemyAuditEventRepository(db_session)),
+        SqlAlchemyEvidenceRepository(db_session),
     )
     audit_service = AuditService(SqlAlchemyAuditEventRepository(db_session))
     persistence_service = DecisionPersistenceService(

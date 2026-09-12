@@ -7,6 +7,7 @@ from core.audit.service import AuditService
 from core.evidence_result.enums import EvidenceResultStatus, EvidenceResultType
 from core.evidence_result.service import EvidenceResultService
 from infrastructure.database.repositories.audit_event import SqlAlchemyAuditEventRepository
+from infrastructure.database.repositories.evidence import SqlAlchemyEvidenceRepository
 from infrastructure.database.repositories.evidence_result import (
     SqlAlchemyEvidenceResultRepository,
 )
@@ -184,6 +185,7 @@ async def _create_evidence_result(
         service = EvidenceResultService(
             SqlAlchemyEvidenceResultRepository(session, key_provider, "test-evidence-key"),
             AuditService(SqlAlchemyAuditEventRepository(session)),
+            SqlAlchemyEvidenceRepository(session),
         )
         result = await service.create(
             tenant_id=tenant_id,

@@ -26,6 +26,7 @@ from infrastructure.database.models.evidence_result import EvidenceResultRecord
 from infrastructure.database.models.verification_session import VerificationSessionRecord
 from infrastructure.database.repositories.audit_event import SqlAlchemyAuditEventRepository
 from infrastructure.database.repositories.decision import SqlAlchemyDecisionRepository
+from infrastructure.database.repositories.evidence import SqlAlchemyEvidenceRepository
 from infrastructure.database.repositories.evidence_result import SqlAlchemyEvidenceResultRepository
 from infrastructure.database.session import session_factory
 from infrastructure.security.local_key_provider import LocalAesGcmKeyProvider
@@ -199,7 +200,9 @@ async def test_decision_survives_hard_deletion_of_the_evidence_it_referenced() -
             session, key_provider, "test-decision-evidence-key"
         )
         evidence_service = EvidenceResultService(
-            evidence_repo, AuditService(SqlAlchemyAuditEventRepository(session))
+            evidence_repo,
+            AuditService(SqlAlchemyAuditEventRepository(session)),
+            SqlAlchemyEvidenceRepository(session),
         )
         evidence = await evidence_service.create(
             tenant_id=tenant_id,

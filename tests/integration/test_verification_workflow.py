@@ -102,6 +102,7 @@ def _services(session):
     evidence_result_service = EvidenceResultService(
         SqlAlchemyEvidenceResultRepository(session, _KEY_PROVIDER, "test-workflow-key"),
         AuditService(SqlAlchemyAuditEventRepository(session)),
+        SqlAlchemyEvidenceRepository(session),
     )
     audit_service = AuditService(SqlAlchemyAuditEventRepository(session))
     persistence_service = DecisionPersistenceService(

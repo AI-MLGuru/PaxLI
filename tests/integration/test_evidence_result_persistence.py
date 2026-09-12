@@ -18,6 +18,7 @@ from core.evidence_result.service import EvidenceResultService
 from infrastructure.database.models.evidence_result import EvidenceResultRecord
 from infrastructure.database.models.verification_session import VerificationSessionRecord
 from infrastructure.database.repositories.audit_event import SqlAlchemyAuditEventRepository
+from infrastructure.database.repositories.evidence import SqlAlchemyEvidenceRepository
 from infrastructure.database.repositories.evidence_result import SqlAlchemyEvidenceResultRepository
 from infrastructure.database.session import session_factory
 from infrastructure.security.local_key_provider import LocalAesGcmKeyProvider
@@ -96,7 +97,11 @@ async def test_sensitive_result_round_trips_as_plain_json_in_db() -> None:
         session_id = await _create_session(session, "tenant-persist-plain")
         key_provider = LocalAesGcmKeyProvider({"test-evidence-result-key": b"0" * 32})
         repo = SqlAlchemyEvidenceResultRepository(session, key_provider, "test-evidence-result-key")
-        svc = EvidenceResultService(repo, AuditService(SqlAlchemyAuditEventRepository(session)))
+        svc = EvidenceResultService(
+            repo,
+            AuditService(SqlAlchemyAuditEventRepository(session)),
+            SqlAlchemyEvidenceRepository(session),
+        )
 
         saved = await svc.create(
             tenant_id="tenant-persist-plain",
@@ -125,7 +130,11 @@ async def test_highly_sensitive_result_is_encrypted_at_rest_and_round_trips() ->
         session_id = await _create_session(session, "tenant-persist-encrypted")
         key_provider = LocalAesGcmKeyProvider({"test-evidence-result-key": b"0" * 32})
         repo = SqlAlchemyEvidenceResultRepository(session, key_provider, "test-evidence-result-key")
-        svc = EvidenceResultService(repo, AuditService(SqlAlchemyAuditEventRepository(session)))
+        svc = EvidenceResultService(
+            repo,
+            AuditService(SqlAlchemyAuditEventRepository(session)),
+            SqlAlchemyEvidenceRepository(session),
+        )
 
         canary_embedding = [0.123456, 0.654321, 0.999999]
         saved = await svc.create(
@@ -158,7 +167,11 @@ async def test_cross_tenant_get_returns_none() -> None:
         session_id = await _create_session(session, "tenant-iso-a")
         key_provider = LocalAesGcmKeyProvider({"test-evidence-result-key": b"0" * 32})
         repo = SqlAlchemyEvidenceResultRepository(session, key_provider, "test-evidence-result-key")
-        svc = EvidenceResultService(repo, AuditService(SqlAlchemyAuditEventRepository(session)))
+        svc = EvidenceResultService(
+            repo,
+            AuditService(SqlAlchemyAuditEventRepository(session)),
+            SqlAlchemyEvidenceRepository(session),
+        )
 
         saved = await svc.create(
             tenant_id="tenant-iso-a",
@@ -195,7 +208,9 @@ async def test_required_audit_failure_leaves_no_evidence_result_row() -> None:
         session_id = await _create_session(session, "tenant-audit-failure")
         key_provider = LocalAesGcmKeyProvider({"test-evidence-result-key": b"0" * 32})
         repo = SqlAlchemyEvidenceResultRepository(session, key_provider, "test-evidence-result-key")
-        svc = EvidenceResultService(repo, AuditService(FailingAuditEventRepository()))
+        svc = EvidenceResultService(
+            repo, AuditService(FailingAuditEventRepository()), SqlAlchemyEvidenceRepository(session)
+        )
 
         with pytest.raises(AuditPersistenceError):
             await svc.create(
@@ -224,7 +239,11 @@ async def test_supersede_against_real_postgres_creates_new_row_original_untouche
         session_id = await _create_session(session, "tenant-supersede")
         key_provider = LocalAesGcmKeyProvider({"test-evidence-result-key": b"0" * 32})
         repo = SqlAlchemyEvidenceResultRepository(session, key_provider, "test-evidence-result-key")
-        svc = EvidenceResultService(repo, AuditService(SqlAlchemyAuditEventRepository(session)))
+        svc = EvidenceResultService(
+            repo,
+            AuditService(SqlAlchemyAuditEventRepository(session)),
+            SqlAlchemyEvidenceRepository(session),
+        )
 
         original = await svc.create(
             tenant_id="tenant-supersede",

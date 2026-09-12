@@ -33,6 +33,7 @@ from core.verification.service import VerificationSessionService
 from infrastructure.database.models.decision import DecisionRecord
 from infrastructure.database.repositories.audit_event import SqlAlchemyAuditEventRepository
 from infrastructure.database.repositories.decision import SqlAlchemyDecisionRepository
+from infrastructure.database.repositories.evidence import SqlAlchemyEvidenceRepository
 from infrastructure.database.repositories.evidence_result import SqlAlchemyEvidenceResultRepository
 from infrastructure.database.repositories.policy import SqlAlchemyVerificationPolicyRepository
 from infrastructure.database.repositories.verification_session import (
@@ -131,6 +132,7 @@ async def test_superseded_stale_rejection_does_not_affect_a_verified_outcome() -
         evidence_result_service = EvidenceResultService(
             SqlAlchemyEvidenceResultRepository(session, key_provider, "test-adversarial-key"),
             AuditService(SqlAlchemyAuditEventRepository(session)),
+            SqlAlchemyEvidenceRepository(session),
         )
         stale_failure = await evidence_result_service.create(
             tenant_id=tenant_id,
@@ -166,6 +168,7 @@ async def test_superseded_stale_rejection_does_not_affect_a_verified_outcome() -
         evidence_result_service = EvidenceResultService(
             SqlAlchemyEvidenceResultRepository(session, key_provider, "test-adversarial-key"),
             AuditService(SqlAlchemyAuditEventRepository(session)),
+            SqlAlchemyEvidenceRepository(session),
         )
         audit_service = AuditService(SqlAlchemyAuditEventRepository(session))
         orchestrator = DecisionOrchestrator(
@@ -223,6 +226,7 @@ async def test_mutation_between_evaluation_and_persistence_never_taints_the_deci
         evidence_result_service = EvidenceResultService(
             SqlAlchemyEvidenceResultRepository(session, key_provider, "test-adversarial-key"),
             AuditService(SqlAlchemyAuditEventRepository(session)),
+            SqlAlchemyEvidenceRepository(session),
         )
         original_pass = await evidence_result_service.create(
             tenant_id=tenant_id,
@@ -249,6 +253,7 @@ async def test_mutation_between_evaluation_and_persistence_never_taints_the_deci
         evidence_result_service = EvidenceResultService(
             SqlAlchemyEvidenceResultRepository(session, key_provider, "test-adversarial-key"),
             AuditService(SqlAlchemyAuditEventRepository(session)),
+            SqlAlchemyEvidenceRepository(session),
         )
         audit_service = AuditService(SqlAlchemyAuditEventRepository(session))
         persistence_service = DecisionPersistenceService(
@@ -349,6 +354,7 @@ async def test_malformed_evidence_submission_never_reaches_the_evaluator() -> No
         evidence_result_service = EvidenceResultService(
             SqlAlchemyEvidenceResultRepository(session, key_provider, "test-adversarial-key"),
             AuditService(SqlAlchemyAuditEventRepository(session)),
+            SqlAlchemyEvidenceRepository(session),
         )
         with pytest.raises(InvalidEvidenceResultError):
             await evidence_result_service.create(
@@ -377,6 +383,7 @@ async def test_malformed_evidence_submission_never_reaches_the_evaluator() -> No
         evidence_result_service = EvidenceResultService(
             SqlAlchemyEvidenceResultRepository(session, key_provider, "test-adversarial-key"),
             AuditService(SqlAlchemyAuditEventRepository(session)),
+            SqlAlchemyEvidenceRepository(session),
         )
         audit_service = AuditService(SqlAlchemyAuditEventRepository(session))
         orchestrator = DecisionOrchestrator(

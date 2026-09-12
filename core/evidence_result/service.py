@@ -10,9 +10,11 @@ from core.audit.service import AuditService
 from core.deletion.enums import DeletionBasis
 from core.deletion.exceptions import DeletionBlockedByDependentsError
 from core.deletion.validation import validate_deletion_request
+from core.evidence.repository import EvidenceRepository
 from core.evidence_result.enums import EvidenceResultStatus, EvidenceResultType
 from core.evidence_result.exceptions import (
     EvidenceResultNotFoundError,
+    InvalidProvenanceReferenceError,
     InvalidSupersessionError,
 )
 from core.evidence_result.models import EvidenceResult, EvidenceResultTombstone, ModelReference
@@ -76,10 +78,12 @@ class EvidenceResultService:
         self,
         repository: EvidenceResultRepository,
         audit_service: AuditService,
+        evidence_repository: EvidenceRepository,
         deletion_reconciler: EvidenceResultDeletionReconciler | None = None,
     ) -> None:
         self.repository = repository
         self.audit_service = audit_service
+        self.evidence_repository = evidence_repository
         self.deletion_reconciler = deletion_reconciler
 
     async def create(
@@ -145,6 +149,12 @@ class EvidenceResultService:
                 return existing
 
         validate_result_payload(evidence_type, result)
+        await self._validate_provenance(
+            tenant_id=tenant_id,
+            session_id=session_id,
+            source_reference=source_reference,
+            parent_evidence_result_ids=parent_evidence_result_ids,
+        )
 
         now = datetime.now(UTC)
         evidence_result = EvidenceResult(
@@ -195,6 +205,37 @@ class EvidenceResultService:
             durability=AuditDurability.REQUIRED,
         )
         return saved
+
+    async def _validate_provenance(
+        self,
+        *,
+        tenant_id: str,
+        session_id: UUID,
+        source_reference: UUID | None,
+        parent_evidence_result_ids: tuple[UUID, ...],
+    ) -> None:
+        """WF-HV-009 Finding B: neither provenance field is safe to trust
+        on the caller's word. `source_reference`'s DB foreign key only
+        proves the Evidence row exists somewhere -- not that it belongs to
+        THIS tenant/session; `parent_evidence_result_ids` has no FK at
+        all. Confirmed live before this check existed: a caller in one
+        tenant could create a result that falsely claims derivation from
+        another tenant's evidence or results, with no error and no
+        signal that the lineage is forged."""
+        if source_reference is not None:
+            source = await self.evidence_repository.get(source_reference, tenant_id)
+            if source is None or source.session_id != session_id:
+                raise InvalidProvenanceReferenceError(
+                    f"source_reference={source_reference!s} is not a "
+                    f"session_id={session_id!s} evidence capture in this tenant"
+                )
+        for parent_id in parent_evidence_result_ids:
+            parent = await self.repository.get(parent_id, tenant_id)
+            if parent is None or parent.session_id != session_id:
+                raise InvalidProvenanceReferenceError(
+                    f"parent_evidence_result_id={parent_id!s} is not a "
+                    f"session_id={session_id!s} evidence result in this tenant"
+                )
 
     async def supersede(
         self,

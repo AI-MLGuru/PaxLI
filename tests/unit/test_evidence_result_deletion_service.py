@@ -94,6 +94,14 @@ class FakeEvidenceResultRepository:
         return updated
 
 
+class FakeEvidenceRepository:
+    """Minimal stub -- this suite never passes source_reference, so
+    WF-HV-009 Finding B's provenance validation is never exercised here."""
+
+    async def get(self, evidence_id, tenant_id):
+        return None
+
+
 class FakeAuditRepository:
     def __init__(self) -> None:
         self.events: list[AuditEvent] = []
@@ -144,7 +152,8 @@ def _make_result(tenant_id: str = "tenant-a") -> EvidenceResult:
 def service():
     repo = FakeEvidenceResultRepository()
     audit_repo = FakeAuditRepository()
-    return EvidenceResultService(repo, AuditService(audit_repo)), repo, audit_repo
+    svc = EvidenceResultService(repo, AuditService(audit_repo), FakeEvidenceRepository())
+    return svc, repo, audit_repo
 
 
 @pytest.mark.asyncio
