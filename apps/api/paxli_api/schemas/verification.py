@@ -4,6 +4,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 from core.audit.enums import AuditActorType, AuditEventType, AuditStatus
+from core.decision.enums import DecisionOutcome
 from core.deletion.enums import DeletionBasis
 from core.deletion.validation import MAX_BASIS_REFERENCE_LENGTH
 from core.evidence.enums import EvidenceSource, EvidenceType
@@ -13,6 +14,18 @@ from core.verification.enums import AssuranceLevel, VerificationStatus
 class CreateVerificationSessionRequest(BaseModel):
     external_reference: str | None = Field(default=None, max_length=256)
     assurance_level: AssuranceLevel = AssuranceLevel.STANDARD
+
+
+class PolicyReferenceResponse(BaseModel):
+    id: str
+    version: int
+    hash: str
+
+
+class DecisionProjection(BaseModel):
+    outcome: DecisionOutcome
+    reason_codes: tuple[str, ...]
+    policy: PolicyReferenceResponse
 
 
 class VerificationSessionResponse(BaseModel):
@@ -26,6 +39,11 @@ class VerificationSessionResponse(BaseModel):
     created_at: datetime
     expires_at: datetime
     completed_at: datetime | None
+    # WF-001 §9: read-time DecisionResult projection, never a
+    # denormalized column on verification_sessions -- populated if and
+    # only if status == COMPLETED, None for every other status, never a
+    # partial or speculative decision.
+    decision: DecisionProjection | None = None
 
 
 class ResponseMeta(BaseModel):

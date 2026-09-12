@@ -5,6 +5,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.paxli_api.config import Settings, get_settings
 from core.audit.service import AuditService
+from core.decision.orchestration import DecisionOrchestrator
+from core.decision.persistence import DecisionPersistenceService
 from core.evidence.service import EvidenceService
 from core.evidence_result.schema_catalog import EvidenceResultSchemaCatalog
 from core.evidence_result.service import EvidenceResultService
@@ -17,10 +19,12 @@ from core.rate_limit.metrics import RateLimitMetrics
 from core.security.authentication import AuthenticatedPrincipal, authenticate_bearer
 from core.security.credentials import CredentialService
 from core.verification.service import VerificationSessionService
+from core.verification.workflow import VerificationWorkflowService
 from infrastructure.database.repositories.audit_event import (
     SqlAlchemyAuditEventRepository,
 )
 from infrastructure.database.repositories.credential import SqlAlchemyCredentialStore
+from infrastructure.database.repositories.decision import SqlAlchemyDecisionRepository
 from infrastructure.database.repositories.evidence import SqlAlchemyEvidenceRepository
 from infrastructure.database.repositories.evidence_result import (
     SqlAlchemyEvidenceResultRepository,
@@ -110,6 +114,54 @@ async def get_evidence_result_service(
             session_factory, key_provider, settings.evidence_encryption_key_id
         ),
     )
+
+
+async def get_decision_persistence_service(
+    db_session: AsyncSession = Depends(get_db_session),  # noqa: B008
+) -> AsyncIterator[DecisionPersistenceService]:
+    """A standalone, read-mostly provider -- WF-001 §9's session GET
+    decision projection needs only DecisionPersistenceService.
+    get_for_session(), never the heavier DecisionOrchestrator (which
+    pulls in PolicyService/EvidenceResultService for evaluation this
+    pure read never performs)."""
+    yield DecisionPersistenceService(
+        SqlAlchemyDecisionRepository(db_session),
+        AuditService(SqlAlchemyAuditEventRepository(db_session)),
+    )
+
+
+async def get_workflow_service(
+    db_session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    settings: Settings = Depends(get_settings),  # noqa: B008
+) -> AsyncIterator[VerificationWorkflowService]:
+    policy_service = PolicyService(
+        SqlAlchemyVerificationPolicyRepository(db_session),
+        AuditService(SqlAlchemyAuditEventRepository(db_session)),
+        EvidenceResultSchemaCatalog(),
+    )
+    session_service = VerificationSessionService(
+        SqlAlchemyVerificationSessionRepository(db_session),
+        policy_service,
+        session_ttl_minutes=settings.session_ttl_minutes,
+    )
+    key_provider = get_local_key_provider(
+        key_id=settings.evidence_encryption_key_id,
+        encoded_key=settings.evidence_encryption_key,
+    )
+    evidence_result_service = EvidenceResultService(
+        SqlAlchemyEvidenceResultRepository(
+            db_session, key_provider, settings.evidence_encryption_key_id
+        ),
+        AuditService(SqlAlchemyAuditEventRepository(db_session)),
+    )
+    audit_service = AuditService(SqlAlchemyAuditEventRepository(db_session))
+    persistence_service = DecisionPersistenceService(
+        SqlAlchemyDecisionRepository(db_session), audit_service
+    )
+    orchestrator = DecisionOrchestrator(
+        session_service, policy_service, evidence_result_service, persistence_service, audit_service
+    )
+    yield VerificationWorkflowService(session_service, orchestrator, audit_service)
 
 
 async def get_audit_service(

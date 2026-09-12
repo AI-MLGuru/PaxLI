@@ -12,6 +12,7 @@ class Permission(StrEnum):
     VERIFICATION_CREATE = "verification:create"
     VERIFICATION_READ = "verification:read"
     VERIFICATION_CANCEL = "verification:cancel"
+    VERIFICATION_SUBMIT = "verification:submit"
     EVIDENCE_SUBMIT = "evidence:submit"
     EVIDENCE_READ = "evidence:read"
     EVIDENCE_DELETE = "evidence:delete"
@@ -25,6 +26,7 @@ _OPERATIONAL_PERMISSIONS: frozenset[Permission] = frozenset(
         Permission.VERIFICATION_CREATE,
         Permission.VERIFICATION_READ,
         Permission.VERIFICATION_CANCEL,
+        Permission.VERIFICATION_SUBMIT,
         Permission.EVIDENCE_SUBMIT,
         Permission.EVIDENCE_READ,
         Permission.AUDIT_READ,

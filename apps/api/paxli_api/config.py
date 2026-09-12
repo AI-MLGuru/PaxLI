@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     rate_limit_auth_window_seconds: int = 60
     rate_limit_verification_create_per_window: int = 60
     rate_limit_verification_create_window_seconds: int = 60
+    rate_limit_verification_submit_per_window: int = 60
+    rate_limit_verification_submit_window_seconds: int = 60
     rate_limit_evidence_submit_per_window: int = 120
     rate_limit_evidence_submit_window_seconds: int = 60
     rate_limit_credential_manage_per_window: int = 10
