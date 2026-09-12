@@ -150,9 +150,24 @@ class DecisionOrchestrator:
             session.policy_id, session.policy_version, session.policy_hash
         )
 
-        policy = await self.policy_service.get_version(
-            policy_id=session.policy_id, version=session.policy_version, tenant_id=tenant_id
-        )
+        try:
+            policy = await self.policy_service.get_version(
+                policy_id=session.policy_id, version=session.policy_version, tenant_id=tenant_id
+            )
+        except Exception:
+            return await self._handle_context_read_failure(
+                log_event="policy_version_read_failed",
+                audit_action="read_policy_version",
+                session_id=session_id,
+                tenant_id=tenant_id,
+                policy_id=session.policy_id,
+                policy_version=session.policy_version,
+                policy_reference=pinned_reference,
+                reason_code=EngineReasonCode.POLICY_VERSION_UNAVAILABLE,
+                evaluation_reason=evaluation_reason,
+                request_id=request_id,
+                correlation_id=correlation_id,
+            )
         if policy is None:
             # DE-002 §8 step 1: the pinned version cannot be re-fetched.
             # Policies are never deleted (Invariant 07), so this signals
@@ -192,9 +207,24 @@ class DecisionOrchestrator:
                 correlation_id=correlation_id,
             )
 
-        effective_evidence = await self.evidence_result_service.list_effective_for_session(
-            session_id=session_id, tenant_id=tenant_id
-        )
+        try:
+            effective_evidence = await self.evidence_result_service.list_effective_for_session(
+                session_id=session_id, tenant_id=tenant_id
+            )
+        except Exception:
+            return await self._handle_context_read_failure(
+                log_event="evidence_read_failed",
+                audit_action="read_effective_evidence",
+                session_id=session_id,
+                tenant_id=tenant_id,
+                policy_id=session.policy_id,
+                policy_version=session.policy_version,
+                policy_reference=pinned_reference,
+                reason_code=EngineReasonCode.EVIDENCE_UNAVAILABLE,
+                evaluation_reason=evaluation_reason,
+                request_id=request_id,
+                correlation_id=correlation_id,
+            )
         context = DecisionEvaluationContext(
             session_id=session_id,
             tenant_id=tenant_id,
@@ -260,6 +290,72 @@ class DecisionOrchestrator:
         one read."""
         return await self.persistence_service.get_for_session(
             session_id=session_id, tenant_id=tenant_id
+        )
+
+    async def _handle_context_read_failure(
+        self,
+        *,
+        log_event: str,
+        audit_action: str,
+        session_id: UUID,
+        tenant_id: str,
+        policy_id: str | None,
+        policy_version: int | None,
+        policy_reference: PolicyReference,
+        reason_code: EngineReasonCode,
+        evaluation_reason: EvaluationReason,
+        request_id: str | None,
+        correlation_id: str | None,
+    ) -> DecisionProvenance:
+        """WF-HV-009: a genuine failure reading policy or evidence content
+        during context assembly -- a DB outage, or (confirmed live) an
+        EvidenceResult whose encrypted payload fails AES-GCM
+        authentication, meaning its content was corrupted or tampered
+        with after being written -- must resolve the same way evaluate()'s
+        own exceptions already do (DEC-5.24/DEC-5.24.3): a stable engine
+        reason code and a persisted INCONCLUSIVE decision, never left to
+        propagate as an unhandled exception. Before this fix, such a
+        failure left the session permanently stuck behind a generic 500
+        with no path to any terminal outcome -- every retry hit the
+        identical, non-transient failure forever.
+
+        Deliberately NOT used for session_service.get() at the top of
+        evaluate_and_persist(): at that point no PolicyReference exists
+        yet to attach to a DecisionCandidate (the same reasoning already
+        documented on SessionHasNoPolicyPinError -- a precondition
+        violation for the caller to handle, not a Decision Engine
+        outcome)."""
+        logger.error(
+            log_event,
+            extra={"session_id": str(session_id), "tenant_id": tenant_id},
+            exc_info=True,
+        )
+        await self.audit_service.record(
+            tenant_id=tenant_id,
+            session_id=session_id,
+            event_type=AuditEventType.DECISION_ENGINE_FAILED,
+            component="decision",
+            action=audit_action,
+            status=AuditStatus.FAILURE,
+            actor_type=AuditActorType.SYSTEM,
+            actor_id=_SYSTEM_ACTOR_ID,
+            request_id=request_id,
+            correlation_id=correlation_id,
+            metadata={
+                "reason_code": reason_code.value,
+                "policy_id": policy_id,
+                "policy_version": policy_version,
+            },
+            durability=AuditDurability.REQUIRED,
+        )
+        return await self._persist_engine_failure(
+            session_id=session_id,
+            tenant_id=tenant_id,
+            policy_reference=policy_reference,
+            reason_code=reason_code,
+            evaluation_reason=evaluation_reason,
+            request_id=request_id,
+            correlation_id=correlation_id,
         )
 
     async def _persist_engine_failure(

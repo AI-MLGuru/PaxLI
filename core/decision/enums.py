@@ -37,6 +37,16 @@ class EngineReasonCode(StrEnum):
     DECISION_ENGINE_ERROR = "ENGINE:DECISION_ENGINE_ERROR"
     POLICY_INVALID = "ENGINE:POLICY_INVALID"
     POLICY_VERSION_UNAVAILABLE = "ENGINE:POLICY_VERSION_UNAVAILABLE"
+    # WF-HV-009: distinct from EVIDENCE_SCHEMA_INVALID/REQUIRED_EVIDENCE_MISSING
+    # below -- those describe the *content* of evidence the engine actually
+    # read. This describes an infrastructure-layer failure to read it at all
+    # (a DB outage, or -- confirmed live -- an EvidenceResult whose encrypted
+    # payload fails AES-GCM authentication, meaning it was corrupted or
+    # tampered with after being written). DEC-5.28.1: a reason code must not
+    # falsely describe infrastructure failure as evidence failure, so this
+    # stays in the same "-UNAVAILABLE" family as POLICY_VERSION_UNAVAILABLE
+    # rather than implying anything about the evidence's own validity.
+    EVIDENCE_UNAVAILABLE = "ENGINE:EVIDENCE_UNAVAILABLE"
     REQUIRED_EVIDENCE_MISSING = "ENGINE:REQUIRED_EVIDENCE_MISSING"
     EVIDENCE_SCHEMA_INVALID = "ENGINE:EVIDENCE_SCHEMA_INVALID"
     DECISION_TIMEOUT = "ENGINE:DECISION_TIMEOUT"

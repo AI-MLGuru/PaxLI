@@ -1,22 +1,27 @@
-"""WF-HV-006: failure injection targeting the exact gap WF-006 disclosed
-as Finding G/E -- no test previously injected a genuine DB failure inside
+"""WF-HV-006 / WF-HV-009: failure injection targeting
 DecisionOrchestrator.evaluate_and_persist()'s own read steps
 (session_service.get(), policy_service.get_version(),
 evidence_result_service.list_effective_for_session()), which sit outside
-PostgresOperationError's guarded-commit-only wrapping and, before this
-phase, outside any exception handler at all -- a raw exception there
-propagated past every specific handler in main.py and fell through to
-Starlette's bare, non-JSON "Internal Server Error" text.
+PostgresOperationError's guarded-commit-only wrapping.
 
-Confirmed live before any fix: correct 500 status, state-safe (no
-corrupted session, no fabricated decision), but a genuine client-visible
-violation of this app's own {error: {...}, meta: {...}} contract.
-Closed with an additive `@app.exception_handler(Exception)` catch-all in
-main.py -- no DE-003/DE-004 semantic change, no change to any specific
-handler's own behavior (Starlette resolves by exception-class
-specificity, not registration order, so the catch-all can never shadow
-a more specific handler; the full tests/contracts/ suite re-confirms
-this directly).
+Two layers of fix, in sequence:
+
+1. WF-006 Finding G/E (HV-006): before any fix, a raw exception from
+   these reads propagated past every specific handler in main.py and
+   fell through to Starlette's bare, non-JSON "Internal Server Error"
+   text -- confirmed 500-safe (no corrupted session, no fabricated
+   decision) but a contract-shape violation. Closed with an additive
+   `@app.exception_handler(Exception)` catch-all in main.py.
+2. WF-HV-009: the catch-all made a policy/evidence-read failure
+   *safe*, but not *resolved* -- a permanent underlying failure (e.g.
+   corrupted evidence ciphertext, see
+   test_decision_engine_evidence_integrity_failure.py) left the session
+   stuck retrying the identical failure forever, with no path to any
+   terminal decision. DecisionOrchestrator now catches exactly these two
+   read steps itself and persists a safe INCONCLUSIVE decision with a
+   stable engine reason code, so this module's remaining test now
+   exercises that resolution directly instead of the (superseded) raw
+   500 shape.
 
 Uses api_client (SQLite + FakeObjectStorage), matching every other
 router-level test in this suite -- the failure is injected via
@@ -28,26 +33,36 @@ behavior.
 
 from unittest.mock import patch
 
-from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-from apps.api.paxli_api.main import app
 from infrastructure.database.models.decision import DecisionRecord
 from infrastructure.database.models.verification_session import VerificationSessionRecord
 from infrastructure.database.repositories.policy import SqlAlchemyVerificationPolicyRepository
 
 
-async def test_db_failure_during_policy_read_fails_safely_with_the_correct_contract(
+async def test_db_failure_during_policy_read_resolves_to_a_persisted_inconclusive_decision(
     api_client, issued_credentials, session_factory
 ) -> None:
     """Attacks the exact boundary WF-006 Finding G/E named: a genuine DB
     failure inside evaluate_and_persist()'s policy read, reached through
     the real /submit HTTP path against a session already in PROCESSING
-    (the crash-recovery shape). Verifies FOUR things, not merely "an
-    error occurred": the response is the app's own ErrorEnvelope shape
-    (not Starlette's bare text), the underlying exception text is never
-    leaked to the client, the session's lifecycle state survives
-    uncorrupted, and no decision is fabricated or orphaned.
+    (the crash-recovery shape).
+
+    Superseded expectation, deliberately: this test previously asserted a
+    raw 500 with no persisted decision (WF-006 Finding G/E's original,
+    narrower fix -- an additive catch-all exception handler that only
+    corrected the HTTP *contract shape*). WF-HV-009 found that policy/
+    evidence read failures inside evaluate_and_persist() were still left
+    to propagate as unhandled exceptions, which is safe against a
+    transient DB blip but leaves a session with a *permanent* underlying
+    failure (e.g. corrupted evidence ciphertext -- see
+    test_decision_engine_evidence_integrity_failure.py) stuck retrying
+    the exact same failure forever, with no path to any terminal
+    decision. DecisionOrchestrator now catches exactly these two read
+    steps and resolves them to a persisted INCONCLUSIVE decision with a
+    stable engine reason code (DEC-5.24/DEC-5.24.3), the same posture
+    already used for POLICY_VERSION_UNAVAILABLE/POLICY_INVALID and for
+    evaluate()'s own exceptions two branches later in that function.
     """
     token = issued_credentials["tenant_a_operational"]
     create_response = api_client.post(
@@ -63,46 +78,47 @@ async def test_db_failure_during_policy_read_fails_safely_with_the_correct_contr
         record.status = "PROCESSING"
         await session.commit()
 
-    # raise_server_exceptions=False mirrors a real ASGI server (uvicorn):
-    # the exception is caught at the protocol boundary, not propagated
-    # into the test process itself -- api_client's default TestClient
-    # configuration re-raises instead, which is a testing convenience,
-    # not what a real deployed client would observe.
-    real_client = TestClient(app, raise_server_exceptions=False)
     with patch.object(
         SqlAlchemyVerificationPolicyRepository,
         "get_version",
         side_effect=RuntimeError("simulated DB outage during policy read"),
     ):
-        response = real_client.post(
+        response = api_client.post(
             f"/v1/verification-sessions/{session_id}/submit",
             headers={"Authorization": token},
         )
 
-    assert response.status_code == 500
-    body = response.json()  # must be valid JSON, not Starlette's bare text
-    assert body["error"]["code"] == "INTERNAL_ERROR"
-    assert "meta" in body and "request_id" in body["meta"]
-    # The underlying exception text must never reach the client.
+    # No 500, no crash: the failure resolves to a normal, successful
+    # response carrying a safe INCONCLUSIVE decision -- never VERIFIED,
+    # never REJECTED, and the underlying exception text is never leaked.
+    assert response.status_code == 200
     assert "simulated DB outage" not in response.text
     assert "RuntimeError" not in response.text
+    data = response.json()["data"]
+    assert data["status"] == "COMPLETED"
+    assert data["decision"]["outcome"] == "INCONCLUSIVE"
+    assert "ENGINE:POLICY_VERSION_UNAVAILABLE" in data["decision"]["reason_codes"]
 
-    # State-safety: the session survives exactly where it was, no
-    # corruption, no premature terminal transition.
+    # Durable: exactly one decision persisted, session terminally COMPLETED.
     async with session_factory() as verify_session:
         record = await verify_session.get(VerificationSessionRecord, session_id)
-        assert record.status == "PROCESSING"
+        assert record.status == "COMPLETED"
         result = await verify_session.execute(
             select(DecisionRecord).where(DecisionRecord.session_id == session_id)
         )
-        assert result.scalars().all() == []  # no orphaned/fabricated decision
+        rows = result.scalars().all()
+        assert len(rows) == 1
+        assert rows[0].outcome == "INCONCLUSIVE"
 
-    # Real retry, unpatched: converges cleanly to exactly one decision.
+    # Idempotent replay, unpatched: converges on the SAME decision, never
+    # a second one and never a retroactively "better" VERIFIED outcome
+    # just because the transient-looking failure is now gone (DEC-5.24.1:
+    # a decision is made once, ever, per session).
     retry = api_client.post(
         f"/v1/verification-sessions/{session_id}/submit", headers={"Authorization": token}
     )
     assert retry.status_code == 200
-    assert retry.json()["data"]["status"] == "COMPLETED"
+    assert retry.json()["data"]["decision"]["outcome"] == "INCONCLUSIVE"
     async with session_factory() as verify_session:
         result = await verify_session.execute(
             select(DecisionRecord).where(DecisionRecord.session_id == session_id)
