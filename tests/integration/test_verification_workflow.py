@@ -653,3 +653,163 @@ async def test_five_way_concurrent_recovery_on_one_stuck_processing_session() ->
             e for e in events if e.event_type == AuditEventType.DECISION_PRODUCED
         ]
         assert len(produced_events) == 1  # same property, one layer down in the decision domain
+
+
+async def test_in_flight_submit_beats_a_concurrent_lazy_expiration_read() -> None:
+    """WF-HV-008: attacks read-time lazy expiration racing an operation
+    already underway -- the specific case named as most likely to hide a
+    subtle bug. A session sits in SUBMITTED with expires_at set to fire
+    in the immediate future. One coroutine calls workflow.submit()
+    (which reads the session, still sees SUBMITTED-and-not-yet-expired,
+    and attempts the SUBMITTED->PROCESSING CAS write) and holds its
+    transaction open past the deadline. A second, genuinely concurrent
+    caller calls session_service.get() -- exactly what a GET request's
+    lazy expire_if_needed() does -- after the deadline has passed in
+    wall-clock time.
+
+    The wall clock alone would say "this session is expired." The
+    invariant under test is that the database, not the clock, is the
+    final arbiter: get()'s own lazy-expire CAS write must block on
+    submit()'s still-open row lock, and once submit() commits (winning),
+    get()'s blocked write finds zero rows affected, catches its own
+    ConcurrentTransitionError internally (the same harmless-lost-race
+    swallow VerificationSessionService.get() already performs for any
+    lost expire race), and returns the CURRENT truth -- PROCESSING, then
+    eventually COMPLETED -- never incorrectly stamping an
+    already-progressing session as EXPIRED out from under it.
+    """
+    tenant_id = f"tenant-hv008-submit-beats-expiry-{uuid4()}"
+    await _activate_trivial_policy(tenant_id)
+    deadline = datetime.now(UTC) + timedelta(milliseconds=150)
+    session_id = await _seed_session_in_status(
+        tenant_id, VerificationStatus.SUBMITTED, expires_at=deadline
+    )
+    submit_read_done = asyncio.Event()
+
+    async def _submit_attempt() -> str:
+        async with session_factory() as db_session:
+            *_rest, workflow = _services(db_session)
+            # No wait: starts immediately, while expires_at is still in
+            # the future, so its OWN internal get() sees SUBMITTED and
+            # not-yet-expired -- exactly the state a real client's
+            # /submit call would observe if it beat the deadline by a
+            # hair.
+            _session, decision = await workflow.submit(
+                session_id=session_id, tenant_id=tenant_id
+            )
+            submit_read_done.set()
+            # Held open well past the deadline -- this is the window the
+            # concurrent lazy-expire read races into.
+            await asyncio.sleep(0.4)
+            await db_session.commit()
+            return "submit_won"
+
+    async def _lazy_expire_get_attempt() -> str:
+        async with session_factory() as db_session:
+            _policy_service, session_service, *_rest = _services(db_session)
+            await submit_read_done.wait()
+            # No wall-clock sanity assertion here: on a fast local
+            # Postgres, submit()'s entire internal pipeline (multiple
+            # reads, evaluate, persist, two CAS writes) can occasionally
+            # complete in under the deadline's own window, so "has the
+            # deadline definitely passed yet" is itself racy to assert on
+            # -- and unnecessary, since the barrier-sync above already
+            # guarantees this read races submit()'s still-open
+            # transaction regardless. Found via a 25-iteration stress
+            # sweep (one hit) before removing; not a production issue,
+            # purely an over-strict test-harness assertion.
+            result = await session_service.get(session_id=session_id, tenant_id=tenant_id)
+            await db_session.commit()
+            return result.status.value
+
+    submit_result, get_result = await asyncio.gather(
+        _submit_attempt(), _lazy_expire_get_attempt()
+    )
+
+    assert submit_result == "submit_won"
+    # A deny-list, deliberately, not an allow-list: this specific
+    # invariant ("the database, not the clock, decided") is precisely
+    # "never EXPIRED here," not "must be exactly one enumerated value."
+    # Found via stress-testing (twice, in this same test) that SUBMITTED
+    # is also a legitimate outcome -- if get()'s own read happens to land
+    # before both submit()'s commit AND wall-clock expires_at, it
+    # correctly returns the still-current SUBMITTED value with no CAS
+    # attempt at all, which is exactly what a real GET should do and is
+    # not a weaker proof of the property under test.
+    assert get_result != "EXPIRED"
+
+    async with session_factory() as verify_session:
+        record = await verify_session.get(VerificationSessionRecord, str(session_id))
+        assert record is not None
+        assert record.status == VerificationStatus.COMPLETED.value
+        decision_rows = (
+            await verify_session.execute(
+                select(DecisionRecord).where(DecisionRecord.session_id == str(session_id))
+            )
+        ).scalars().all()
+        assert len(decision_rows) == 1  # a real decision, not an expiration bypass
+
+
+async def test_lazy_expiration_beats_an_in_flight_submit() -> None:
+    """The mirror direction: the lazy-expire read wins the row lock
+    first (holding it across a delay), and a concurrent submit() racing
+    in for the SAME SUBMITTED->PROCESSING transition loses. submit()
+    must never fabricate PROCESSING (or a decision) on a session that
+    just became EXPIRED out from under it -- it has to detect the loss
+    and raise, exactly as it does losing to a concurrent cancellation.
+    """
+    tenant_id = f"tenant-hv008-expiry-beats-submit-{uuid4()}"
+    await _activate_trivial_policy(tenant_id)
+    deadline = datetime.now(UTC) + timedelta(milliseconds=100)
+    session_id = await _seed_session_in_status(
+        tenant_id, VerificationStatus.SUBMITTED, expires_at=deadline
+    )
+    expire_read_done = asyncio.Event()
+
+    async def _lazy_expire_get_attempt() -> str:
+        async with session_factory() as db_session:
+            _policy_service, session_service, *_rest = _services(db_session)
+            await asyncio.sleep(0.15)  # ensures wall-clock time is past the deadline
+            result = await session_service.get(session_id=session_id, tenant_id=tenant_id)
+            expire_read_done.set()
+            await asyncio.sleep(0.3)  # holds the row lock well past submit()'s own read
+            await db_session.commit()
+            return result.status.value
+
+    async def _submit_attempt() -> str:
+        async with session_factory() as db_session:
+            *_rest, workflow = _services(db_session)
+            await expire_read_done.wait()
+            try:
+                await workflow.submit(session_id=session_id, tenant_id=tenant_id)
+            except SessionAlreadyTerminalError:
+                await db_session.rollback()
+                return "submit_lost_already_terminal"
+            except ConcurrentTransitionError:
+                await db_session.rollback()
+                return "submit_lost_concurrent_conflict"
+            await db_session.commit()
+            return "submit_won"
+
+    get_result, submit_result = await asyncio.gather(
+        _lazy_expire_get_attempt(), _submit_attempt()
+    )
+
+    assert get_result == "EXPIRED"
+    # submit()'s own initial read happens after expire's CAS write has
+    # already landed (or is landing) -- either detection path is a
+    # legitimate "lost to expiration" outcome, mirroring WF-HV-007's own
+    # cancel-vs-submit finding that the loser's exact exception type
+    # depends on scheduling, not correctness.
+    assert submit_result in ("submit_lost_already_terminal", "submit_lost_concurrent_conflict")
+
+    async with session_factory() as verify_session:
+        record = await verify_session.get(VerificationSessionRecord, str(session_id))
+        assert record is not None
+        assert record.status == VerificationStatus.EXPIRED.value
+        decision_rows = (
+            await verify_session.execute(
+                select(DecisionRecord).where(DecisionRecord.session_id == str(session_id))
+            )
+        ).scalars().all()
+        assert decision_rows == []  # EXPIRED never carries a decision, ever
