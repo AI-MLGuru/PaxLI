@@ -179,3 +179,50 @@ async def test_concurrent_creation_same_key_mismatched_fields_one_rejected() -> 
         rows = await SqlAlchemyVerificationSessionRepository(verify_session).list(tenant_id)
         assert len(rows) == 1  # only the winner's row was ever persisted
         assert rows[0].external_reference == "order-A"  # the attempt that committed first
+
+
+async def test_ten_way_concurrent_creation_same_key_different_requests_exactly_one_wins() -> None:
+    """WF-HV-007: the same mismatched-fields race above, scaled from two
+    contenders to ten, using asyncio.Barrier for genuine N-way overlap.
+    The two-caller version proves the mechanism exists; this proves it
+    holds under real contention -- one materially different request must
+    not "win" and let a second one also sneak through by any accident of
+    higher concurrency (a race in the upfront-check-sees-nothing-but-
+    insert-conflicts recovery path that only two contenders might not
+    expose). Every one of the nine losers must independently detect the
+    mismatch and reject, never silently converge on a request that was
+    not actually its own."""
+    tenant_id = f"tenant-idem-tenway-{uuid4()}"
+    await _activate_policy(tenant_id)
+    caller_count = 10
+    barrier = asyncio.Barrier(caller_count)
+
+    async def _create_attempt(external_reference: str) -> str:
+        async with session_factory() as session:
+            service = _session_service(session)
+            await barrier.wait()  # all ten reach this point before any proceeds
+            try:
+                await service.create(
+                    tenant_id=tenant_id,
+                    external_reference=external_reference,
+                    assurance_level=AssuranceLevel.STANDARD,
+                    idempotency_key="req-race-tenway",
+                )
+            except IdempotencyKeyReusedError:
+                await session.rollback()
+                return "rejected"
+            await session.commit()
+            return "won"
+
+    results = await asyncio.gather(
+        *(_create_attempt(f"order-{i}") for i in range(caller_count))
+    )
+
+    assert results.count("won") == 1
+    assert results.count("rejected") == caller_count - 1
+
+    async with session_factory() as verify_session:
+        rows = await SqlAlchemyVerificationSessionRepository(verify_session).list(tenant_id)
+        assert len(rows) == 1  # exactly one row, regardless of which of the ten actually won
+        # a genuine contender's value, never a hybrid of two requests
+        assert rows[0].external_reference.startswith("order-")

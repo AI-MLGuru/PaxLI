@@ -27,6 +27,7 @@ from core.evidence_result.schema_catalog import EvidenceResultSchemaCatalog
 from core.evidence_result.service import EvidenceResultService
 from core.policy.service import PolicyService
 from core.verification.enums import AssuranceLevel, VerificationStatus
+from core.verification.exceptions import ConcurrentTransitionError, SessionAlreadyTerminalError
 from core.verification.service import VerificationSessionService
 from core.verification.workflow import VerificationWorkflowService
 from infrastructure.database.models.decision import DecisionRecord
@@ -402,3 +403,253 @@ async def test_concurrent_submit_from_created_converges_on_one_decision() -> Non
         events = await audit_repo.list_for_session(session_id, tenant_id)
         completed_events = [e for e in events if e.event_type == AuditEventType.SESSION_COMPLETED]
         assert len(completed_events) == 1  # the loser converged, recorded no duplicate audit
+
+
+async def test_concurrent_cancel_vs_submit_produces_one_db_arbitrated_winner() -> None:
+    """WF-HV-007 / WF-006 Finding F: the cancel-vs-processing race was
+    previously proven only at the unit level, against a fake repository's
+    stage_concurrent_winner() hook (tests/unit/test_verification_workflow.py).
+    This is the real thing -- a session genuinely in PROCESSING, one
+    coroutine racing workflow.submit() (the full evaluate-then-complete
+    pipeline) against another racing session_service.cancel(), barrier-
+    synchronized so Postgres's row lock on the CAS UPDATE resolves the
+    race, not scheduling luck.
+
+    cancel()'s own pre-check reads the row BEFORE attempting its CAS
+    write. If that read lands while the race is still live (winner's
+    transaction not yet committed), cancel observes PROCESSING, proceeds
+    to its own CAS write, and loses it directly -- ConcurrentTransitionError
+    (WF-001 §6: an explicit, client-intent-driven request propagates a
+    genuine conflict, never swallows it). If instead cancel's read
+    happens to land AFTER the winner has already committed (ordinary
+    asyncio/connection-pool scheduling jitter around the barrier, not a
+    bug), cancel observes the row already terminal and raises
+    SessionAlreadyTerminalError instead, without ever attempting the CAS
+    write at all. Both are correct, legitimate manifestations of "cancel
+    lost the race" -- the test accepts either rather than over-specifying
+    an exact exception type that depends on scheduling, not correctness.
+    submit()'s own loss is asserted precisely, since its detection path
+    doesn't have this same ambiguity: _advance() refetches on a lost CAS
+    and re-dispatches, and when that refetch lands on CANCELLED, submit()
+    falls through to SessionAlreadyTerminalError every time.
+
+    Whichever side wins, the authoritative state must be fully self-
+    consistent: exactly one of {COMPLETED-with-one-decision,
+    CANCELLED-with-zero-decisions}, never a hybrid, never both, never
+    neither.
+    """
+    tenant_id = f"tenant-hv007-cancel-vs-submit-{uuid4()}"
+    await _activate_trivial_policy(tenant_id)
+    session_id = await _seed_session_in_status(tenant_id, VerificationStatus.PROCESSING)
+    first_started = asyncio.Event()
+
+    async def _submit_attempt(*, wait_for_signal: bool, delay_before_commit: float) -> str:
+        async with session_factory() as db_session:
+            *_rest, workflow = _services(db_session)
+            if wait_for_signal:
+                await first_started.wait()
+            try:
+                try:
+                    await workflow.submit(session_id=session_id, tenant_id=tenant_id)
+                except SessionAlreadyTerminalError:
+                    await db_session.rollback()
+                    return "submit_lost_already_terminal"
+            finally:
+                if not wait_for_signal:
+                    first_started.set()
+            if delay_before_commit:
+                await asyncio.sleep(delay_before_commit)
+            await db_session.commit()
+            return "submit_won"
+
+    async def _cancel_attempt(*, wait_for_signal: bool, delay_before_commit: float) -> str:
+        async with session_factory() as db_session:
+            _policy_service, session_service, *_rest = _services(db_session)
+            if wait_for_signal:
+                await first_started.wait()
+            try:
+                try:
+                    await session_service.cancel(session_id=session_id, tenant_id=tenant_id)
+                except SessionAlreadyTerminalError:
+                    await db_session.rollback()
+                    return "cancel_lost_already_terminal"
+                except ConcurrentTransitionError:
+                    await db_session.rollback()
+                    return "cancel_lost_concurrent_conflict"
+            finally:
+                if not wait_for_signal:
+                    first_started.set()
+            if delay_before_commit:
+                await asyncio.sleep(delay_before_commit)
+            await db_session.commit()
+            return "cancel_won"
+
+    results = await asyncio.gather(
+        _submit_attempt(wait_for_signal=False, delay_before_commit=0.5),
+        _cancel_attempt(wait_for_signal=True, delay_before_commit=0.0),
+    )
+
+    # Exactly one side actually won -- never both, never neither.
+    winners = [r for r in results if r.endswith("_won")]
+    assert len(winners) == 1
+
+    async with session_factory() as verify_session:
+        record = await verify_session.get(VerificationSessionRecord, str(session_id))
+        assert record is not None
+        decision_rows = (
+            await verify_session.execute(
+                select(DecisionRecord).where(DecisionRecord.session_id == str(session_id))
+            )
+        ).scalars().all()
+
+        if winners == ["submit_won"]:
+            assert record.status == VerificationStatus.COMPLETED.value
+            assert len(decision_rows) == 1
+            assert results[1] in (
+                "cancel_lost_concurrent_conflict",
+                "cancel_lost_already_terminal",
+            )
+        else:
+            assert winners == ["cancel_won"]
+            assert record.status == VerificationStatus.CANCELLED.value
+            # No decision survives: either evaluate_and_persist() never
+            # ran before submit()'s own losing CAS attempt, or it did and
+            # the whole attempt (decision INSERT included) rolled back
+            # with the rest of that losing transaction -- either way, a
+            # cancelled session has zero decisions, never an orphaned one.
+            assert decision_rows == []
+            assert results[0] == "submit_lost_already_terminal"
+
+
+async def test_concurrent_cancel_wins_against_a_racing_submit() -> None:
+    """The mirror of the test above -- there, submit's own CAS write
+    acquires the row lock first (cancel is signaled only after submit's
+    full workflow.submit() call returns, then blocks on that lock until
+    submit commits), so submit deterministically wins. Here the roles are
+    swapped: cancel acquires the row lock first and holds it across a
+    delay, submit is signaled only after cancel's own cancel() call
+    returns and then blocks on cancel's lock. Both directions of this
+    race need their own proof -- a CAS mechanism that only works when
+    request A happens to start before request B is not actually safe."""
+    tenant_id = f"tenant-hv007-cancel-wins-{uuid4()}"
+    await _activate_trivial_policy(tenant_id)
+    session_id = await _seed_session_in_status(tenant_id, VerificationStatus.PROCESSING)
+    first_started = asyncio.Event()
+
+    async def _cancel_attempt(*, wait_for_signal: bool, delay_before_commit: float) -> str:
+        async with session_factory() as db_session:
+            _policy_service, session_service, *_rest = _services(db_session)
+            if wait_for_signal:
+                await first_started.wait()
+            try:
+                try:
+                    await session_service.cancel(session_id=session_id, tenant_id=tenant_id)
+                except SessionAlreadyTerminalError:
+                    await db_session.rollback()
+                    return "cancel_lost_already_terminal"
+                except ConcurrentTransitionError:
+                    await db_session.rollback()
+                    return "cancel_lost_concurrent_conflict"
+            finally:
+                if not wait_for_signal:
+                    first_started.set()
+            if delay_before_commit:
+                await asyncio.sleep(delay_before_commit)
+            await db_session.commit()
+            return "cancel_won"
+
+    async def _submit_attempt(*, wait_for_signal: bool, delay_before_commit: float) -> str:
+        async with session_factory() as db_session:
+            *_rest, workflow = _services(db_session)
+            if wait_for_signal:
+                await first_started.wait()
+            try:
+                try:
+                    await workflow.submit(session_id=session_id, tenant_id=tenant_id)
+                except SessionAlreadyTerminalError:
+                    await db_session.rollback()
+                    return "submit_lost_already_terminal"
+            finally:
+                if not wait_for_signal:
+                    first_started.set()
+            if delay_before_commit:
+                await asyncio.sleep(delay_before_commit)
+            await db_session.commit()
+            return "submit_won"
+
+    results = await asyncio.gather(
+        _cancel_attempt(wait_for_signal=False, delay_before_commit=0.5),
+        _submit_attempt(wait_for_signal=True, delay_before_commit=0.0),
+    )
+
+    winners = [r for r in results if r.endswith("_won")]
+    assert winners == ["cancel_won"]  # this ordering makes cancel deterministically win
+    assert results[1] == "submit_lost_already_terminal"
+
+    async with session_factory() as verify_session:
+        record = await verify_session.get(VerificationSessionRecord, str(session_id))
+        assert record is not None
+        assert record.status == VerificationStatus.CANCELLED.value
+        decision_rows = (
+            await verify_session.execute(
+                select(DecisionRecord).where(DecisionRecord.session_id == str(session_id))
+            )
+        ).scalars().all()
+        # The critical property this direction specifically proves: a
+        # submit() that started evaluating BEFORE losing the race must
+        # not let its work leak through as an orphaned decision once
+        # cancellation has won -- the losing transaction's staged
+        # decision INSERT (if evaluate_and_persist() reached that far
+        # before the CAS loss) is discarded with the rest of that
+        # rolled-back attempt.
+        assert decision_rows == []
+
+
+async def test_five_way_concurrent_recovery_on_one_stuck_processing_session() -> None:
+    """WF-HV-007: generalizes the existing 2-caller concurrent-submit
+    test to five, using asyncio.Barrier for genuine N-way overlap (not
+    just "two of five happen to overlap") -- the shape of GET's own
+    PROCESSING-recovery trigger (WF-006 Finding A) hammered by multiple
+    simultaneous pollers, all discovering the same stuck session at once.
+    Unlike the cancel-vs-submit races above, every caller here is
+    attempting the identical operation, so _advance()'s refetch-and-
+    redispatch loop routes every loser through the SAME COMPLETED branch
+    the eventual winner reaches -- no caller should see an exception at
+    all; all five must converge on the identical decision.
+    """
+    tenant_id = f"tenant-hv007-five-way-{uuid4()}"
+    await _activate_trivial_policy(tenant_id)
+    session_id = await _seed_session_in_status(tenant_id, VerificationStatus.PROCESSING)
+    caller_count = 5
+    barrier = asyncio.Barrier(caller_count)
+
+    async def _recovery_attempt() -> UUID:
+        async with session_factory() as db_session:
+            *_rest, workflow = _services(db_session)
+            await barrier.wait()  # all five reach this point before any proceeds
+            _session, decision = await workflow.submit(session_id=session_id, tenant_id=tenant_id)
+            await db_session.commit()
+            return decision.decision_id
+
+    decision_ids = await asyncio.gather(*(_recovery_attempt() for _ in range(caller_count)))
+
+    assert len(set(decision_ids)) == 1  # every one of the five converged on the same decision
+
+    async with session_factory() as verify_session:
+        record = await verify_session.get(VerificationSessionRecord, str(session_id))
+        assert record is not None
+        assert record.status == VerificationStatus.COMPLETED.value
+        decision_rows = (
+            await verify_session.execute(
+                select(DecisionRecord).where(DecisionRecord.session_id == str(session_id))
+            )
+        ).scalars().all()
+        assert len(decision_rows) == 1  # exactly one, despite five full concurrent pipelines
+        audit_repo = SqlAlchemyAuditEventRepository(verify_session)
+        events = await audit_repo.list_for_session(session_id, tenant_id)
+        completed_events = [e for e in events if e.event_type == AuditEventType.SESSION_COMPLETED]
+        assert len(completed_events) == 1  # the four losers converged, recorded no duplicate audit
+        produced_events = [
+            e for e in events if e.event_type == AuditEventType.DECISION_PRODUCED
+        ]
+        assert len(produced_events) == 1  # same property, one layer down in the decision domain
