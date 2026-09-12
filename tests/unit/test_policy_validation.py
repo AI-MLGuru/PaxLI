@@ -1,8 +1,9 @@
 import pytest
+from pydantic import ValidationError
 
 from core.decision.enums import DecisionOutcome
 from core.evidence_result.schema_catalog import EvidenceResultSchemaCatalog
-from core.policy.condition import AllOf, EvidenceCondition, ThresholdRef
+from core.policy.condition import AllOf, AnyOf, EvidenceCondition, Not, ThresholdRef
 from core.policy.exceptions import InvalidPolicyError
 from core.policy.gates import Gate, GateKind
 from core.policy.requirements import EvidenceRequirement, EvidenceRequirementLevel
@@ -255,3 +256,117 @@ def test_threshold_ref_to_mismatched_evidence_type_is_rejected() -> None:
             thresholds=(threshold,),
             catalog=_real_catalog,
         )
+
+
+# ---------------------------------------------------------------------------
+# WF-HV-005: empty AllOf/AnyOf combinators (found: AllOf([]) is vacuously
+# TRUE under Kleene semantics, giving a Rule with outcome=VERIFIED an
+# unconditional firing path with zero evidence -- DEC-5.23.2/DEC-5.24
+# forbid an invented VERIFIED). Fixed with Field(min_length=1) on both
+# AllOf.all_of and AnyOf.any_of, rejected at construction -- before policy
+# validation, before activation, before the malformed object can exist at
+# all. Every test below proves rejection at the EARLIEST possible point,
+# not merely "somewhere in the pipeline."
+# ---------------------------------------------------------------------------
+
+
+def test_empty_all_of_is_rejected_at_construction() -> None:
+    with pytest.raises(ValidationError):
+        AllOf(all_of=[])
+
+
+def test_empty_any_of_is_rejected_at_construction() -> None:
+    with pytest.raises(ValidationError):
+        AnyOf(any_of=[])
+
+
+def test_nested_empty_all_of_inside_a_larger_tree_is_rejected() -> None:
+    """The inner AllOf([]) fails the instant Python constructs it --
+    before it could ever be passed to the outer combinator -- so a
+    "nested" empty combinator is structurally impossible to build at all,
+    not merely caught by a tree-walking validator afterward."""
+    leaf = EvidenceCondition(
+        evidence_type="FACE_MATCH", field="status", operator="==", expected_value="PASS"
+    )
+    with pytest.raises(ValidationError):
+        AnyOf(any_of=[leaf, AllOf(all_of=[])])
+
+
+def test_empty_condition_inside_a_gate_is_rejected() -> None:
+    with pytest.raises(ValidationError):
+        Gate(
+            id="empty-gate",
+            kind=GateKind.BLOCKING,
+            condition=AllOf(all_of=[]),
+            priority=1,
+            on_failure_outcome=DecisionOutcome.REJECTED,
+            failure_reason_code="POLICY:UNREACHABLE",
+        )
+
+
+def test_empty_condition_inside_a_rule_is_rejected() -> None:
+    """The exact exploit shape found by WF-HV-005: an unconditionally
+    firing Rule with outcome=VERIFIED, reachable with zero evidence."""
+    with pytest.raises(ValidationError):
+        Rule(
+            id="empty-allof-exploit",
+            condition=AllOf(all_of=[]),
+            outcome=DecisionOutcome.VERIFIED,
+            priority=1,
+            reason_code="POLICY:UNREACHABLE",
+        )
+
+
+def test_deeply_nested_combination_containing_an_empty_node_is_rejected() -> None:
+    leaf = EvidenceCondition(
+        evidence_type="FACE_MATCH", field="status", operator="==", expected_value="PASS"
+    )
+    with pytest.raises(ValidationError):
+        AllOf(
+            all_of=[
+                AnyOf(any_of=[leaf]),
+                Not(condition=AnyOf(any_of=[AllOf(all_of=[leaf, AllOf(all_of=[])])])),
+            ]
+        )
+
+
+def test_existing_valid_policy_shapes_remain_unaffected() -> None:
+    """Regression guard: the fix must not be overly strict -- realistic,
+    non-empty combinators (including nested ones) still construct and
+    validate exactly as before."""
+    leaf_a = EvidenceCondition(
+        evidence_type="FACE_MATCH", field="status", operator="==", expected_value="PASS"
+    )
+    leaf_b = EvidenceCondition(
+        evidence_type="DOCUMENT_QUALITY", field="status", operator="==", expected_value="PASS"
+    )
+    condition = AllOf(all_of=[leaf_a, AnyOf(any_of=[leaf_b, Not(condition=leaf_a)])])
+    validate_policy_content(
+        evidence_requirements=(),
+        conditions=condition,
+        gates=(),
+        rules=(),
+        thresholds=(),
+        catalog=_real_catalog,
+    )  # must not raise
+
+
+def test_the_security_invariant_directly_no_malformed_policy_can_reach_evaluation() -> None:
+    """WF-HV-005's actual invariant, not merely "the list has one item":
+    no syntactically or semantically malformed policy may create an
+    unconditional VERIFIED path. Proven by attempting the full exploit
+    chain end to end -- Rule construction, the same object that would
+    have been handed to PolicyService.create_and_activate() and then to
+    evaluate() -- and confirming it is stopped at the very first step,
+    never reaching validation, activation, or the evaluator at all."""
+    with pytest.raises(ValidationError):
+        exploit_rule = Rule(
+            id="never-constructed",
+            condition=AllOf(all_of=[]),
+            outcome=DecisionOutcome.VERIFIED,
+            priority=1,
+            reason_code="POLICY:UNREACHABLE",
+        )
+        # unreachable: exploit_rule never exists to be validated, activated,
+        # or evaluated -- construction itself is the enforcement point.
+        raise AssertionError(f"exploit_rule was constructed: {exploit_rule!r}")

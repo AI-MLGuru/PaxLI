@@ -51,13 +51,30 @@ class EvidenceCondition(BaseModel):
 
 
 class AllOf(BaseModel):
+    """WF-HV-005: `all_of` MUST be non-empty. Kleene semantics make an
+    empty conjunction vacuously TRUE ("all of zero things" holds) --
+    mathematically correct, but a Rule with condition=AllOf(all_of=[])
+    and outcome=VERIFIED then fires unconditionally, with zero evidence,
+    a live path to an invented VERIFIED that DEC-5.23.2/DEC-5.24 forbid.
+    Rejected here, at construction, rather than compensated for inside
+    the evaluator -- a malformed policy must never be constructible in
+    the first place, not merely handled safely if it somehow is."""
+
     type: Literal["all_of"] = "all_of"
-    all_of: list["Condition"]
+    all_of: list["Condition"] = Field(min_length=1)
 
 
 class AnyOf(BaseModel):
+    """WF-HV-005: `any_of` MUST be non-empty too. An empty disjunction is
+    vacuously FALSE (safe -- the condition simply never matches), not a
+    VERIFIED-reachable vulnerability the way AllOf([]) is, but it is
+    still a semantically malformed policy construct (a combinator with no
+    actual conditions) with no legitimate authoring use case, and is
+    rejected for the same "invalid policy shapes must not be
+    constructible" reason."""
+
     type: Literal["any_of"] = "any_of"
-    any_of: list["Condition"]
+    any_of: list["Condition"] = Field(min_length=1)
 
 
 class Not(BaseModel):
