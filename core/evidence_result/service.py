@@ -11,7 +11,10 @@ from core.deletion.enums import DeletionBasis
 from core.deletion.exceptions import DeletionBlockedByDependentsError
 from core.deletion.validation import validate_deletion_request
 from core.evidence_result.enums import EvidenceResultStatus, EvidenceResultType
-from core.evidence_result.exceptions import EvidenceResultNotFoundError
+from core.evidence_result.exceptions import (
+    EvidenceResultNotFoundError,
+    InvalidSupersessionError,
+)
 from core.evidence_result.models import EvidenceResult, EvidenceResultTombstone, ModelReference
 from core.evidence_result.repository import EvidenceResultRepository
 from core.evidence_result.schemas import validate_result_payload
@@ -214,6 +217,15 @@ class EvidenceResultService:
         """Creates a NEW evidence result that supersedes an existing one
         (EVD-3.10.3) -- never mutates the original row's content.
 
+        Raises InvalidSupersessionError (WF-HV-009 Finding A) if
+        evidence_result_id is not currently the effective row for THIS
+        (tenant_id, session_id, evidence_type) -- e.g. it belongs to a
+        different session or evidence_type, was already superseded, or
+        never existed. Without this check a caller could deactivate an
+        unrelated session's effective evidence purely by supplying its
+        ID, corrupting that other session's evidence set as seen by the
+        Decision Engine.
+
         `mark_not_effective` on the original happens BEFORE `add()` of the
         new row, not after: PostgreSQL's partial unique index
         (ix_evidence_results_one_effective_per_type) is checked
@@ -249,7 +261,16 @@ class EvidenceResultService:
                 producer_version=producer_version,
             ),
         )
-        await self.repository.mark_not_effective(evidence_result_id, tenant_id)
+        superseded = await self.repository.mark_not_effective(
+            evidence_result_id, tenant_id, session_id, evidence_type
+        )
+        if not superseded:
+            raise InvalidSupersessionError(
+                f"evidence_result_id={evidence_result_id!s} is not the current "
+                f"effective {evidence_type.value} result for session_id="
+                f"{session_id!s} in this tenant -- it does not exist, belongs "
+                "to a different session/evidence_type, or was already superseded"
+            )
         saved = await self.repository.add(evidence_result)
         await self.audit_service.record(
             tenant_id=tenant_id,

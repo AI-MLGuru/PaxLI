@@ -186,8 +186,18 @@ class FakeEvidenceResultRepository:
             if r.evidence_type == evidence_type
         ]
 
-    async def mark_not_effective(self, evidence_result_id, tenant_id):
+    async def mark_not_effective(self, evidence_result_id, tenant_id, session_id, evidence_type):
+        record = self.records.get(evidence_result_id)
+        if (
+            record is None
+            or record.tenant_id != tenant_id
+            or record.session_id != session_id
+            or record.evidence_type != evidence_type
+            or evidence_result_id in self.not_effective
+        ):
+            return False
         self.not_effective.add(evidence_result_id)
+        return True
 
     async def list_expired(self, tenant_id, as_of):
         return []

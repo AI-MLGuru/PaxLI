@@ -50,13 +50,34 @@ class EvidenceResultRepository(Protocol):
         self, session_id: UUID, tenant_id: str, evidence_type: EvidenceResultType
     ) -> Sequence[EvidenceResult]: ...
 
-    async def mark_not_effective(self, evidence_result_id: UUID, tenant_id: str) -> None:
-        """Narrow transition: flips is_effective to False on an existing
-        row. Deliberately not a generic update() -- the only mutation this
-        method performs. Called by supersede() on the row being superseded,
-        in the same transaction as the new row's insert, so the partial
-        unique index never observes two effective rows for the same type
-        even momentarily."""
+    async def mark_not_effective(
+        self,
+        evidence_result_id: UUID,
+        tenant_id: str,
+        session_id: UUID,
+        evidence_type: EvidenceResultType,
+    ) -> bool:
+        """Narrow, atomically-arbitrated transition: flips is_effective to
+        False on an existing row, but ONLY if it is currently the
+        effective row for the addressed (tenant_id, session_id,
+        evidence_type) -- enforced as a single conditional UPDATE against
+        all four fields plus is_effective=true, not a read-then-write, the
+        same "database is the final arbiter" pattern used by every CAS
+        lifecycle transition elsewhere in this codebase. Deliberately not
+        a generic update() -- the only mutation this method performs.
+
+        Returns False (zero rows matched) if evidence_result_id does not
+        exist, belongs to a different tenant/session/evidence_type, or is
+        already superseded -- callers (EvidenceResultService.supersede())
+        MUST treat False as a hard rejection, never a silent no-op
+        (WF-HV-009 Finding A: without this scoping, a caller could
+        deactivate an unrelated session's effective evidence purely by
+        supplying its ID).
+
+        Called by supersede() on the row being superseded, in the same
+        transaction as the new row's insert, so the partial unique index
+        never observes two effective rows for the same type even
+        momentarily."""
         ...
 
     async def list_expired(self, tenant_id: str, as_of: datetime) -> Sequence[EvidenceResult]:

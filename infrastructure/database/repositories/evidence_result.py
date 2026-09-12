@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -117,12 +117,27 @@ class SqlAlchemyEvidenceResultRepository:
         records = (await self.session.execute(statement)).scalars().all()
         return [await self._to_domain(record) for record in records]
 
-    async def mark_not_effective(self, evidence_result_id: UUID, tenant_id: str) -> None:
-        record = await self.session.get(EvidenceResultRecord, str(evidence_result_id))
-        if record is None or record.tenant_id != tenant_id:
-            return
-        record.is_effective = False
+    async def mark_not_effective(
+        self,
+        evidence_result_id: UUID,
+        tenant_id: str,
+        session_id: UUID,
+        evidence_type: EvidenceResultType,
+    ) -> bool:
+        statement = (
+            update(EvidenceResultRecord)
+            .where(
+                EvidenceResultRecord.id == str(evidence_result_id),
+                EvidenceResultRecord.tenant_id == tenant_id,
+                EvidenceResultRecord.session_id == str(session_id),
+                EvidenceResultRecord.evidence_type == evidence_type.value,
+                EvidenceResultRecord.is_effective.is_(True),
+            )
+            .values(is_effective=False)
+        )
+        result = cast("CursorResult[Any]", await self.session.execute(statement))
         await self.session.flush()
+        return bool(result.rowcount)
 
     async def list_expired(self, tenant_id: str, as_of: datetime) -> Sequence[EvidenceResult]:
         already_tombstoned = select(EvidenceResultTombstoneRecord.evidence_result_id).where(

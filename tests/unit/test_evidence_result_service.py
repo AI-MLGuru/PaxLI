@@ -5,7 +5,10 @@ import pytest
 from core.audit.models import AuditEvent
 from core.audit.service import AuditService
 from core.evidence_result.enums import EvidenceResultStatus, EvidenceResultType
-from core.evidence_result.exceptions import InvalidEvidenceResultError
+from core.evidence_result.exceptions import (
+    InvalidEvidenceResultError,
+    InvalidSupersessionError,
+)
 from core.evidence_result.models import EvidenceResult
 from core.evidence_result.service import EvidenceResultService
 
@@ -75,9 +78,25 @@ class FakeEvidenceResultRepository:
             if r.evidence_type == evidence_type
         ]
 
-    async def mark_not_effective(self, evidence_result_id: UUID, tenant_id: str) -> None:
+    async def mark_not_effective(
+        self,
+        evidence_result_id: UUID,
+        tenant_id: str,
+        session_id: UUID,
+        evidence_type: EvidenceResultType,
+    ) -> bool:
         self.mark_not_effective_calls += 1
+        record = self.records.get(evidence_result_id)
+        if (
+            record is None
+            or record.tenant_id != tenant_id
+            or record.session_id != session_id
+            or record.evidence_type != evidence_type
+            or evidence_result_id in self.not_effective
+        ):
+            return False
         self.not_effective.add(evidence_result_id)
+        return True
 
 
 class FakeAuditRepository:
@@ -211,6 +230,136 @@ async def test_supersede_creates_a_new_row_and_never_mutates_the_original(servic
     assert repo.records[original.id].status == EvidenceResultStatus.INCONCLUSIVE
     assert repo.records[original.id].supersedes_id is None
     assert repo.add_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_supersede_rejects_a_result_belonging_to_a_different_session(service) -> None:
+    """WF-HV-009 Finding A: session B must not be able to supersede (and
+    thereby silently deactivate) session A's effective evidence result
+    merely by supplying its ID. Confirmed live against real Postgres
+    before this fix -- session A's result vanished from its own
+    effective-evidence set with no error and no relationship between the
+    two sessions."""
+    svc, repo, _audit_repo = service
+    session_a = uuid4()
+    session_b = uuid4()
+
+    victim = await svc.create(
+        tenant_id="tenant-a",
+        session_id=session_a,
+        evidence_type=EvidenceResultType.FACE_MATCH,
+        status=EvidenceResultStatus.PASS,
+        producer="face-provider",
+        producer_version="1.0.0",
+    )
+
+    with pytest.raises(InvalidSupersessionError):
+        await svc.supersede(
+            evidence_result_id=victim.id,
+            tenant_id="tenant-a",
+            session_id=session_b,
+            evidence_type=EvidenceResultType.FACE_MATCH,
+            status=EvidenceResultStatus.PASS,
+            producer="attacker-producer",
+            producer_version="1.0.0",
+        )
+
+    # the victim's result is untouched -- still effective, still session A's
+    assert victim.id not in repo.not_effective
+    assert repo.add_calls == 1  # only the original create(), no attacker row
+    effective_a = await svc.list_effective_for_session(session_id=session_a, tenant_id="tenant-a")
+    assert [r.id for r in effective_a] == [victim.id]
+
+
+@pytest.mark.asyncio
+async def test_supersede_rejects_a_result_of_a_different_evidence_type(service) -> None:
+    """Same defect, addressed via a mismatched evidence_type rather than a
+    mismatched session -- the caller's own claimed evidence_type must
+    match the target row's actual evidence_type, not merely be trusted."""
+    svc, repo, _audit_repo = service
+    session_id = uuid4()
+
+    original = await svc.create(
+        tenant_id="tenant-a",
+        session_id=session_id,
+        evidence_type=EvidenceResultType.FACE_MATCH,
+        status=EvidenceResultStatus.PASS,
+        producer="face-provider",
+        producer_version="1.0.0",
+    )
+
+    with pytest.raises(InvalidSupersessionError):
+        await svc.supersede(
+            evidence_result_id=original.id,
+            tenant_id="tenant-a",
+            session_id=session_id,
+            evidence_type=EvidenceResultType.FACE_QUALITY,
+            status=EvidenceResultStatus.PASS,
+            producer="face-provider",
+            producer_version="1.0.1",
+        )
+
+    assert original.id not in repo.not_effective
+    assert repo.add_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_supersede_rejects_a_result_already_superseded(service) -> None:
+    """Prevents a non-linear/ambiguous lineage: once a result has been
+    superseded, it is no longer a valid supersession target -- a second
+    attempt to supersede the same original (e.g. a confused or replayed
+    caller) must not silently succeed a second time."""
+    svc, repo, _audit_repo = service
+    session_id = uuid4()
+
+    original = await svc.create(
+        tenant_id="tenant-a",
+        session_id=session_id,
+        evidence_type=EvidenceResultType.FACE_MATCH,
+        status=EvidenceResultStatus.INCONCLUSIVE,
+        producer="face-provider",
+        producer_version="1.0.0",
+    )
+    await svc.supersede(
+        evidence_result_id=original.id,
+        tenant_id="tenant-a",
+        session_id=session_id,
+        evidence_type=EvidenceResultType.FACE_MATCH,
+        status=EvidenceResultStatus.PASS,
+        producer="face-provider",
+        producer_version="1.0.1",
+    )
+
+    with pytest.raises(InvalidSupersessionError):
+        await svc.supersede(
+            evidence_result_id=original.id,
+            tenant_id="tenant-a",
+            session_id=session_id,
+            evidence_type=EvidenceResultType.FACE_MATCH,
+            status=EvidenceResultStatus.PASS,
+            producer="face-provider",
+            producer_version="1.0.2",
+        )
+
+    assert repo.add_calls == 2  # original + first (valid) supersession only
+
+
+@pytest.mark.asyncio
+async def test_supersede_rejects_a_nonexistent_evidence_result_id(service) -> None:
+    svc, repo, _audit_repo = service
+
+    with pytest.raises(InvalidSupersessionError):
+        await svc.supersede(
+            evidence_result_id=uuid4(),
+            tenant_id="tenant-a",
+            session_id=uuid4(),
+            evidence_type=EvidenceResultType.FACE_MATCH,
+            status=EvidenceResultStatus.PASS,
+            producer="face-provider",
+            producer_version="1.0.0",
+        )
+
+    assert repo.add_calls == 0
 
 
 @pytest.mark.asyncio
