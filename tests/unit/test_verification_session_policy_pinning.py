@@ -11,6 +11,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from core.audit.service import AuditService
 from core.policy.enums import PolicyStatus
 from core.policy.exceptions import NoActivePolicyError
 from core.policy.models import VerificationPolicy
@@ -172,8 +173,6 @@ def policy_repo() -> FakePolicyRepository:
 
 @pytest.fixture
 def policy_service(policy_repo) -> PolicyService:
-    from core.audit.service import AuditService
-
     return PolicyService(policy_repo, AuditService(FakeAuditRepository()), NullSchemaCatalog())
 
 
@@ -188,7 +187,12 @@ async def test_create_pins_the_active_policys_id_version_and_hash(
 ) -> None:
     policy = _active_policy()
     await policy_repo.add(policy)
-    svc = VerificationSessionService(session_repo, policy_service, session_ttl_minutes=30)
+    svc = VerificationSessionService(
+        session_repo,
+        audit_service=AuditService(FakeAuditRepository()),
+        policy_service=policy_service,
+        session_ttl_minutes=30,
+    )
 
     session = await svc.create(
         tenant_id=TENANT, external_reference=None, assurance_level=AssuranceLevel.STANDARD
@@ -206,7 +210,12 @@ async def test_create_raises_no_active_policy_error_and_creates_no_session(
     """No policy has been activated for this tenant/assurance_level at
     all -- a plain creation-time failure, never an INCONCLUSIVE (there is
     no session to attach one to)."""
-    svc = VerificationSessionService(session_repo, policy_service, session_ttl_minutes=30)
+    svc = VerificationSessionService(
+        session_repo,
+        audit_service=AuditService(FakeAuditRepository()),
+        policy_service=policy_service,
+        session_ttl_minutes=30,
+    )
 
     with pytest.raises(NoActivePolicyError):
         await svc.create(
@@ -223,7 +232,9 @@ async def test_create_without_a_policy_service_raises_runtime_error(session_repo
     an unset optional dependency fails loudly and specifically when the one
     method that needs it is actually called, rather than silently skipping
     policy binding."""
-    svc = VerificationSessionService(session_repo, session_ttl_minutes=30)
+    svc = VerificationSessionService(
+        session_repo, audit_service=AuditService(FakeAuditRepository()), session_ttl_minutes=30
+    )
 
     with pytest.raises(RuntimeError, match="policy_service"):
         await svc.create(
@@ -239,7 +250,12 @@ async def test_a_policy_for_a_different_assurance_level_does_not_satisfy_creatio
         update={"assurance_level": AssuranceLevel.HIGH, "id": uuid4()}
     )
     await policy_repo.add(high_assurance_policy)
-    svc = VerificationSessionService(session_repo, policy_service, session_ttl_minutes=30)
+    svc = VerificationSessionService(
+        session_repo,
+        audit_service=AuditService(FakeAuditRepository()),
+        policy_service=policy_service,
+        session_ttl_minutes=30,
+    )
 
     with pytest.raises(NoActivePolicyError):
         await svc.create(
@@ -256,7 +272,12 @@ async def test_idempotent_replay_returns_the_original_pin_never_re_resolved(
     policy version has since become active."""
     v1 = _active_policy(version=1)
     await policy_repo.add(v1)
-    svc = VerificationSessionService(session_repo, policy_service, session_ttl_minutes=30)
+    svc = VerificationSessionService(
+        session_repo,
+        audit_service=AuditService(FakeAuditRepository()),
+        policy_service=policy_service,
+        session_ttl_minutes=30,
+    )
 
     first = await svc.create(
         tenant_id=TENANT,
@@ -293,7 +314,12 @@ async def test_policy_activated_after_session_creation_never_affects_that_sessio
     after v2 supersedes it and new sessions start pinning v2."""
     v1 = _active_policy(version=1)
     await policy_repo.add(v1)
-    svc = VerificationSessionService(session_repo, policy_service, session_ttl_minutes=30)
+    svc = VerificationSessionService(
+        session_repo,
+        audit_service=AuditService(FakeAuditRepository()),
+        policy_service=policy_service,
+        session_ttl_minutes=30,
+    )
 
     earlier_session = await svc.create(
         tenant_id=TENANT, external_reference=None, assurance_level=AssuranceLevel.STANDARD

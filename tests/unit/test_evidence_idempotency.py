@@ -224,7 +224,11 @@ def storage() -> FakeObjectStorage:
 async def service(session_repo, evidence_repo, storage) -> EvidenceService:
     return EvidenceService(
         evidence_repo,
-        VerificationSessionService(session_repo, session_ttl_minutes=30),
+        VerificationSessionService(
+            session_repo,
+            audit_service=AuditService(FakeAuditRepository()),
+            session_ttl_minutes=30,
+        ),
         storage,
         AuditService(FakeAuditRepository()),
     )

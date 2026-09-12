@@ -301,7 +301,10 @@ class _Harness:
             self.policy_repo, AuditService(FakeAuditRepository()), NullSchemaCatalog()
         )
         self.session_service = VerificationSessionService(
-            self.session_repo, self.policy_service, session_ttl_minutes=30
+            self.session_repo,
+            audit_service=AuditService(self.audit_repo),
+            policy_service=self.policy_service,
+            session_ttl_minutes=30,
         )
         self.evidence_result_service = EvidenceResultService(
             self.evidence_repo, AuditService(FakeAuditRepository())

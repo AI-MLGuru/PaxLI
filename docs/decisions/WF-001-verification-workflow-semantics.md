@@ -438,6 +438,40 @@ this now-deleted workflow class.
 | Human review subsystem | Deferred |
 | `DECISION_TIMEOUT` | Still deferred |
 
+## Addendum (post-freeze, WF-006 Finding C): idempotency retention/TTL
+
+Added during WF-006's Part IV conformance audit to close WF-4.9.5
+("idempotency retention/TTL MUST be explicitly defined"), which §10 above
+left unaddressed. Nothing in §1-16 or the Final decision table above is
+changed by this addendum; it only records a semantic that was reasoned
+about during WF-003's implementation but never written down anywhere
+durable, which is itself the gap WF-006 found.
+
+Neither idempotency-bearing table (`verification_sessions.idempotency_key`,
+`evidence.idempotency_key`) has a separate idempotency-record store or its
+own TTL/expiry column. The key is a plain column on the resource row
+itself, so its retention is structurally identical to the row's own:
+
+- **Session creation**: `verification_sessions` rows are never deleted by
+  any mechanism this codebase has (no session-deletion capability exists
+  at all, v1.0 or deferred). A session-creation idempotency key is
+  therefore retained indefinitely — for as long as the row exists, which
+  today is forever.
+- **Evidence submission**: `evidence` rows are governed by
+  `Evidence.retention_until` (Part XI/Part III) and the Invariant-06
+  deletion-request/reconciliation mechanism. An evidence-submission
+  idempotency key's retention is exactly the evidence row's own retention
+  — there is no separate, shorter-lived TTL for the key alone, and
+  deleting the evidence row (content deletion) removes the key with it.
+
+No separate expiry sweep is needed or built for either case: an
+idempotency key's lifetime is tied to its owning row by construction,
+never outliving it, and never requiring independent cleanup. If a future
+requirement needs idempotency keys to expire *before* their owning row
+would otherwise be retained (e.g. "replay protection for 24 hours, evidence
+retained for years"), that would be a new, separate mechanism — not
+something this addendum claims already exists.
+
 ## Status
 
 **WF-001 = FROZEN / APPROVED FOR IMPLEMENTATION.**

@@ -12,6 +12,7 @@ from core.audit.service import AuditService
 from core.evidence_result.schema_catalog import EvidenceResultSchemaCatalog
 from core.policy.service import PolicyService
 from core.verification.enums import AssuranceLevel
+from infrastructure.database.models.verification_session import VerificationSessionRecord
 from infrastructure.database.repositories.audit_event import SqlAlchemyAuditEventRepository
 from infrastructure.database.repositories.policy import SqlAlchemyVerificationPolicyRepository
 
@@ -24,6 +25,20 @@ def _create_session(api_client, token: str) -> str:
     )
     assert response.status_code == 201
     return response.json()["data"]["id"]
+
+
+async def _force_session_to_processing(session_factory, session_id: str) -> None:
+    """Test-only direct write, simulating a /submit call that reached
+    PROCESSING and then crashed before reaching COMPLETED -- never how a
+    real request would get here (VerificationSessionService.transition()'s
+    CAS write is exactly what this deliberately bypasses); this exists
+    only to construct the crash scenario itself. The session must already
+    carry a valid policy pin (created normally via api_client first) for
+    the subsequent recovery attempt to have anything to evaluate."""
+    async with session_factory() as session:
+        record = await session.get(VerificationSessionRecord, session_id)
+        record.status = "PROCESSING"
+        await session.commit()
 
 
 def test_created_session_has_a_null_decision_projection(api_client, issued_credentials) -> None:
@@ -193,3 +208,67 @@ async def test_decision_projection_policy_reference_matches_the_pinned_session_p
 
     assert response.status_code == 200
     assert response.json()["data"]["decision"]["policy"]["version"] == 1  # v1, not v2
+
+
+async def test_get_on_a_stuck_processing_session_self_heals_to_completed(
+    api_client, issued_credentials, session_factory
+) -> None:
+    """WF-001 §4 / WF-006 Finding A: a session found in PROCESSING on a
+    plain GET is exactly the shape of an earlier /submit call that
+    crashed mid-flight. A client that only polls -- never thinks to retry
+    POST /submit specifically -- must still see the session resolve to
+    COMPLETED with a populated decision, not sit stuck forever."""
+    token = issued_credentials["tenant_a_operational"]
+    session_id = _create_session(api_client, token)
+    await _force_session_to_processing(session_factory, session_id)
+
+    response = api_client.get(
+        f"/v1/verification-sessions/{session_id}", headers={"Authorization": token}
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["status"] == "COMPLETED"
+    assert data["decision"] is not None
+    assert data["decision"]["outcome"] == "INCONCLUSIVE"
+
+
+async def test_get_on_a_stuck_processing_session_is_idempotent_on_repeated_polls(
+    api_client, issued_credentials, session_factory
+) -> None:
+    """A second poll after the session has already self-healed must
+    converge on the identical decision, never recompute or duplicate
+    one (the same idempotent-replay property /submit itself has, now
+    also reachable through GET)."""
+    token = issued_credentials["tenant_a_operational"]
+    session_id = _create_session(api_client, token)
+    await _force_session_to_processing(session_factory, session_id)
+
+    first = api_client.get(
+        f"/v1/verification-sessions/{session_id}", headers={"Authorization": token}
+    )
+    second = api_client.get(
+        f"/v1/verification-sessions/{session_id}", headers={"Authorization": token}
+    )
+
+    assert first.status_code == second.status_code == 200
+    assert first.json()["data"]["decision"] == second.json()["data"]["decision"]
+
+
+async def test_get_on_a_non_processing_session_never_triggers_recovery_work(
+    api_client, issued_credentials
+) -> None:
+    """The recovery attempt is scoped strictly to PROCESSING -- a session
+    that never reached PROCESSING (still CREATED here) must remain a
+    plain, unmodified read: no decision, no lifecycle transition."""
+    token = issued_credentials["tenant_a_operational"]
+    session_id = _create_session(api_client, token)
+
+    response = api_client.get(
+        f"/v1/verification-sessions/{session_id}", headers={"Authorization": token}
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["status"] == "CREATED"
+    assert data["decision"] is None

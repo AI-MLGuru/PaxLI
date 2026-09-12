@@ -12,6 +12,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from core.audit.service import AuditService
 from core.policy.enums import PolicyStatus
 from core.policy.models import VerificationPolicy
 from core.policy.service import PolicyService
@@ -177,8 +178,6 @@ def session_repo() -> FakeSessionRepository:
 
 @pytest.fixture
 def policy_service() -> PolicyService:
-    from core.audit.service import AuditService
-
     return PolicyService(
         FakePolicyRepository(), AuditService(FakeAuditRepository()), NullSchemaCatalog()
     )
@@ -190,7 +189,12 @@ async def service(session_repo, policy_service) -> VerificationSessionService:
     # one regardless of which tenant/assurance_level a given test uses.
     await policy_service.repository.add(_active_policy(tenant_id=TENANT))
     await policy_service.repository.add(_active_policy(tenant_id=OTHER_TENANT))
-    return VerificationSessionService(session_repo, policy_service, session_ttl_minutes=30)
+    return VerificationSessionService(
+        session_repo,
+        audit_service=AuditService(FakeAuditRepository()),
+        policy_service=policy_service,
+        session_ttl_minutes=30,
+    )
 
 
 @pytest.mark.asyncio

@@ -13,10 +13,12 @@ from uuid import UUID, uuid4
 import pytest
 
 from apps.api.paxli_api.config import get_settings
+from core.audit.service import AuditService
 from core.verification.enums import VerificationStatus
 from core.verification.exceptions import ConcurrentTransitionError, SessionAlreadyTerminalError
 from core.verification.service import VerificationSessionService
 from infrastructure.database.models.verification_session import VerificationSessionRecord
+from infrastructure.database.repositories.audit_event import SqlAlchemyAuditEventRepository
 from infrastructure.database.repositories.verification_session import (
     SqlAlchemyVerificationSessionRepository,
 )
@@ -81,7 +83,10 @@ async def test_concurrent_cancellation_one_wins_one_observes_a_conflict() -> Non
 
     async def _cancel_attempt(*, wait_for_signal: bool, delay_before_commit: float) -> str:
         async with session_factory() as session:
-            service = VerificationSessionService(SqlAlchemyVerificationSessionRepository(session))
+            service = VerificationSessionService(
+                SqlAlchemyVerificationSessionRepository(session),
+                audit_service=AuditService(SqlAlchemyAuditEventRepository(session)),
+            )
             if wait_for_signal:
                 await first_cancelled.wait()
             try:
@@ -123,7 +128,10 @@ async def test_cancel_of_an_already_completed_session_raises_a_named_conflict_re
     session_id = await _create_session_in_status(tenant_id, VerificationStatus.COMPLETED)
 
     async with session_factory() as session:
-        service = VerificationSessionService(SqlAlchemyVerificationSessionRepository(session))
+        service = VerificationSessionService(
+            SqlAlchemyVerificationSessionRepository(session),
+            audit_service=AuditService(SqlAlchemyAuditEventRepository(session)),
+        )
         with pytest.raises(SessionAlreadyTerminalError):
             await service.cancel(session_id=session_id, tenant_id=tenant_id)
         await session.rollback()

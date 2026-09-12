@@ -53,7 +53,10 @@ def _services(session):
         EvidenceResultSchemaCatalog(),
     )
     session_service = VerificationSessionService(
-        SqlAlchemyVerificationSessionRepository(session), policy_service, session_ttl_minutes=30
+        SqlAlchemyVerificationSessionRepository(session),
+        audit_service=AuditService(SqlAlchemyAuditEventRepository(session)),
+        policy_service=policy_service,
+        session_ttl_minutes=30,
     )
     return policy_service, session_service
 

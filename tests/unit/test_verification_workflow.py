@@ -176,8 +176,10 @@ def repo() -> FakeSessionRepository:
 
 
 @pytest.fixture
-def session_service(repo: FakeSessionRepository) -> VerificationSessionService:
-    return VerificationSessionService(repo, session_ttl_minutes=30)
+def session_service(
+    repo: FakeSessionRepository, audit_service: AuditService
+) -> VerificationSessionService:
+    return VerificationSessionService(repo, audit_service=audit_service, session_ttl_minutes=30)
 
 
 @pytest.fixture

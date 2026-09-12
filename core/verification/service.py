@@ -2,6 +2,8 @@ import hashlib
 import json
 from uuid import UUID
 
+from core.audit.enums import AuditActorType, AuditDurability, AuditEventType, AuditStatus
+from core.audit.service import AuditService
 from core.policy.exceptions import NoActivePolicyError
 from core.policy.service import PolicyService
 from core.verification.enums import TERMINAL_STATUSES, AssuranceLevel, VerificationStatus
@@ -25,6 +27,9 @@ __all__ = [
     "SessionNotFoundError",
     "VerificationSessionService",
 ]
+
+_SYSTEM_COMPONENT = "verification_session"
+_SYSTEM_ACTOR_ID = "verification-session-service"
 
 
 def _compute_session_creation_fingerprint(
@@ -65,10 +70,19 @@ class VerificationSessionService:
     def __init__(
         self,
         repository: VerificationSessionRepository,
+        audit_service: AuditService,
         policy_service: PolicyService | None = None,
         session_ttl_minutes: int = 30,
     ) -> None:
         self.repository = repository
+        # WF-006 Finding B: required, not optional -- every lazy-expire
+        # transition get() performs (below) needs a REQUIRED audit event
+        # regardless of which caller happened to trigger it (a direct GET,
+        # /submit, evidence upload, or /cancel, all of which route through
+        # get()), and WF-4.6.4/4.17.4 make that unconditional. Making this
+        # optional would let the exact gap this finding closed reopen at a
+        # future call site silently.
+        self.audit_service = audit_service
         # Optional (DE-002/DE-003 §1): the majority of this service's
         # call sites (EvidenceService's internal use, most tests) only ever
         # call get()/cancel(), never create(), and have no need to resolve
@@ -167,13 +181,21 @@ class VerificationSessionService:
             return winner
 
     async def get(self, *, session_id: UUID, tenant_id: str) -> VerificationSession:
+        """WF-006 Finding B: the EXPIRED transition's required audit event
+        (WF-4.6.4/4.17.4) is recorded HERE, at the single point the CAS
+        write actually succeeds -- not by any particular caller. Every
+        caller that can trigger a lazy expiry (a direct GET, /submit,
+        evidence upload, /cancel -- all of which reach a session through
+        this method) is covered uniformly, exactly once per session's
+        actual transition, since expire_if_needed() only returns True the
+        one time it performs the transition."""
         session = await self.repository.get(session_id, tenant_id)
         if session is None:
             raise SessionNotFoundError
         original_status = session.status
         if session.expire_if_needed():
             try:
-                await self.repository.update(session, expected_status=original_status)
+                session = await self.repository.update(session, expected_status=original_status)
             except ConcurrentTransitionError:
                 # A concurrent write already resolved this session's
                 # status (another request's own lazy expire, or a real
@@ -181,11 +203,29 @@ class VerificationSessionService:
                 # a read path's opportunistic side effect, not a conflict
                 # to surface. Re-fetch and return whatever is now true,
                 # rather than raising for a caller that only ever asked
-                # to read.
+                # to read. No audit here: either the winner already
+                # recorded its own, or the session moved on to something
+                # other than EXPIRED entirely, in which case EXPIRED never
+                # happened and there is nothing to audit.
                 refetched = await self.repository.get(session_id, tenant_id)
                 if refetched is None:
                     raise SessionNotFoundError from None
                 return refetched
+            await self.audit_service.record(
+                tenant_id=tenant_id,
+                session_id=session.id,
+                event_type=AuditEventType.SESSION_EXPIRED,
+                component=_SYSTEM_COMPONENT,
+                action="get",
+                status=AuditStatus.SUCCESS,
+                actor_type=AuditActorType.SYSTEM,
+                actor_id=_SYSTEM_ACTOR_ID,
+                metadata={
+                    "from_status": original_status.value,
+                    "to_status": VerificationStatus.EXPIRED.value,
+                },
+                durability=AuditDurability.REQUIRED,
+            )
         return session
 
     async def cancel(self, *, session_id: UUID, tenant_id: str) -> VerificationSession:

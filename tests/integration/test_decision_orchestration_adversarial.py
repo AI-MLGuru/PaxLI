@@ -117,7 +117,10 @@ async def test_superseded_stale_rejection_does_not_affect_a_verified_outcome() -
             tenant_id=tenant_id, **_face_match_verifies_policy("policy-adversarial-supersede")
         )
         session_service = VerificationSessionService(
-            SqlAlchemyVerificationSessionRepository(session), policy_service, session_ttl_minutes=30
+            SqlAlchemyVerificationSessionRepository(session),
+            audit_service=AuditService(SqlAlchemyAuditEventRepository(session)),
+            policy_service=policy_service,
+            session_ttl_minutes=30,
         )
         created_session = await session_service.create(
             tenant_id=tenant_id, external_reference=None, assurance_level=AssuranceLevel.STANDARD
@@ -155,7 +158,10 @@ async def test_superseded_stale_rejection_does_not_affect_a_verified_outcome() -
             EvidenceResultSchemaCatalog(),
         )
         session_service = VerificationSessionService(
-            SqlAlchemyVerificationSessionRepository(session), policy_service, session_ttl_minutes=30
+            SqlAlchemyVerificationSessionRepository(session),
+            audit_service=AuditService(SqlAlchemyAuditEventRepository(session)),
+            policy_service=policy_service,
+            session_ttl_minutes=30,
         )
         evidence_result_service = EvidenceResultService(
             SqlAlchemyEvidenceResultRepository(session, key_provider, "test-adversarial-key"),
@@ -203,7 +209,10 @@ async def test_mutation_between_evaluation_and_persistence_never_taints_the_deci
             tenant_id=tenant_id, **_face_match_verifies_policy("policy-adversarial-mutation")
         )
         session_service = VerificationSessionService(
-            SqlAlchemyVerificationSessionRepository(session), policy_service, session_ttl_minutes=30
+            SqlAlchemyVerificationSessionRepository(session),
+            audit_service=AuditService(SqlAlchemyAuditEventRepository(session)),
+            policy_service=policy_service,
+            session_ttl_minutes=30,
         )
         created_session = await session_service.create(
             tenant_id=tenant_id, external_reference=None, assurance_level=AssuranceLevel.STANDARD
@@ -232,7 +241,10 @@ async def test_mutation_between_evaluation_and_persistence_never_taints_the_deci
             EvidenceResultSchemaCatalog(),
         )
         session_service = VerificationSessionService(
-            SqlAlchemyVerificationSessionRepository(session), policy_service, session_ttl_minutes=30
+            SqlAlchemyVerificationSessionRepository(session),
+            audit_service=AuditService(SqlAlchemyAuditEventRepository(session)),
+            policy_service=policy_service,
+            session_ttl_minutes=30,
         )
         evidence_result_service = EvidenceResultService(
             SqlAlchemyEvidenceResultRepository(session, key_provider, "test-adversarial-key"),
@@ -323,7 +335,10 @@ async def test_malformed_evidence_submission_never_reaches_the_evaluator() -> No
             tenant_id=tenant_id, **_face_match_verifies_policy("policy-adversarial-malformed")
         )
         session_service = VerificationSessionService(
-            SqlAlchemyVerificationSessionRepository(session), policy_service, session_ttl_minutes=30
+            SqlAlchemyVerificationSessionRepository(session),
+            audit_service=AuditService(SqlAlchemyAuditEventRepository(session)),
+            policy_service=policy_service,
+            session_ttl_minutes=30,
         )
         created_session = await session_service.create(
             tenant_id=tenant_id, external_reference=None, assurance_level=AssuranceLevel.STANDARD
@@ -354,7 +369,10 @@ async def test_malformed_evidence_submission_never_reaches_the_evaluator() -> No
             EvidenceResultSchemaCatalog(),
         )
         session_service = VerificationSessionService(
-            SqlAlchemyVerificationSessionRepository(session), policy_service, session_ttl_minutes=30
+            SqlAlchemyVerificationSessionRepository(session),
+            audit_service=AuditService(SqlAlchemyAuditEventRepository(session)),
+            policy_service=policy_service,
+            session_ttl_minutes=30,
         )
         evidence_result_service = EvidenceResultService(
             SqlAlchemyEvidenceResultRepository(session, key_provider, "test-adversarial-key"),

@@ -142,7 +142,11 @@ def service():
     audit_repo = FakeAuditRepository()
     svc = EvidenceService(
         repo,
-        VerificationSessionService(FakeSessionRepository(), session_ttl_minutes=60),
+        VerificationSessionService(
+            FakeSessionRepository(),
+            audit_service=AuditService(audit_repo),
+            session_ttl_minutes=60,
+        ),
         storage=None,  # not exercised by request_deletion/reconcile_deletion
         audit_service=AuditService(audit_repo),
     )

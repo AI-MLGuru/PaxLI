@@ -114,7 +114,11 @@ async def _seed_requested_deletion(*, tenant_id: str, storage: EncryptedObjectSt
         session_repository = SqlAlchemyVerificationSessionRepository(session)
         svc = EvidenceService(
             SqlAlchemyEvidenceRepository(session),
-            VerificationSessionService(session_repository, session_ttl_minutes=60),
+            VerificationSessionService(
+                session_repository,
+                audit_service=AuditService(SqlAlchemyAuditEventRepository(session)),
+                session_ttl_minutes=60,
+            ),
             storage,
             AuditService(SqlAlchemyAuditEventRepository(session)),
         )

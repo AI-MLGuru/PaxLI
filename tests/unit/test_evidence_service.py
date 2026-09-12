@@ -176,7 +176,9 @@ def service():
     audit_repo = FakeAuditRepository()
     svc = EvidenceService(
         evidence_repo,
-        VerificationSessionService(session_repo, session_ttl_minutes=30),
+        VerificationSessionService(
+            session_repo, audit_service=AuditService(audit_repo), session_ttl_minutes=30
+        ),
         storage,
         AuditService(audit_repo),
     )

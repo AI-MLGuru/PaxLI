@@ -100,7 +100,10 @@ def _evidence_storage() -> EncryptedObjectStorage:
 def _evidence_service(session, storage) -> EvidenceService:
     return EvidenceService(
         SqlAlchemyEvidenceRepository(session),
-        VerificationSessionService(SqlAlchemyVerificationSessionRepository(session)),
+        VerificationSessionService(
+            SqlAlchemyVerificationSessionRepository(session),
+            audit_service=AuditService(SqlAlchemyAuditEventRepository(session)),
+        ),
         storage,
         AuditService(SqlAlchemyAuditEventRepository(session)),
     )

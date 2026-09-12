@@ -140,6 +140,7 @@ async def get_session(
     session_id: UUID,
     request: Request,
     service: VerificationSessionService = Depends(get_session_service),  # noqa: B008
+    workflow_service: VerificationWorkflowService = Depends(get_workflow_service),  # noqa: B008
     decision_service: DecisionPersistenceService = Depends(  # noqa: B008
         get_decision_persistence_service
     ),
@@ -154,7 +155,33 @@ async def get_session(
     # WF-001 §9: populated if and only if COMPLETED, never a partial or
     # speculative decision for any other status.
     decision = None
-    if session.status is VerificationStatus.COMPLETED:
+    if session.status is VerificationStatus.PROCESSING:
+        # WF-001 §4 / WF-006 Finding A: a session found here on a plain
+        # read is exactly the shape of an earlier /submit call that
+        # crashed mid-flight (or whose response was lost) before reaching
+        # COMPLETED. Self-heal via the same recovery path /submit itself
+        # uses, rather than leaving the session stuck until the client
+        # happens to know to retry POST /submit specifically -- WF-4.27
+        # frames GET as "an authoritative recovery mechanism," and
+        # WF-4.28.1 requires recovery to be based on durable state, not
+        # on the client guessing the right endpoint.
+        try:
+            session, decision = await workflow_service.submit(
+                session_id=session_id,
+                tenant_id=principal.tenant_id,
+                request_id=request_id(request),
+                correlation_id=request.headers.get("X-Correlation-ID"),
+            )
+        except SessionAlreadyTerminalError:
+            # A concurrent cancellation won the race while this read was
+            # attempting recovery on the session's behalf. A GET must
+            # never surface a conflict for an operation it was never
+            # asked to perform -- re-fetch and return whatever is now
+            # true, the same swallow-the-lost-race posture
+            # VerificationSessionService.get() already takes for its own
+            # opportunistic lazy-expire side effect.
+            session = await service.get(session_id=session_id, tenant_id=principal.tenant_id)
+    elif session.status is VerificationStatus.COMPLETED:
         decision = await decision_service.get_for_session(
             session_id=session_id, tenant_id=principal.tenant_id
         )
@@ -167,14 +194,18 @@ async def get_session(
             raise RuntimeError(
                 f"session_id={session_id!s} is COMPLETED but has no persisted decision"
             )
+    # WF-006 Finding B: SESSION_EXPIRED is now recorded exactly once, by
+    # VerificationSessionService.get() itself, at the point its own CAS
+    # write actually transitions a session -- regardless of which caller
+    # (a direct GET, /submit, evidence upload, or /cancel) triggered it.
+    # This router audit is unconditionally SESSION_RETRIEVED: recording
+    # SESSION_EXPIRED again here for a session that happens to already be
+    # EXPIRED (whether from this exact lazy-expire or an earlier one)
+    # would duplicate an event the service already recorded once, ever.
     await audit_service.record(
         tenant_id=principal.tenant_id,
         session_id=session.id,
-        event_type=(
-            AuditEventType.SESSION_EXPIRED
-            if session.status.value == "EXPIRED"
-            else AuditEventType.SESSION_RETRIEVED
-        ),
+        event_type=AuditEventType.SESSION_RETRIEVED,
         component="verification_session_api",
         action="retrieve_session",
         status=AuditStatus.SUCCESS,

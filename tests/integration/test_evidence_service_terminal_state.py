@@ -116,7 +116,10 @@ async def test_evidence_submission_rejected_outside_the_allow_list_real_infrastr
         session_id = await _create_session_in_status(session, tenant_id, status)
         svc = EvidenceService(
             SqlAlchemyEvidenceRepository(session),
-            VerificationSessionService(SqlAlchemyVerificationSessionRepository(session)),
+            VerificationSessionService(
+                SqlAlchemyVerificationSessionRepository(session),
+                audit_service=AuditService(SqlAlchemyAuditEventRepository(session)),
+            ),
             storage,
             AuditService(SqlAlchemyAuditEventRepository(session)),
         )
@@ -163,7 +166,10 @@ async def test_evidence_submission_still_succeeds_for_every_allowed_status() -> 
             session_id = await _create_session_in_status(session, tenant_id, status)
             svc = EvidenceService(
                 SqlAlchemyEvidenceRepository(session),
-                VerificationSessionService(SqlAlchemyVerificationSessionRepository(session)),
+                VerificationSessionService(
+                    SqlAlchemyVerificationSessionRepository(session),
+                    audit_service=AuditService(SqlAlchemyAuditEventRepository(session)),
+                ),
                 storage,
                 AuditService(SqlAlchemyAuditEventRepository(session)),
             )

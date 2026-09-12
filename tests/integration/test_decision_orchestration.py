@@ -68,7 +68,10 @@ def _orchestrator(session, key_provider, key_id) -> DecisionOrchestrator:
         EvidenceResultSchemaCatalog(),
     )
     session_service = VerificationSessionService(
-        SqlAlchemyVerificationSessionRepository(session), policy_service, session_ttl_minutes=30
+        SqlAlchemyVerificationSessionRepository(session),
+        audit_service=AuditService(SqlAlchemyAuditEventRepository(session)),
+        policy_service=policy_service,
+        session_ttl_minutes=30,
     )
     evidence_result_service = EvidenceResultService(
         SqlAlchemyEvidenceResultRepository(session, key_provider, key_id),
@@ -129,7 +132,10 @@ async def test_full_pipeline_verified_outcome_against_real_infrastructure() -> N
             EvidenceResultSchemaCatalog(),
         )
         session_service = VerificationSessionService(
-            SqlAlchemyVerificationSessionRepository(session), policy_service, session_ttl_minutes=30
+            SqlAlchemyVerificationSessionRepository(session),
+            audit_service=AuditService(SqlAlchemyAuditEventRepository(session)),
+            policy_service=policy_service,
+            session_ttl_minutes=30,
         )
         created_session = await session_service.create(
             tenant_id=tenant_id, external_reference=None, assurance_level=AssuranceLevel.STANDARD
@@ -225,7 +231,10 @@ async def test_expiration_short_circuits_to_inconclusive_against_real_infrastruc
             ),
         )
         session_service = VerificationSessionService(
-            SqlAlchemyVerificationSessionRepository(session), policy_service, session_ttl_minutes=30
+            SqlAlchemyVerificationSessionRepository(session),
+            audit_service=AuditService(SqlAlchemyAuditEventRepository(session)),
+            policy_service=policy_service,
+            session_ttl_minutes=30,
         )
         created_session = await session_service.create(
             tenant_id=tenant_id, external_reference=None, assurance_level=AssuranceLevel.STANDARD

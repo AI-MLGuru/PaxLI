@@ -85,7 +85,10 @@ async def _create_session(tenant_id: str) -> UUID:
             EvidenceResultSchemaCatalog(),
         )
         session_service = VerificationSessionService(
-            SqlAlchemyVerificationSessionRepository(session), policy_service, session_ttl_minutes=30
+            SqlAlchemyVerificationSessionRepository(session),
+            audit_service=AuditService(SqlAlchemyAuditEventRepository(session)),
+            policy_service=policy_service,
+            session_ttl_minutes=30,
         )
         created = await session_service.create(
             tenant_id=tenant_id, external_reference=None, assurance_level=AssuranceLevel.STANDARD

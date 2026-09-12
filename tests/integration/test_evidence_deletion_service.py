@@ -138,7 +138,11 @@ async def test_full_lifecycle_deletes_storage_and_db_and_audits_both_phases() ->
         session_repository = SqlAlchemyVerificationSessionRepository(session)
         svc = EvidenceService(
             SqlAlchemyEvidenceRepository(session),
-            VerificationSessionService(session_repository, session_ttl_minutes=60),
+            VerificationSessionService(
+                session_repository,
+                audit_service=AuditService(SqlAlchemyAuditEventRepository(session)),
+                session_ttl_minutes=60,
+            ),
             storage,
             AuditService(SqlAlchemyAuditEventRepository(session)),
         )
@@ -156,7 +160,11 @@ async def test_full_lifecycle_deletes_storage_and_db_and_audits_both_phases() ->
         session_repository = SqlAlchemyVerificationSessionRepository(session)
         svc = EvidenceService(
             SqlAlchemyEvidenceRepository(session),
-            VerificationSessionService(session_repository, session_ttl_minutes=60),
+            VerificationSessionService(
+                session_repository,
+                audit_service=AuditService(SqlAlchemyAuditEventRepository(session)),
+                session_ttl_minutes=60,
+            ),
             storage,
             AuditService(SqlAlchemyAuditEventRepository(session)),
         )
@@ -195,7 +203,11 @@ async def test_reconcile_deletion_is_idempotent_when_already_executed() -> None:
         session_repository = SqlAlchemyVerificationSessionRepository(session)
         svc = EvidenceService(
             SqlAlchemyEvidenceRepository(session),
-            VerificationSessionService(session_repository, session_ttl_minutes=60),
+            VerificationSessionService(
+                session_repository,
+                audit_service=AuditService(SqlAlchemyAuditEventRepository(session)),
+                session_ttl_minutes=60,
+            ),
             storage,
             AuditService(SqlAlchemyAuditEventRepository(session)),
         )
@@ -250,7 +262,11 @@ async def test_request_deletion_is_blocked_by_a_dependent_evidence_result() -> N
         session_repository = SqlAlchemyVerificationSessionRepository(session)
         evidence_svc = EvidenceService(
             SqlAlchemyEvidenceRepository(session),
-            VerificationSessionService(session_repository, session_ttl_minutes=60),
+            VerificationSessionService(
+                session_repository,
+                audit_service=AuditService(SqlAlchemyAuditEventRepository(session)),
+                session_ttl_minutes=60,
+            ),
             storage,
             AuditService(SqlAlchemyAuditEventRepository(session)),
         )
@@ -281,7 +297,11 @@ async def test_request_deletion_is_blocked_by_a_dependent_evidence_result() -> N
         session_repository = SqlAlchemyVerificationSessionRepository(session)
         evidence_svc = EvidenceService(
             SqlAlchemyEvidenceRepository(session),
-            VerificationSessionService(session_repository, session_ttl_minutes=60),
+            VerificationSessionService(
+                session_repository,
+                audit_service=AuditService(SqlAlchemyAuditEventRepository(session)),
+                session_ttl_minutes=60,
+            ),
             storage,
             AuditService(SqlAlchemyAuditEventRepository(session)),
         )
@@ -366,7 +386,11 @@ async def test_reconciliation_recovers_after_a_required_audit_failure() -> None:
         session_repository = SqlAlchemyVerificationSessionRepository(session)
         svc = EvidenceService(
             SqlAlchemyEvidenceRepository(session),
-            VerificationSessionService(session_repository, session_ttl_minutes=60),
+            VerificationSessionService(
+                session_repository,
+                audit_service=AuditService(SqlAlchemyAuditEventRepository(session)),
+                session_ttl_minutes=60,
+            ),
             storage,
             AuditService(SqlAlchemyAuditEventRepository(session)),
         )

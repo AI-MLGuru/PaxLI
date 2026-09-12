@@ -9,6 +9,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from core.audit.service import AuditService
 from core.verification.enums import TERMINAL_STATUSES, AssuranceLevel, VerificationStatus
 from core.verification.exceptions import (
     ConcurrentTransitionError,
@@ -84,6 +85,21 @@ class FakeSessionRepository:
         return session
 
 
+class FakeAuditRepository:
+    def __init__(self) -> None:
+        self.events = []
+
+    async def add(self, event, dedupe_key=None):
+        self.events.append(event)
+        return event
+
+    async def get_by_dedupe_key(self, tenant_id, session_id, dedupe_key):
+        return None
+
+    async def list_for_session(self, session_id, tenant_id):
+        return [e for e in self.events if e.session_id == session_id]
+
+
 def _session_in_status(
     status: VerificationStatus, *, expires_at: datetime | None = None
 ) -> VerificationSession:
@@ -104,7 +120,9 @@ def repo() -> FakeSessionRepository:
 
 @pytest.fixture
 def service(repo: FakeSessionRepository) -> VerificationSessionService:
-    return VerificationSessionService(repo, session_ttl_minutes=30)
+    return VerificationSessionService(
+        repo, audit_service=AuditService(FakeAuditRepository()), session_ttl_minutes=30
+    )
 
 
 # ---------------------------------------------------------------------------

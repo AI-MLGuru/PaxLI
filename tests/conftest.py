@@ -166,7 +166,9 @@ async def api_client(session_factory, raw_storage):
         yield EvidenceService(
             SqlAlchemyEvidenceRepository(db_session),
             VerificationSessionService(
-                session_repository, session_ttl_minutes=settings.session_ttl_minutes
+                session_repository,
+                audit_service=AuditService(SqlAlchemyAuditEventRepository(db_session)),
+                session_ttl_minutes=settings.session_ttl_minutes,
             ),
             storage,
             AuditService(SqlAlchemyAuditEventRepository(db_session)),

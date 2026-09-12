@@ -68,7 +68,8 @@ async def get_session_service(
     )
     yield VerificationSessionService(
         SqlAlchemyVerificationSessionRepository(db_session),
-        policy_service,
+        audit_service=AuditService(SqlAlchemyAuditEventRepository(db_session)),
+        policy_service=policy_service,
         session_ttl_minutes=settings.session_ttl_minutes,
     )
 
@@ -89,6 +90,7 @@ async def get_evidence_service(
         SqlAlchemyEvidenceRepository(db_session),
         VerificationSessionService(
             session_repository,
+            audit_service=AuditService(SqlAlchemyAuditEventRepository(db_session)),
             session_ttl_minutes=settings.session_ttl_minutes,
         ),
         storage,
@@ -141,7 +143,8 @@ async def get_workflow_service(
     )
     session_service = VerificationSessionService(
         SqlAlchemyVerificationSessionRepository(db_session),
-        policy_service,
+        audit_service=AuditService(SqlAlchemyAuditEventRepository(db_session)),
+        policy_service=policy_service,
         session_ttl_minutes=settings.session_ttl_minutes,
     )
     key_provider = get_local_key_provider(
