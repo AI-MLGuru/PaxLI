@@ -409,3 +409,149 @@ async def test_ocr_engine_non_utf8_bytes_degrade_to_unreadable_not_a_crash() -> 
     )
     assert result.outcome is OCRReadOutcome.UNREADABLE
     assert result.extraction is None
+
+
+# --- HV-012: hostile validation of the OCR surface ----------------------
+#
+# Scoped tightly to the new OCR capability -- attacking the marker
+# mechanism's byte-boundary math, Unicode handling, and matching
+# exactness directly, per the frozen HV-012 attack matrix. Findings are
+# recorded as they are found, not silently patched.
+
+
+@pytest.mark.asyncio
+async def test_ocr_engine_payload_truncated_mid_multibyte_character_degrades_to_unreadable_not_a_crash() -> None:  # noqa: E501
+    """The truncation window (_OCR_PAYLOAD_MAX_BYTES) is a raw byte slice,
+    not Unicode-aware -- an untruncated payload built entirely from
+    multi-byte characters can have its max-length slice land mid-
+    character, producing an invalid UTF-8 tail. Confirmed here that this
+    degrades to UNREADABLE via the existing UnicodeDecodeError catch,
+    never an uncaught exception out of extract()."""
+    # U+8BED ("语") is 3 bytes in UTF-8; 700 repetitions = 2100 bytes, so
+    # the 2048-byte truncation boundary falls inside the 683rd character
+    # (2046 = 682 * 3), never on a character boundary.
+    payload = "语" * 700
+    engine = DeterministicOCREngine()
+    result = await engine.extract(
+        MINIMAL_JPEG_BYTES + b"PAXLI_TEST_OCR_VALID:" + payload.encode("utf-8")
+    )
+    assert result.outcome is OCRReadOutcome.UNREADABLE
+    assert result.extraction is None
+
+
+@pytest.mark.asyncio
+async def test_ocr_engine_control_characters_survive_in_raw_payload() -> None:
+    """Only the NUL terminator is structurally significant to the marker
+    mechanism -- other C0 control characters (SOH, ESC, BEL) are ordinary
+    payload bytes and must pass through raw unmodified, not be stripped
+    or treated as additional terminators."""
+    payload = "line1\x01\x1b\x07line2"
+    marker = f"PAXLI_TEST_OCR_VALID:{payload}\x00".encode()
+    engine = DeterministicOCREngine()
+    result = await engine.extract(MINIMAL_JPEG_BYTES + marker)
+    assert result.outcome is OCRReadOutcome.VALID
+    assert result.extraction is not None
+    assert result.extraction.raw == payload
+
+
+@pytest.mark.asyncio
+async def test_ocr_engine_homoglyph_prefix_does_not_match_valid_marker() -> None:
+    """Marker matching is exact-literal-byte, never fuzzy -- a Cyrillic
+    'А' (U+0410) substituted for the first Latin 'A' in the VALID
+    prefix must NOT be recognized as the marker, ruling out a homoglyph
+    spoof either falsely triggering or falsely masking OCR's outcome."""
+    homoglyph_prefix = "PАXLI_TEST_OCR_VALID:"
+    assert homoglyph_prefix.encode("utf-8") != b"PAXLI_TEST_OCR_VALID:"
+    engine = DeterministicOCREngine()
+    result = await engine.extract(
+        MINIMAL_JPEG_BYTES + homoglyph_prefix.encode("utf-8") + b"some text\x00"
+    )
+    assert result.outcome is OCRReadOutcome.UNREADABLE
+    assert result.extraction is None
+
+
+@pytest.mark.asyncio
+async def test_ocr_engine_truncated_valid_prefix_is_not_recognized() -> None:
+    """A partial prefix (missing its final ':') must not be treated as a
+    match -- proves the prefix comparison requires the complete literal,
+    not just a leading-substring coincidence."""
+    engine = DeterministicOCREngine()
+    result = await engine.extract(MINIMAL_JPEG_BYTES + b"PAXLI_TEST_OCR_VALI")
+    assert result.outcome is OCRReadOutcome.UNREADABLE
+    assert result.extraction is None
+
+
+@pytest.mark.asyncio
+async def test_ocr_engine_empty_payload_between_prefix_and_terminator_is_unreadable() -> None:
+    """The valid-prefix immediately followed by the terminator (a zero-
+    length payload) is a real adversarial shape, not just the already-
+    covered no-terminator-at-all case -- must degrade to UNREADABLE, not
+    a VALID result with empty raw/fields."""
+    engine = DeterministicOCREngine()
+    result = await engine.extract(MINIMAL_JPEG_BYTES + b"PAXLI_TEST_OCR_VALID:\x00")
+    assert result.outcome is OCRReadOutcome.UNREADABLE
+    assert result.extraction is None
+
+
+@pytest.mark.asyncio
+async def test_ocr_engine_terminator_at_last_valid_window_byte_is_captured() -> None:
+    """Boundary math: a terminator at the last byte still inside the
+    truncation window (index MAX_BYTES - 1 relative to the payload start)
+    must be found and honored exactly, not off-by-one dropped or
+    included."""
+    payload = b"B" * 2047
+    engine = DeterministicOCREngine()
+    result = await engine.extract(
+        MINIMAL_JPEG_BYTES
+        + b"PAXLI_TEST_OCR_VALID:"
+        + payload
+        + b"\x00"
+        + b"TAIL_MUST_NOT_APPEAR"
+    )
+    assert result.outcome is OCRReadOutcome.VALID
+    assert result.extraction is not None
+    assert result.extraction.raw == payload.decode()
+    assert "TAIL_MUST_NOT_APPEAR" not in result.extraction.raw
+
+
+@pytest.mark.asyncio
+async def test_ocr_engine_terminator_one_byte_past_window_is_truncated_not_found() -> None:
+    """The complementary boundary case: a terminator placed exactly one
+    byte past the truncation window is outside the bounded find() range
+    and must NOT be treated as found -- the payload instead truncates to
+    exactly MAX_BYTES, silently dropping the terminator and everything
+    after it, never leaking trailing bytes."""
+    payload = b"C" * 2048
+    engine = DeterministicOCREngine()
+    result = await engine.extract(
+        MINIMAL_JPEG_BYTES
+        + b"PAXLI_TEST_OCR_VALID:"
+        + payload
+        + b"\x00"
+        + b"TAIL_MUST_NOT_APPEAR"
+    )
+    assert result.outcome is OCRReadOutcome.VALID
+    assert result.extraction is not None
+    assert result.extraction.raw == payload.decode()
+    assert len(result.extraction.raw) == 2048
+    assert "TAIL_MUST_NOT_APPEAR" not in result.extraction.raw
+
+
+@pytest.mark.asyncio
+async def test_ocr_engine_long_mixed_unicode_ascii_payload_round_trips_correctly() -> None:
+    """A sustained, well-under-the-limit mix of ASCII and multi-byte
+    Unicode field data (the realistic shape of OCR text spanning several
+    fields) round-trips exactly -- not just the short adversarial snippet
+    covered elsewhere."""
+    adversarial_text = (
+        "surname=Müller;given_names=François Núñez;"
+        "notes=مرحبا 世界 Здравствуй мир こんにちは"
+    )
+    marker = f"PAXLI_TEST_OCR_VALID:{adversarial_text}\x00".encode()
+    engine = DeterministicOCREngine()
+    result = await engine.extract(MINIMAL_JPEG_BYTES + marker)
+    assert result.outcome is OCRReadOutcome.VALID
+    assert result.extraction is not None
+    assert result.extraction.raw == adversarial_text
+    assert result.extraction.fields["surname"] == "Müller"
+    assert result.extraction.fields["given_names"] == "François Núñez"

@@ -48,7 +48,7 @@ from core.document.deterministic import (
 )
 from core.document.types import DocumentClassification, QualityAssessment
 from core.evidence.enums import EvidenceSource, EvidenceType
-from core.evidence_result.enums import DocumentType, EvidenceResultStatus
+from core.evidence_result.enums import DocumentType, EvidenceResultStatus, EvidenceResultType
 from core.evidence_result.schema_catalog import EvidenceResultSchemaCatalog
 from core.evidence_result.service import EvidenceResultService
 from core.policy.condition import EvidenceCondition
@@ -524,6 +524,68 @@ async def test_wrong_tenant_id_sees_no_captures_and_never_touches_the_owning_ten
         assert quality.status == EvidenceResultStatus.PASS.value
 
 
+async def test_concurrent_cross_tenant_processing_does_not_leak_or_corrupt() -> None:
+    """HV-012 tenant-isolation category: the wrong-tenant test above proves
+    the boundary holds for a single sequential attempt -- this attacks it
+    under genuine concurrency, racing the real owner's legitimate
+    process() call against an attacker's forged-tenant call for the same
+    session_id at the same time. Neither call may observe or influence
+    the other: the attacker must still see nothing, and the owner's
+    result must still be correct and uncorrupted regardless of which
+    call's transaction happens to interleave first."""
+    owning_tenant = f"tenant-docproc-race-owner-{uuid4()}"
+    attacking_tenant = f"tenant-docproc-race-attacker-{uuid4()}"
+    key_id = f"key-{uuid4()}"
+    storage = _storage(key_id)
+    marker = b"PAXLI_TEST_OCR_VALID:surname=ERIKSSON\x00"
+
+    async with session_factory() as session:
+        session_id = await _create_session(session, owning_tenant)
+        capture_id = await _upload_document(
+            session, owning_tenant, session_id, storage,
+            MINIMAL_JPEG_BYTES + b"0" * 2000 + marker,
+        )
+        await session.commit()
+
+    processor_owner = _processor(key_id, storage)
+    processor_attacker = _processor(key_id, storage)
+
+    await asyncio.gather(
+        processor_owner.process(session_id=UUID(session_id), tenant_id=owning_tenant),
+        processor_attacker.process(session_id=UUID(session_id), tenant_id=attacking_tenant),
+    )
+
+    async with session_factory() as session:
+        for evidence_type in (
+            "DOCUMENT_QUALITY",
+            "DOCUMENT_CLASSIFICATION",
+            "MRZ",
+            "BARCODE_QR",
+            "OCR_EXTRACTION",
+        ):
+            assert (
+                await _effective_result(session, session_id, attacking_tenant, evidence_type)
+                is None
+            )
+
+        ocr = await _effective_result(session, session_id, owning_tenant, "OCR_EXTRACTION")
+        assert ocr is not None
+        assert ocr.status == EvidenceResultStatus.PASS.value
+        assert ocr.source_reference == str(capture_id)
+
+        # Exactly one effective OCR_EXTRACTION row overall -- the
+        # attacker's concurrent forged-tenant call never raced its way
+        # into creating or corrupting the owner's row.
+        result = await session.execute(
+            select(EvidenceResultRecord).where(
+                EvidenceResultRecord.session_id == session_id,
+                EvidenceResultRecord.evidence_type == "OCR_EXTRACTION",
+                EvidenceResultRecord.is_effective.is_(True),
+            )
+        )
+        assert len(result.scalars().all()) == 1
+
+
 async def test_concurrent_process_calls_converge_on_one_effective_result_per_type() -> None:
     """HV-010: two concurrent process() calls for the same session (the
     real-world shape of a client double-submitting, or WF-006's GET-
@@ -757,6 +819,87 @@ async def test_concurrent_processing_of_different_captures_does_not_interfere() 
         row_b = mrz_b.scalar_one()
         assert row_b.status == EvidenceResultStatus.FAIL.value
         assert row_b.source_reference == str(capture_b)
+
+
+async def test_concurrent_ocr_processing_of_different_captures_does_not_interfere() -> None:
+    """HV-012: the same cross-capture non-interference proof as above,
+    attacked directly at OCR's own call site with two DISTINCT valid OCR
+    payloads processed concurrently -- ruling out the specific OCR risk
+    that the module-level marker-extraction helpers could somehow mix up
+    which image's bytes produced which raw text under a race, not just
+    that the two effective rows stay separate."""
+    key_id = f"key-{uuid4()}"
+    storage = _storage(key_id)
+
+    async def _create_and_process(ocr_text: str) -> tuple[str, str, UUID]:
+        tenant_id = f"tenant-docproc-ocr-crosscapture-{uuid4()}"
+        marker = f"PAXLI_TEST_OCR_VALID:{ocr_text}\x00".encode()
+        async with session_factory() as session:
+            session_id = await _create_session(session, tenant_id)
+            capture_id = await _upload_document(
+                session, tenant_id, session_id, storage,
+                MINIMAL_JPEG_BYTES + b"0" * 2000 + marker,
+            )
+            await session.commit()
+        processor = _processor(key_id, storage)
+        await processor.process(session_id=UUID(session_id), tenant_id=tenant_id)
+        return tenant_id, session_id, capture_id
+
+    (tenant_a, session_id_a, capture_a), (tenant_b, session_id_b, capture_b) = (
+        await asyncio.gather(
+            _create_and_process("surname=FIRST_CAPTURE_ANNA"),
+            _create_and_process("surname=SECOND_CAPTURE_MULLER"),
+        )
+    )
+
+    async with session_factory() as session:
+        ocr_a = await session.execute(
+            select(EvidenceResultRecord).where(
+                EvidenceResultRecord.session_id == session_id_a,
+                EvidenceResultRecord.evidence_type == "OCR_EXTRACTION",
+                EvidenceResultRecord.is_effective.is_(True),
+            )
+        )
+        row_a = ocr_a.scalar_one()
+        assert row_a.status == EvidenceResultStatus.PASS.value
+        assert row_a.source_reference == str(capture_a)
+
+        ocr_b = await session.execute(
+            select(EvidenceResultRecord).where(
+                EvidenceResultRecord.session_id == session_id_b,
+                EvidenceResultRecord.evidence_type == "OCR_EXTRACTION",
+                EvidenceResultRecord.is_effective.is_(True),
+            )
+        )
+        row_b = ocr_b.scalar_one()
+        assert row_b.status == EvidenceResultStatus.PASS.value
+        assert row_b.source_reference == str(capture_b)
+
+    # The raw OCR text itself -- not just the row's status/lineage --
+    # must not have been swapped between the two concurrent captures.
+    # Decrypt via the same service path the API uses, since raw text
+    # lives in result_ciphertext (OCR_EXTRACTION is HIGHLY_SENSITIVE).
+    key_provider = LocalAesGcmKeyProvider({key_id: b"0" * 32})
+    async with session_factory() as session:
+        evidence_result_service = EvidenceResultService(
+            SqlAlchemyEvidenceResultRepository(session, key_provider, key_id),
+            AuditService(SqlAlchemyAuditEventRepository(session)),
+            SqlAlchemyEvidenceRepository(session),
+        )
+        result_a = await evidence_result_service.get_effective_for_session_by_type(
+            session_id=UUID(session_id_a),
+            tenant_id=tenant_a,
+            evidence_type=EvidenceResultType.OCR_EXTRACTION,
+        )
+        result_b = await evidence_result_service.get_effective_for_session_by_type(
+            session_id=UUID(session_id_b),
+            tenant_id=tenant_b,
+            evidence_type=EvidenceResultType.OCR_EXTRACTION,
+        )
+        assert result_a is not None and result_a.result is not None
+        assert result_b is not None and result_b.result is not None
+        assert result_a.result["fields"] == {"surname": "FIRST_CAPTURE_ANNA"}
+        assert result_b.result["fields"] == {"surname": "SECOND_CAPTURE_MULLER"}
 
 
 async def test_retry_does_not_recompute_an_already_reusable_result() -> None:
@@ -1207,6 +1350,85 @@ async def test_mrz_check_digit_mismatch_does_not_affect_quality_or_classificatio
         assert barcode.status == EvidenceResultStatus.PASS.value  # unaffected by MRZ's failure
         assert ocr is not None
         assert ocr.status == EvidenceResultStatus.PASS.value  # unaffected by MRZ's failure
+
+
+async def test_ocr_unreadable_does_not_affect_other_stages() -> None:
+    """HV-012 pipeline-isolation category, complementing the mixed-outcome
+    test above from the other direction: a fixture with valid MRZ/Barcode
+    markers but NO OCR marker (so OCR itself lands on INCONCLUSIVE/
+    UNREADABLE) must not drag Quality/Classification/MRZ/Barcode down
+    with it -- OCR's own inability to recognize text is not evidence of
+    anything about the other stages."""
+    tenant_id = f"tenant-docproc-ocr-partial-{uuid4()}"
+    key_id = f"key-{uuid4()}"
+    storage = _storage(key_id)
+    mrz_marker = b"PAXLI_TEST_MRZ:" + _MRZ_VALID_RAW.encode("ascii")
+    barcode_marker = b"PAXLI_TEST_BARCODE_VALID:PDF417:document_number=A1234567\x00"
+
+    async with session_factory() as session:
+        session_id = await _create_session(session, tenant_id)
+        await _upload_document(
+            session, tenant_id, session_id, storage,
+            MINIMAL_JPEG_BYTES + b"0" * 2000 + b"PAXLI_TEST_ICAO_PASSPORT_DATA_PAGE"
+            + mrz_marker + barcode_marker,
+        )
+        await session.commit()
+
+    processor = _processor(key_id, storage)
+    await processor.process(session_id=UUID(session_id), tenant_id=tenant_id)
+
+    async with session_factory() as session:
+        quality = await _effective_result(session, session_id, tenant_id, "DOCUMENT_QUALITY")
+        classification = await _effective_result(
+            session, session_id, tenant_id, "DOCUMENT_CLASSIFICATION"
+        )
+        mrz = await _effective_result(session, session_id, tenant_id, "MRZ")
+        barcode = await _effective_result(session, session_id, tenant_id, "BARCODE_QR")
+        ocr = await _effective_result(session, session_id, tenant_id, "OCR_EXTRACTION")
+        assert quality is not None
+        assert quality.status == EvidenceResultStatus.PASS.value
+        assert classification is not None
+        assert classification.status == EvidenceResultStatus.PASS.value
+        assert mrz is not None
+        assert mrz.status == EvidenceResultStatus.PASS.value
+        assert barcode is not None
+        assert barcode.status == EvidenceResultStatus.PASS.value
+        assert ocr is not None
+        assert ocr.status == EvidenceResultStatus.INCONCLUSIVE.value  # unaffected by others
+        assert ocr.reason_codes_json == ["OCR_UNREADABLE"]
+
+
+async def test_ocr_processing_never_writes_document_field_extraction() -> None:
+    """DP-005 Decision 0/11: DOCUMENT_FIELD_EXTRACTION reconciliation is
+    explicitly out of scope for Phase 3 and deferred whole to Phase 4.
+    A VALID OCR result must not implicitly manufacture, seed, or
+    reconcile into a DOCUMENT_FIELD_EXTRACTION row as a side effect --
+    that evidence type must remain completely untouched by Phase 3."""
+    tenant_id = f"tenant-docproc-ocr-no-reconciliation-{uuid4()}"
+    key_id = f"key-{uuid4()}"
+    storage = _storage(key_id)
+    marker = b"PAXLI_TEST_OCR_VALID:surname=ERIKSSON;given_names=ANNA MARIA\x00"
+
+    async with session_factory() as session:
+        session_id = await _create_session(session, tenant_id)
+        await _upload_document(
+            session, tenant_id, session_id, storage,
+            MINIMAL_JPEG_BYTES + b"0" * 2000 + marker,
+        )
+        await session.commit()
+
+    processor = _processor(key_id, storage)
+    await processor.process(session_id=UUID(session_id), tenant_id=tenant_id)
+
+    async with session_factory() as session:
+        ocr = await _effective_result(session, session_id, tenant_id, "OCR_EXTRACTION")
+        assert ocr is not None
+        assert ocr.status == EvidenceResultStatus.PASS.value
+
+        field_extraction = await _effective_result(
+            session, session_id, tenant_id, "DOCUMENT_FIELD_EXTRACTION"
+        )
+        assert field_extraction is None
 
 
 async def test_unexpected_capability_exception_propagates_uncaught() -> None:
