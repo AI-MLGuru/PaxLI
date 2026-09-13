@@ -1,12 +1,16 @@
 from collections.abc import AsyncIterator
 
 from fastapi import Depends, Header, Request
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from apps.api.paxli_api.config import Settings, get_settings
 from core.audit.service import AuditService
 from core.decision.orchestration import DecisionOrchestrator
 from core.decision.persistence import DecisionPersistenceService
+from core.document.deterministic import (
+    DeterministicDocumentClassifier,
+    DeterministicQualityAssessor,
+)
 from core.evidence.service import EvidenceService
 from core.evidence_result.schema_catalog import EvidenceResultSchemaCatalog
 from core.evidence_result.service import EvidenceResultService
@@ -38,6 +42,7 @@ from infrastructure.deletion.reconciliation import (
     SqlAlchemyEvidenceDeletionReconciler,
     SqlAlchemyEvidenceResultDeletionReconciler,
 )
+from infrastructure.document.processor import SqlAlchemyDocumentProcessor
 from infrastructure.rate_limit.network_source import (
     get_network_source_hmac_key,
     hash_network_source,
@@ -47,6 +52,7 @@ from infrastructure.rate_limit.rules import authenticated_rules, pre_auth_rule
 from infrastructure.security.hashing import ScryptSecretHasher
 from infrastructure.security.local_key_provider import get_local_key_provider
 from infrastructure.storage.encrypted import EncryptedObjectStorage
+from infrastructure.storage.interface import ObjectStorage
 from infrastructure.storage.minio import MinioObjectStorage
 
 # Module-level, not request-scoped: PostgresRateLimiter is stateless besides
@@ -133,9 +139,42 @@ async def get_decision_persistence_service(
     )
 
 
+def get_object_storage(settings: Settings = Depends(get_settings)) -> ObjectStorage:  # noqa: B008
+    """A real `Depends()`-resolvable seam over the encrypted-MinIO storage
+    construction `get_evidence_service` also builds inline -- needed here
+    (unlike there) because nothing overrides `get_workflow_service` at the
+    function level in tests, so anything it builds directly bypasses test
+    overrides entirely. Same rationale as get_session_factory below."""
+    key_provider = get_local_key_provider(
+        key_id=settings.evidence_encryption_key_id,
+        encoded_key=settings.evidence_encryption_key,
+    )
+    return EncryptedObjectStorage(
+        MinioObjectStorage(settings), key_provider, settings.evidence_encryption_key_id
+    )
+
+
+def get_session_factory() -> async_sessionmaker[AsyncSession]:
+    """A real `Depends()`-resolvable seam over the module-level
+    `session_factory` sessionmaker -- unlike a plain imported name (which
+    `app.dependency_overrides` cannot intercept, since that mechanism only
+    ever substitutes things resolved through FastAPI's own dependency
+    graph), this can be swapped for a test-scoped sessionmaker the same
+    way get_db_session already is. Needed by anything that -- like
+    DocumentProcessor -- must open its OWN independent sessions beyond
+    the single ambient per-request one (DP-001 Decision 4), so its
+    backend stays consistent with whatever get_db_session was overridden
+    to, rather than silently talking to a different database entirely."""
+    return session_factory
+
+
 async def get_workflow_service(
     db_session: AsyncSession = Depends(get_db_session),  # noqa: B008
     settings: Settings = Depends(get_settings),  # noqa: B008
+    request_session_factory: async_sessionmaker[AsyncSession] = Depends(  # noqa: B008
+        get_session_factory
+    ),
+    document_storage: ObjectStorage = Depends(get_object_storage),  # noqa: B008
 ) -> AsyncIterator[VerificationWorkflowService]:
     policy_service = PolicyService(
         SqlAlchemyVerificationPolicyRepository(db_session),
@@ -166,7 +205,17 @@ async def get_workflow_service(
     orchestrator = DecisionOrchestrator(
         session_service, policy_service, evidence_result_service, persistence_service, audit_service
     )
-    yield VerificationWorkflowService(session_service, orchestrator, audit_service)
+    document_processor = SqlAlchemyDocumentProcessor(
+        request_session_factory,
+        key_provider,
+        settings.evidence_encryption_key_id,
+        document_storage,
+        DeterministicQualityAssessor(),
+        DeterministicDocumentClassifier(),
+    )
+    yield VerificationWorkflowService(
+        session_service, orchestrator, audit_service, document_processor
+    )
 
 
 async def get_audit_service(

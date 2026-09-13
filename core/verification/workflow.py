@@ -34,6 +34,7 @@ from core.audit.service import AuditService
 from core.decision.enums import EvaluationReason
 from core.decision.models import DecisionProvenance
 from core.decision.orchestration import DecisionOrchestrator
+from core.document.processor import DocumentProcessor
 from core.verification.enums import VerificationStatus
 from core.verification.exceptions import ConcurrentTransitionError, SessionAlreadyTerminalError
 from core.verification.models import VerificationSession
@@ -59,10 +60,12 @@ class VerificationWorkflowService:
         session_service: VerificationSessionService,
         decision_orchestrator: DecisionOrchestrator,
         audit_service: AuditService,
+        document_processor: DocumentProcessor,
     ) -> None:
         self.session_service = session_service
         self.decision_orchestrator = decision_orchestrator
         self.audit_service = audit_service
+        self.document_processor = document_processor
 
     async def submit(
         self,
@@ -129,6 +132,17 @@ class VerificationWorkflowService:
                 continue
 
             if session.status is VerificationStatus.PROCESSING:
+                # DP-001 Decision 4: document processing runs synchronously
+                # here, immediately before evaluate_and_persist() -- never
+                # at evidence-capture time. Unconditional: DocumentProcessor
+                # itself no-ops when no DOCUMENT-type capture exists for
+                # this session.
+                await self.document_processor.process(
+                    session_id=session.id,
+                    tenant_id=session.tenant_id,
+                    request_id=request_id,
+                    correlation_id=correlation_id,
+                )
                 # §7: PROCESSING has no EXPIRED edge -- a session past its
                 # deadline is resolved only by selecting
                 # EvaluationReason.EXPIRATION here, unconditionally

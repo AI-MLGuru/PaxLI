@@ -41,3 +41,23 @@ class EvidenceResultType(StrEnum):
     IDENTITY_CONSISTENCY = "IDENTITY_CONSISTENCY"
     EXTERNAL_IDENTITY_PROVIDER = "EXTERNAL_IDENTITY_PROVIDER"
     LIVENESS_ASSESSMENT = "LIVENESS_ASSESSMENT"
+
+
+class DocumentType(StrEnum):
+    """DP-001 Decision 5: PaxLI V1's closed document-type catalog -- the
+    leaf/variant value DocumentClassificationResult.document_type
+    carries. "Family" (NIN_SLIP, ICAO_PASSPORT) is a derived grouping
+    concept for documentation/conformance purposes only, never persisted
+    as a second field -- downstream extraction rules key off the specific
+    leaf variant regardless.
+
+    Absence of a match (an unrecognized/unsupported document) is
+    represented at the EvidenceResultStatus level -- DOCUMENT_CLASSIFICATION
+    status=FAIL, reason_codes=("DOCUMENT_UNSUPPORTED",), result=None --
+    never as a member of this enum. `UNSUPPORTED` is an outcome, not a
+    document type.
+    """
+
+    STANDARD_NIN_SLIP = "STANDARD_NIN_SLIP"
+    IMPROVED_NIN_SLIP = "IMPROVED_NIN_SLIP"
+    ICAO_PASSPORT_DATA_PAGE = "ICAO_PASSPORT_DATA_PAGE"

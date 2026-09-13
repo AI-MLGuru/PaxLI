@@ -9,7 +9,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from core.evidence_result.enums import EvidenceResultType
+from core.evidence_result.enums import DocumentType, EvidenceResultType
 from core.evidence_result.exceptions import InvalidEvidenceResultError
 
 
@@ -36,7 +36,13 @@ class DocumentQualityResult(BaseModel):
 
 
 class DocumentClassificationResult(BaseModel):
-    document_type: str
+    """document_type is DP-001 Decision 5's controlled vocabulary, never
+    a free string. An unrecognized document is represented at the
+    EvidenceResultStatus level (status=FAIL, reason_codes=
+    ("DOCUMENT_UNSUPPORTED",), result=None) -- never as a value of this
+    field, so document_type is never optional here."""
+
+    document_type: DocumentType
 
 
 class OcrExtractionResult(BaseModel):

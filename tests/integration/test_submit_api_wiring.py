@@ -35,6 +35,23 @@ from infrastructure.database.repositories.verification_session import (
     SqlAlchemyVerificationSessionRepository,
 )
 from infrastructure.database.session import session_factory
+from infrastructure.security.local_key_provider import LocalAesGcmKeyProvider
+from infrastructure.storage.encrypted import EncryptedObjectStorage
+from infrastructure.storage.minio import MinioObjectStorage
+
+# get_workflow_service is driven directly here (bypassing FastAPI's own
+# injector, unlike apps/api/paxli_api/main.py's real request path), so its
+# Depends()-based parameters -- like settings below -- must be supplied
+# explicitly; a Depends(...) marker object is never resolved outside
+# FastAPI's own dependency graph. No DOCUMENT evidence is ever uploaded in
+# this file, so DocumentProcessor always takes its no-op path -- this
+# storage is never actually read, but must still be a real, working
+# ObjectStorage for construction to succeed.
+_DOCUMENT_STORAGE = EncryptedObjectStorage(
+    MinioObjectStorage(get_settings()),
+    LocalAesGcmKeyProvider({"test-wf005-wiring-key": b"0" * 32}),
+    "test-wf005-wiring-key",
+)
 
 
 def _postgres_reachable() -> bool:
@@ -110,7 +127,12 @@ async def test_workflow_service_di_wiring_completes_a_submission() -> None:
 
     async with session_factory() as db_session:
         workflow_service = await anext(
-            get_workflow_service(db_session=db_session, settings=get_settings())
+            get_workflow_service(
+                db_session=db_session,
+                settings=get_settings(),
+                request_session_factory=session_factory,
+                document_storage=_DOCUMENT_STORAGE,
+            )
         )
         result_session, decision = await workflow_service.submit(
             session_id=session_id, tenant_id=tenant_id
@@ -121,9 +143,7 @@ async def test_workflow_service_di_wiring_completes_a_submission() -> None:
     assert decision.outcome is DecisionOutcome.INCONCLUSIVE
 
     async with session_factory() as db_session:
-        decision_service = await anext(
-            get_decision_persistence_service(db_session=db_session)
-        )
+        decision_service = await anext(get_decision_persistence_service(db_session=db_session))
         read_back = await decision_service.get_for_session(
             session_id=session_id, tenant_id=tenant_id
         )
@@ -146,7 +166,12 @@ async def test_workflow_service_di_wiring_concurrent_submit_converges() -> None:
     async def _submit_attempt(*, wait_for_signal: bool, delay_before_commit: float) -> UUID:
         async with session_factory() as db_session:
             workflow_service = await anext(
-                get_workflow_service(db_session=db_session, settings=get_settings())
+                get_workflow_service(
+                    db_session=db_session,
+                    settings=get_settings(),
+                    request_session_factory=session_factory,
+                    document_storage=_DOCUMENT_STORAGE,
+                )
             )
             if wait_for_signal:
                 await first_started.wait()
@@ -170,9 +195,7 @@ async def test_workflow_service_di_wiring_concurrent_submit_converges() -> None:
     assert decision_ids[0] == decision_ids[1]
 
     async with session_factory() as db_session:
-        decision_service = await anext(
-            get_decision_persistence_service(db_session=db_session)
-        )
+        decision_service = await anext(get_decision_persistence_service(db_session=db_session))
         read_back = await decision_service.get_for_session(
             session_id=session_id, tenant_id=tenant_id
         )

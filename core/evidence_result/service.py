@@ -391,6 +391,21 @@ class EvidenceResultService:
         method's only caller today."""
         return await self.repository.list_effective_for_session(session_id, tenant_id)
 
+    async def get_effective_for_session_by_type(
+        self, *, session_id: UUID, tenant_id: str, evidence_type: EvidenceResultType
+    ) -> EvidenceResult | None:
+        """At most one row is possible here when the partial unique index
+        holds (DE-003 §11) -- a thin, type-scoped convenience over
+        list_effective_for_session() for callers (e.g.
+        core.document.processor's DocumentProcessor) that need to check a
+        single stage's existing effective result before deciding whether
+        to create() or supersede() (DP-001 Decision 4's per-stage
+        convergence rule)."""
+        results = await self.repository.list_effective_for_session_by_type(
+            session_id, tenant_id, evidence_type
+        )
+        return results[0] if results else None
+
     async def request_deletion(
         self,
         *,

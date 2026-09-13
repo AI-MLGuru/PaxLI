@@ -21,6 +21,10 @@ from core.audit.service import AuditService
 from core.decision.enums import DecisionOutcome, EngineReasonCode, EvaluationReason
 from core.decision.orchestration import DecisionOrchestrator
 from core.decision.persistence import DecisionPersistenceService
+from core.document.deterministic import (
+    DeterministicDocumentClassifier,
+    DeterministicQualityAssessor,
+)
 from core.evidence.enums import EvidenceType
 from core.evidence.service import EvidenceService
 from core.evidence_result.schema_catalog import EvidenceResultSchemaCatalog
@@ -41,6 +45,7 @@ from infrastructure.database.repositories.verification_session import (
     SqlAlchemyVerificationSessionRepository,
 )
 from infrastructure.database.session import session_factory
+from infrastructure.document.processor import SqlAlchemyDocumentProcessor
 from infrastructure.security.local_key_provider import LocalAesGcmKeyProvider
 from infrastructure.storage.encrypted import EncryptedObjectStorage
 from infrastructure.storage.minio import MinioObjectStorage
@@ -111,7 +116,17 @@ def _services(session):
     orchestrator = DecisionOrchestrator(
         session_service, policy_service, evidence_result_service, persistence_service, audit_service
     )
-    workflow = VerificationWorkflowService(session_service, orchestrator, audit_service)
+    document_processor = SqlAlchemyDocumentProcessor(
+        session_factory,
+        _KEY_PROVIDER,
+        "test-workflow-key",
+        _evidence_storage(),
+        DeterministicQualityAssessor(),
+        DeterministicDocumentClassifier(),
+    )
+    workflow = VerificationWorkflowService(
+        session_service, orchestrator, audit_service, document_processor
+    )
     return policy_service, session_service, orchestrator, audit_service, workflow
 
 

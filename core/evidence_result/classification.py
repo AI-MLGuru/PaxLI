@@ -5,13 +5,19 @@ PaxLI's server-side policy, never by a caller-provided value": the public
 EvidenceResultService.create() signature has no classification parameter
 at all -- classify() is the only source of truth, keyed by evidence_type.
 
-Mapping is aligned with the field-level precedent already established in
-core/security/classification.py: extracted identity field VALUES (OCR,
-MRZ, document fields -- comparable to existing "name"/"document_number"
-SENSITIVE fields) are SENSITIVE; a persistent biometric embedding
-(comparable to the existing "embedding"/"face_embedding" HIGHLY_SENSITIVE
-fields) is HIGHLY_SENSITIVE. This is an initial, defensible mapping, not a
-final security-reviewed one -- flagged in the Foundation-008 closure record.
+Classification is determined by the sensitivity of the persisted result
+PAYLOAD, not merely by the evidence type's domain (docs/decisions/
+DP-001-document-processing-discovery.md, Decision 1): OCR_EXTRACTION,
+MRZ, BARCODE_QR, and DOCUMENT_FIELD_EXTRACTION carry raw or reconciled
+identity-field VALUES and are HIGHLY_SENSITIVE; DOCUMENT_QUALITY,
+DOCUMENT_CLASSIFICATION, and DOCUMENT_AUTHENTICITY carry only a
+score/label/signal-name and stay SENSITIVE -- the same principle already
+applied to biometrics (FACE_EMBEDDING HIGHLY_SENSITIVE vs.
+FACE_QUALITY/FACE_MATCH/FACE_DETECTION SENSITIVE). EXTERNAL_IDENTITY_PROVIDER
+is provisionally SENSITIVE and MUST be reassessed against this same
+payload-content test once a real adapter's response shape is known. The
+remaining entries are an initial, defensible mapping, not a final
+security-reviewed one -- flagged in the Foundation-008 closure record.
 """
 
 from core.evidence_result.enums import EvidenceResultType
@@ -24,10 +30,20 @@ EVIDENCE_RESULT_CLASSIFICATION: dict[EvidenceResultType, DataClassification] = {
     EvidenceResultType.FACE_MATCH: DataClassification.SENSITIVE,
     EvidenceResultType.DOCUMENT_QUALITY: DataClassification.SENSITIVE,
     EvidenceResultType.DOCUMENT_CLASSIFICATION: DataClassification.SENSITIVE,
-    EvidenceResultType.OCR_EXTRACTION: DataClassification.SENSITIVE,
-    EvidenceResultType.DOCUMENT_FIELD_EXTRACTION: DataClassification.SENSITIVE,
-    EvidenceResultType.MRZ: DataClassification.SENSITIVE,
-    EvidenceResultType.BARCODE_QR: DataClassification.SENSITIVE,
+    # DP-001 Decision 1: these four carry raw or reconciled identity-field
+    # VALUES (OCR text, MRZ raw+parsed data, barcode payload, canonical
+    # reconciled fields) -- Part XI §11.5 ("identity data... names, dates
+    # of birth, identity numbers... SENSITIVE unless more restrictive
+    # classification applies") plus the same payload-content principle
+    # already governing biometrics (FACE_EMBEDDING HIGHLY_SENSITIVE vs.
+    # FACE_QUALITY/FACE_MATCH/FACE_DETECTION SENSITIVE) puts them a tier
+    # above DOCUMENT_QUALITY/DOCUMENT_CLASSIFICATION/DOCUMENT_AUTHENTICITY,
+    # whose payloads carry only a score/label/signal-name, never a raw
+    # identity value.
+    EvidenceResultType.OCR_EXTRACTION: DataClassification.HIGHLY_SENSITIVE,
+    EvidenceResultType.DOCUMENT_FIELD_EXTRACTION: DataClassification.HIGHLY_SENSITIVE,
+    EvidenceResultType.MRZ: DataClassification.HIGHLY_SENSITIVE,
+    EvidenceResultType.BARCODE_QR: DataClassification.HIGHLY_SENSITIVE,
     EvidenceResultType.DOCUMENT_AUTHENTICITY: DataClassification.SENSITIVE,
     EvidenceResultType.IDENTITY_CONSISTENCY: DataClassification.SENSITIVE,
     EvidenceResultType.EXTERNAL_IDENTITY_PROVIDER: DataClassification.SENSITIVE,
