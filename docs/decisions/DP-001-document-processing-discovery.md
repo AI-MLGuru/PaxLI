@@ -1,8 +1,20 @@
 # DP-001 — Document Processing Discovery & Reconciliation
 
-**Status:** DISCOVERY — no production code changed. Awaiting peer-review/reconciliation before any implementation is authorized.
+**Status:** RECONCILIATION COMPLETE — all 7 decisions frozen (§16). No production code has been changed during discovery or reconciliation. Implementation is now authorized to proceed per the frozen decisions and the phase plan (§17), starting with Phase 1.
 **Scope:** the first real document-processing pipeline (quality, classification, OCR, MRZ, barcode/QR, authenticity) as the first genuine producer of `EvidenceResult` rows.
 **Method:** full trace of `docs/specification/part-03` through `part-11` for every document-relevant requirement, plus a full repository inventory of `core/`, `infrastructure/`, `integrations/`, `apps/`, `tests/`, and prior foundation/decision records. Citations below are `file:line`.
+
+## Reconciliation log
+
+| # | Decision | Status |
+|---|---|---|
+| 1 | Document `EvidenceResultType` classification | **FROZEN** — see §16 |
+| 2 | Typed `EvidenceResult` lineage (composite vs. several rows) | **FROZEN** — see §16 |
+| 3 | Capability-oriented document processing boundary | **FROZEN** — see §16 |
+| 4 | Synchronous document processing boundary | **FROZEN** — see §16 |
+| 5 | V1 document-type catalog | **FROZEN** — see §16 |
+| 6 | Basic authenticity scope | **FROZEN** — see §16 |
+| 7 | `DOCUMENT_FIELD_EXTRACTION` schema shape (was Open Question 6) | **FROZEN** — see §16 |
 
 ---
 
@@ -15,6 +27,8 @@ Out of scope for this discovery (and therefore not addressed below beyond noting
 ---
 
 ## 2. The headline finding — a genuine spec/implementation conflict
+
+**RESOLVED — see Decision 1 (§16), FROZEN.** Left in place below as the discovery record of the conflict as originally found; the frozen resolution is more precise than the fix first proposed here (a payload-content-driven four-type reclassification, not a blanket seven-type one).
 
 Before the requirement matrix: one finding is important enough to lead with, because it is exactly the kind of thing CLAUDE.md requires be surfaced rather than silently resolved.
 
@@ -214,12 +228,10 @@ CLASSIFICATION   EXTRACTION   (if MRZ present) (if barcode present)
                      ExternalIdentityProvider, etc.)
 ```
 
-**Recommendation, not yet a decision:** this should be **several typed `EvidenceResult` rows, not one composite result** — each with `source_reference` pointing at the capture and `parent_evidence_result_ids` pointing at its upstream stage(s) where derivation is genuine (e.g., `DOCUMENT_FIELD_EXTRACTION` derived from both `OCR_EXTRACTION` and `MRZ`). This is directly supported by:
+**FROZEN as Decision 2 (§16):** several typed `EvidenceResult` rows, not one composite result — each with `source_reference` pointing at the capture and/or `parent_evidence_result_ids` pointing at its upstream stage(s), per the exact wiring rule frozen in §16. This is directly supported by:
 - EVD-3.17's own lineage language ("derived evidence must identify source evidence")
 - REL-10.15 (partial pipeline failure must preserve completed evidence) — a single composite row would make "OCR succeeded, MRZ failed" inexpressible without either a partially-null mega-object or two competing writes to one row (which immutability forbids anyway)
 - The existing schema catalog's one-schema-per-type design, which a composite result would have to abandon or awkwardly nest
-
-This is Explicit Decision #2 in §16.
 
 ---
 
@@ -277,7 +289,7 @@ Recall the three hypotheses you posed. Discovery's job is to check them against 
 - CLAUDE.md's own "capability-oriented interfaces" rule and "infrastructure follows a demonstrated capability requirement" rule both favor a port-based design over hard-wiring one library, without requiring a real model to exist yet.
 - The one-composite-vs-several-results question (§6) and the field-level-condition question (§8, Open Question 6) both need to be validated against SOMETHING before a real OCR/MRZ library choice is made — a deterministic stub is the cheapest way to validate them.
 
-**Recommendation:** Option C, sequenced so the deterministic baseline (a) proves the orchestration/lineage/schema design decisions in §6–8, then (b) a real adapter is slotted in behind the same port once those decisions are validated and a specific document type / OCR library is chosen. This is Explicit Decision #3.
+**FROZEN as Decision 3 (§16):** Option C, refined during reconciliation into six independently replaceable capability ports (not the existing monolithic `DocumentProvider`, which is retired — see §16), sequenced so the deterministic baseline for `QualityAssessor`/`DocumentClassifier` (a) proves the orchestration/lineage design decisions in §6–8 first, then (b) `OCREngine`/`MRZParser`/`BarcodeDecoder`/`AuthenticityChecker` are interface-designed but implementation-deferred until the field-schema and document-catalog decisions land, then (c) a real adapter is slotted in behind whichever port is implemented first, once a specific document type / library is chosen.
 
 ---
 
@@ -364,13 +376,14 @@ Not deferred by the spec, but genuinely undefined by it (implementation-level de
 
 ## 14. Open architectural questions
 
-1. **Where does synchronous document processing actually run?** `submit()`'s `PROCESSING` branch calls `evaluate_and_persist()` directly today. Does document processing happen inside `submit()` before that call (making `/submit` itself slower and subject to inference timeouts), or does it happen at evidence-submission time (`POST /document` triggers processing immediately, before the client ever calls `/submit`)? These have materially different latency, retry, and idempotency consequences and are not decided anywhere in the existing lifecycle design.
-2. **Where is the "basic vs advanced" document authenticity line?** DEF-9.15 defers "advanced" checks but implies a baseline exists for v1.0. What does baseline authenticity actually check, concretely, with today's ambition (format/template matching? nothing at all, `NOT_REQUIRED` until a real signal exists)?
+1. ~~Where does synchronous document processing actually run?~~ **RESOLVED — Decision 4, FROZEN.**
+2. ~~Where is the "basic vs advanced" document authenticity line?~~ **RESOLVED — Decision 6, FROZEN: there is no defensible "basic" signal for V1; the capability is not implemented.**
 3. **Where do evidence-level reason codes (Part III §3.14: `OCR_UNREADABLE`, `DOCUMENT_UNSUPPORTED`, etc.) live in code?** No such enum exists today — `EngineReasonCode` is decision-level only. This needs a home (likely `core/evidence_result/reason_codes.py`, mirroring `core/policy/reason_codes.py`'s `POLICY:` namespace pattern) before any component can honestly report `IMAGE_TOO_BLURRY`.
-4. **Is there a document-type catalog for v1.0, and if so what's in it?** The spec never names one. Recommend defining a short, explicit list (e.g., passport + one national ID format) rather than trying to build a general document-family classifier immediately — but this is your call, not mine to assume.
+4. **Is there a document-type catalog for v1.0, and if so what's in it?** The spec never names one. Recommend defining a short, explicit list (e.g., passport + one national ID format) rather than trying to build a general document-family classifier immediately — but this is your call, not mine to assume. — see Decision 5.
 5. **What does `IDENTITY_CONSISTENCY` actually check?** No section defines its inputs or algorithm. Exact-match on OCR'd name vs. session-provided name? Fuzzy match? DOB tolerance? Cross-check against `ExternalIdentityProvider` when that's eventually built?
-6. **Should `DocumentFieldExtractionResult` stay a nested `dict[str, str]`, or become a flatter, per-identity-attribute schema?** Blocks or unblocks field-level policy conditions (§8). A nested dict is more flexible for unknown document layouts; a flat schema is more policy-expressive. This also interacts with Open Question 4 (a document-type catalog would let per-type field schemas exist).
-7. **One composite `EvidenceResult` vs. several typed rows per pipeline run (§6)?** Recommended: several, but this is Explicit Decision #2, not yet settled.
+6. ~~Should `DocumentFieldExtractionResult` stay a nested `dict[str, str]`, or become a flatter, per-identity-attribute schema?~~ **RESOLVED — Decision 7, FROZEN.**
+7. ~~One composite `EvidenceResult` vs. several typed rows per pipeline run (§6)?~~ **RESOLVED — Decision 2, FROZEN.**
+8. **The reusable-vs-retryable matrix per `EvidenceResultStatus`.** Decision 4 establishes that a reusable result must be reused and a non-reusable one may be retried-via-supersession, but doesn't define which statuses are which (e.g., is `INCONCLUSIVE` always retryable? Is `UNAVAILABLE` retryable only within some attempt budget, after which it becomes terminal?). Deliberately deferred to Phase 1 implementation/conformance work, not resolved during DP-001 reconciliation — carried forward here so it isn't lost.
 
 ---
 
@@ -378,25 +391,29 @@ Not deferred by the spec, but genuinely undefined by it (implementation-level de
 
 ```
 DocumentProcessor (orchestration, core/document/)
-        │
+        │  translates capability domain-results into EvidenceResult rows,
+        │  establishes source_reference/parent_evidence_result_ids,
+        │  handles retry-as-supersede
         ▼
-┌───────────────────────────┐
-│   Capability Ports         │   (interfaces only, core/document/)
-├───────────────────────────┤
-│ QualityAssessor             │
-│ DocumentClassifier          │
-│ OCREngine                   │
-│ MRZParser                   │
-│ BarcodeDecoder               │
-│ AuthenticityChecker (basic)  │
-└──────────────┬────────────┘
+┌────────────────────────────────────┐
+│   Capability Ports (domain results,  │  (interfaces, core/document/;
+│   never EvidenceResult)               │   DocumentProvider RETIRED)
+├────────────────────────────────────┤
+│ QualityAssessor       -> QualityAssessment      │
+│ DocumentClassifier    -> DocumentClassification │
+│ OCREngine             -> OCRExtraction          │  interface-only until
+│ MRZParser             -> MRZExtraction | Absent │  Open Q6 / Decision 5
+│ BarcodeDecoder        -> BarcodeExtraction|Absent│ resolved
+│ AuthenticityChecker   -> AuthenticityAssessment │
+└──────────────┬─────────────────────┘
                │
      ┌─────────┴─────────┐
      ▼                   ▼
 Deterministic         Real adapter
-baseline (Phase 1)    (Phase 2+, behind
-                       infrastructure/reliability's
-                       guarded_infer() wrapper)
+baseline               (Phase 3+, behind
+(QualityAssessor +     infrastructure/reliability-style
+ DocumentClassifier    guarded wrapper)
+ only, Phase 1)
                │
                ▼
      EvidenceResultService.create()  (existing, unmodified)
@@ -405,23 +422,129 @@ baseline (Phase 1)    (Phase 2+, behind
      Decision Engine  (existing, unmodified)
 ```
 
-This is Option C from §9, matches the existing `DocumentProvider` ABC's intent, requires zero changes to `EvidenceResultService`, `DecisionOrchestrator`, or any WF/DE/HV-frozen contract, and lets Phase 1 validate every open architectural question in §14 against a deterministic, fully-controllable stub before any real library or model is chosen.
+This is Decision 3 from §9/§16, requires zero changes to `EvidenceResultService`, `DecisionOrchestrator`, or any WF/DE/HV-frozen contract, and lets Phase 1 validate every open architectural question in §14 against two deterministic, fully-controllable capabilities before any real library, model, or field schema is chosen.
 
 ---
 
 ## 16. Explicit decisions requiring your approval
 
-**Decision 1 — Document `EvidenceResultType` classification.** Recommend reclassifying `DOCUMENT_QUALITY, DOCUMENT_CLASSIFICATION, OCR_EXTRACTION, DOCUMENT_FIELD_EXTRACTION, MRZ, BARCODE_QR, DOCUMENT_AUTHENTICITY` from `SENSITIVE` to `HIGHLY_SENSITIVE` in `core/evidence_result/classification.py`, matching Part XI §11.7's explicit language, before any real document content flows through the pipeline. `IDENTITY_CONSISTENCY` and `EXTERNAL_IDENTITY_PROVIDER` can plausibly stay `SENSITIVE` (they hold comparison/match outcomes, not raw extracted document content) — worth confirming per-type rather than blanket. This is a spec-conformance fix, not a design choice, but I'm not making it unilaterally per CLAUDE.md's conflict-resolution rule, and it wasn't part of this discovery's "no code changes" scope anyway.
+**Decision 1 — Document `EvidenceResultType` classification. FROZEN.**
 
-**Decision 2 — Composite vs. several `EvidenceResult` rows per pipeline run.** Recommend several typed rows with explicit lineage (§6), against a single composite result.
+> `OCR_EXTRACTION`, `MRZ`, `BARCODE_QR`, and `DOCUMENT_FIELD_EXTRACTION` are classified `HIGHLY_SENSITIVE`. `DOCUMENT_QUALITY`, `DOCUMENT_CLASSIFICATION`, `DOCUMENT_AUTHENTICITY`, `IDENTITY_CONSISTENCY`, and, provisionally, `EXTERNAL_IDENTITY_PROVIDER` remain `SENSITIVE`. Classification is determined by the sensitivity of the **persisted result payload**, not merely by the evidence type's domain — the same principle already governing biometrics (`FACE_EMBEDDING = HIGHLY_SENSITIVE`; `FACE_QUALITY/FACE_MATCH/FACE_DETECTION = SENSITIVE`). `EXTERNAL_IDENTITY_PROVIDER`, and any future per-symbology split of `BARCODE_QR` (e.g. an opaque-reference QR vs. a PDF417 encoding a full identity record), MUST be reassessed against this same payload-content test if their actual payload semantics change.
 
-**Decision 3 — Inference boundary shape.** Recommend Option C (capability ports + deterministic baseline first, real adapter later), per §9's comparative analysis.
+Rejected: the original blanket "all 7 document types → `HIGHLY_SENSITIVE`" proposal — it would have applied a document-domain exception to a classification model that is otherwise strictly payload-content-driven, over-encrypting three types (`DOCUMENT_QUALITY`, `DOCUMENT_CLASSIFICATION`, `DOCUMENT_AUTHENTICITY`) whose results carry only a score/label/signal-name, never an identity-field value. §11.7 (document *media*) and §11.5 (identity *data*) are two different sections governing two different things; the raw capture image is already correctly `HIGHLY_SENSITIVE` via `EncryptedObjectStorage`'s unconditional encryption regardless of this table, so this table's job is specifically to classify each *result's* payload, not to re-protect the media a second time.
 
-**Decision 4 — Where synchronous processing runs in the request lifecycle** (Open Question 1) — needs your call; this shapes `/submit`'s latency profile and whether `/document` upload itself becomes a slower call.
+Implementation consequence, deferred to Phase 1 (not done during DP-001): update `EVIDENCE_RESULT_CLASSIFICATION` in `core/evidence_result/classification.py` accordingly.
 
-**Decision 5 — Document-type catalog scope for v1.0** (Open Question 4) — needs an explicit, named list rather than an open-ended classifier target.
+**Decision 2 — Typed `EvidenceResult` Lineage. FROZEN.**
 
-**Decision 6 — Basic authenticity scope** (Open Question 2) — needs a concrete, minimal definition or an explicit "not built yet, reports NOT_REQUIRED" decision for Phase 1.
+> PaxLI MUST represent document-processing stages as several typed `EvidenceResult` rows rather than one composite document-processing result.
+>
+> A processing stage that directly reads a capture Evidence MUST identify that capture through `source_reference`.
+>
+> A processing stage that consumes one or more previously produced EvidenceResults MUST identify those upstream results through `parent_evidence_result_ids`.
+>
+> A stage MAY populate both fields when it directly examines the source capture and also consumes upstream processing results.
+>
+> `parent_evidence_result_ids` is type-agnostic and MAY reference EvidenceResults from other evidence domains where the processing stage semantically depends on them.
+>
+> A retry that produces a new result for an existing `(tenant_id, session_id, evidence_type)` stage MUST supersede the prior effective result rather than create a second effective result.
+>
+> Supersession MUST preserve valid tenant, session, evidence-type, and lineage boundaries.
+>
+> PaxLI MUST NOT introduce a separate pipeline-run or batch identifier for V1 document processing. Processing history MUST be reconstructable through the EvidenceResult lineage graph, supersession relationships, and capture `source_reference`.
+>
+> A first-class processing-run identifier MAY be introduced in a future architecture only where an independently identifiable processing execution becomes a required semantic or operational entity.
+
+Governing invariant for Phase 1 onward: **EvidenceResults form a provenance graph, not a bag of outputs.**
+
+**Decision 3 — Capability-Oriented Document Processing Boundary. FROZEN.**
+
+> The existing monolithic `DocumentProvider` abstraction (`core/document/provider.py`) is retired and MUST NOT be used as the document-processing boundary — its single `extract_evidence()` call cannot express Decision 2's independent per-stage failure/retry/supersession model.
+>
+> Document processing MUST expose independently replaceable capability ports for: `QualityAssessor`, `DocumentClassifier`, `OCREngine`, `MRZParser`, `BarcodeDecoder`, `AuthenticityChecker`.
+>
+> Each capability MUST have an independently defined **domain result** corresponding to its pipeline stage (e.g. `QualityAssessment`, `OCRExtraction` as plain domain types). Capability implementations MUST NOT directly own `EvidenceResult` persistence or lineage management, and MUST NOT be passed persistence identifiers (e.g. a classification `EvidenceResult`'s row ID) — only the domain-level value they need (e.g. `document_type: str`).
+>
+> `DocumentProcessor` MUST remain responsible for translating capability outputs into typed `EvidenceResult` records, establishing `source_reference` and `parent_evidence_result_ids` per Decision 2's wiring rule, handling supersession/retry semantics, and coordinating Decision Engine integration. `AuthenticityChecker.check(image, document_type)` receives the domain value `document_type` resolved by `DocumentProcessor` from the effective `DOCUMENT_CLASSIFICATION` result; the resulting `EvidenceResult`'s lineage (`parent_evidence_result_ids = (classification.id,)`) is recorded at the `DocumentProcessor`/persistence layer, never inside the capability call itself.
+>
+> Capability ports MUST permit deterministic and real implementations to be substituted without changing `DocumentProcessor` orchestration or its callers.
+>
+> Phase 1 MUST implement deterministic `QualityAssessor` and `DocumentClassifier` capabilities only. The `OCREngine`, `MRZParser`, `BarcodeDecoder`, and `AuthenticityChecker` ports MAY be interface-designed during Phase 1 but MUST NOT receive production implementations (deterministic or real) until the field-schema (Open Question 6) and document-catalog (Decision 5) decisions governing their outputs have been resolved.
+>
+> Real external/model-backed implementations MUST execute behind the established reliability boundary (`CircuitBreaker` + `RetryPolicy` + timeout + typed exception + metrics), mirroring `infrastructure/reliability/minio_policies.py`.
+>
+> A coarse-grained image-analysis port MUST NOT combine independently failing document-processing stages merely because they consume the same source image.
+
+Rejected: a coarser "one image-analysis port covering Quality+Classification+Authenticity" grouping — it would recreate exactly the coupling Decision 2 was frozen to eliminate (one call succeeding/failing as a unit, requiring a secondary internal protocol to recover independent stage semantics). We aren't delaying OCR because it's unimportant; we're delaying its *implementation* because its output contract hasn't been semantically frozen yet — the interface can exist now, the implementation waits.
+
+**Decision 4 — Synchronous Document Processing Boundary. FROZEN.**
+
+> Document processing MUST execute synchronously within `VerificationWorkflowService.submit()` while the session is in `PROCESSING`, immediately before `DecisionOrchestrator.evaluate_and_persist()` is invoked.
+>
+> Evidence-capture endpoints MUST remain processing-agnostic. Uploading a document, selfie, or liveness capture MUST NOT implicitly initiate the authoritative document-processing pipeline.
+>
+> `DocumentProcessor` MUST be idempotent and convergent across repeated `/submit` attempts. Before invoking a capability, it MUST determine whether a reusable effective `EvidenceResult` already exists for the applicable `(tenant_id, session_id, evidence_type)` stage. A reusable result MUST be reused rather than recomputed. A non-reusable result MAY be retried according to the applicable retry policy and MUST be superseded when a new attempt produces a replacement effective result. (The exact reusable-vs-retryable matrix per `EvidenceResultStatus` is carried forward as an open item, not resolved here — see §14.)
+>
+> Internal processing execution states required by WF-4.11/4.12 MAY exist ephemerally during a `/submit` attempt but MUST NOT require a persisted execution-state table in V1. The durable trace of stage outcome is the resulting `EvidenceResultStatus`, effective/superseded lineage, and audit events already established.
+>
+> Independent first-order document capabilities MAY execute concurrently because they consume the capture directly. Dependent stages MUST execute only after their required upstream EvidenceResults are available.
+>
+> **Implementation note (technical, not a separate decision):** "concurrent" here means each capability runs in its own `async with session_factory()` block and commits its own `EvidenceResult` independently — never multiple capabilities sharing one `AsyncSession` via `asyncio.gather()`, which SQLAlchemy does not support safely. This is not merely a technical constraint: independent per-capability transactions are the mechanism that makes partial-failure preservation (next bullet) true at the database level, not just at the application level — a shared transaction would roll back a successful stage's commit merely because a sibling stage failed inside the same transaction.
+>
+> Partial capability failure MUST preserve successfully produced EvidenceResults and MUST NOT cause successful stages to be discarded merely because another stage failed.
+>
+> Authoritative document processing MUST remain distinct from any future advisory upload-time quality or feedback capability (e.g. a client-facing "is this photo too blurry" check at capture time). Such a capability MAY be introduced later without changing the authoritative `/submit` processing boundary.
+>
+> Durable asynchronous processing, background workers, and persisted processing-job state remain deferred according to the existing architecture decisions (WF-4.34, TARGET v1.1).
+
+**Decision 5 — V1 Document-Type Catalog. FROZEN.**
+
+> PaxLI V1 MUST support the following document families, identified in `DocumentClassificationResult.document_type` by their **leaf/variant value** — `document_type` MUST use a controlled vocabulary, never an unrestricted free-form string, and carries exactly one of:
+>
+> - `STANDARD_NIN_SLIP` (family: `NIN_SLIP`)
+> - `IMPROVED_NIN_SLIP` (family: `NIN_SLIP`)
+> - `ICAO_PASSPORT_DATA_PAGE` (family: `ICAO_PASSPORT`)
+>
+> "Family" (`NIN_SLIP`, `ICAO_PASSPORT`) is a derived grouping/naming convention for documentation and conformance organization only — **not a second persisted field.** No downstream consumer (OCR, MRZ, field-extraction) needs family-level granularity; all extraction rules key off the specific leaf variant, so persisting both would be redundant state with its own consistency obligations for no consumer.
+>
+> `UNSUPPORTED` MUST NOT be represented as a document type. An unrecognized or unsupported document MUST instead produce a `DOCUMENT_CLASSIFICATION` result with `status=FAIL` and the reason code `DOCUMENT_UNSUPPORTED`.
+>
+> `DOCUMENT_UNSUPPORTED` MUST remain an evidence-level outcome and MUST NOT directly determine the session's final verification outcome. The Decision Engine MUST determine the final outcome according to the active policy.
+>
+> The V1 catalog MUST NOT imply support for document families not explicitly included in the catalog.
+>
+> `ICAO_PASSPORT_DATA_PAGE` MUST be modeled as an MRZ-bearing document and MUST therefore support the dedicated MRZ processing path established by the document-processing architecture.
+>
+> Additional document families MAY be added in future versions through explicit catalog and conformance changes.
+
+**Decision 6 — Basic Authenticity Scope. FROZEN.**
+
+> `DOCUMENT_AUTHENTICITY` receives no capability implementation in Phase 1 through Phase 4 of the V1 document-processing vertical slice. `AuthenticityChecker`'s port exists per Decision 3 but is not implemented.
+>
+> When a policy does not require `DOCUMENT_AUTHENTICITY`, it resolves to `NOT_REQUIRED`. When a policy requires it, the evidence stage resolves to `status = UNAVAILABLE` with reason code `AUTHENTICITY_CAPABILITY_UNAVAILABLE` — this is the evidence producer honestly reporting what it does not know. The Decision Engine, not the evidence stage, determines the session-level consequence (`REVIEW_REQUIRED`/`INCONCLUSIVE`/etc.) according to the active policy. `DOCUMENT_AUTHENTICITY` MUST NOT resolve to `PASS` by default or by omission.
+>
+> MRZ check-digit validation is NOT a `DOCUMENT_AUTHENTICITY` signal. A failing MRZ checksum is represented as `MRZ = FAIL` on the `MRZ` evidence type itself — a valid checksum establishes structural/data validity of the MRZ, not that the underlying document is genuine.
+>
+> Reused-image/duplicate-submission detection ("have we seen this artifact before?") is explicitly out of scope for `DOCUMENT_AUTHENTICITY` ("is this document genuine?") — a different question, and a separate, not-yet-designed capability if pursued.
+>
+> A genuine authenticity capability requires its own dedicated discovery, per DEF-9.15.3's conformance-assessment requirement, once a real signal beyond deferred territory (Part IX §9.15: chip/NFC, cryptographic, tamper, issuer-specific, expanded document families) is identified.
+
+**Architectural finding, not an implementation gap:** V1 does not implement document authenticity because the available V1 inputs (a 2D image, no physical sensor, two document families) do not provide a defensible authenticity signal outside the capabilities Part IX explicitly defers — not because it was overlooked. PaxLI can verify identity *evidence* (quality, classification, OCR/MRZ/barcode extraction, canonical field consistency, cross-evidence consistency, policy-driven decisioning, auditable provenance) without claiming to establish document *authenticity*; these are different capabilities, and the commercially dangerous move would be implying the former proves the latter.
+
+**Decision 7 — `DOCUMENT_FIELD_EXTRACTION` Schema Shape. FROZEN.**
+
+> `DOCUMENT_FIELD_EXTRACTION` uses a hybrid schema: controlled canonical top-level fields plus an opaque document-specific `extensions` map. Canonical fields: `full_name`, `surname`, `given_names`, `date_of_birth`, `sex`, `document_number`, `nationality`, `expiry_date`. Canonical fields not applicable to a document type, or whose decomposition cannot be reliably established from the source, are `null` rather than omitted or empty-stringed. `extensions: dict[str, str]` preserves document-specific fields outside the canonical vocabulary and is NOT directly addressable by Decision Engine policy conditions in V1 — no JSON-path-style traversal into it.
+>
+> `full_name` represents the canonical normalized whole-name value. `surname`/`given_names` represent independently supported name components and remain nullable where the source document doesn't provide a trustworthy decomposition. They are not required to reconstruct `full_name` for every document type.
+>
+> `document_number` is the canonical semantic slot for a document's primary identifying number (NIN for `NIN_SLIP`, passport number for `ICAO_PASSPORT_DATA_PAGE`), not a name specific to any one document type.
+>
+> When both `full_name` and `surname`/`given_names` are populated for the same result, the (still-unresolved) reconciliation algorithm MUST derive them consistently from the same normalization pass — they must not be independently reconciled and left free to diverge.
+>
+> `OCR_EXTRACTION`, `MRZ`, and `BARCODE_QR` retain their source-specific, non-canonical extraction representations — this decision governs only `DOCUMENT_FIELD_EXTRACTION`'s reconciled output. The cross-source reconciliation algorithm (normalization, conflict resolution, name-component derivation) remains a separate, unresolved architectural item.
+
+Rejected: narrowing the canonical list to 4 fields (deferring `sex`/`nationality`/`expiry_date` to `extensions` until a third document type demonstrated need). "Canonical" doesn't mean "every document type must contain this field" — it means "when a supported document expresses this semantic attribute, it has a standardized place in the reconciled representation." The two already-frozen document families (Decision 5) already demonstrate the need for all eight fields; waiting for a hypothetical third type would gain nothing. Also rejected: dropping `full_name` as "redundant" with `surname`/`given_names` — that reasoning (valid for Decision 5's family/variant question) doesn't transfer here, because `full_name` is NOT always derivable from the other two: for `NIN_SLIP`, where decomposition isn't trustworthy, `full_name` is the only available canonical name representation.
 
 ---
 
@@ -429,13 +552,13 @@ This is Option C from §9, matches the existing `DocumentProvider` ABC's intent,
 
 **Phase 0 (this document).** Discovery and reconciliation. No code.
 
-**Phase 1 — Deterministic vertical slice.** Capability ports + deterministic stub implementations for `DocumentQuality`, `DocumentClassification`, `OCRExtraction` only (the two types with at least placeholder precedent, plus classification as the natural next step). `DocumentProcessor` orchestration wired into wherever Decision 4 lands. Real `EvidenceResult` rows, real lineage (`source_reference`/`parent_evidence_result_ids`), real policy evaluation against them — end to end, but with deterministic (not ML) outputs. This directly closes the "generic mechanism test only" gap the repo inventory found for every document type.
+**Phase 1 — Deterministic vertical slice (FROZEN scope, per Decisions 3 and 4).** All six capability ports interface-designed; only `QualityAssessor` and `DocumentClassifier` get deterministic implementations. `DocumentProcessor` orchestration wired into `VerificationWorkflowService.submit()`'s `PROCESSING` branch, immediately before `evaluate_and_persist()`, per Decision 4 — capture endpoints stay unmodified. Real `EvidenceResult` rows (`DOCUMENT_QUALITY`, `DOCUMENT_CLASSIFICATION`) with real lineage (`source_reference`), real policy evaluation against them — end to end, but with deterministic (not ML) outputs, and no OCR-shaped schema blessed prematurely. This directly closes the "generic mechanism test only" gap the repo inventory found for every document type, for these two.
 
-**Phase 2 — MRZ + Barcode/QR.** Add the two remaining, currently zero-coverage evidence types, with the field-reconciliation question (Open Question 6) resolved by this point since `DOCUMENT_FIELD_EXTRACTION` needs OCR+MRZ+barcode inputs.
+**Phase 2 — Field-schema and document-catalog decisions land** (Decisions 5 and 7, both now frozen), unblocking `OCREngine`/`MRZParser`/`BarcodeDecoder` implementations. Deterministic implementations for all three, plus `DOCUMENT_FIELD_EXTRACTION` reconciliation across their outputs (`parent_evidence_result_ids` spanning OCR/MRZ/barcode per Decision 2) — the reconciliation *algorithm* itself (normalization, conflict resolution, name-component derivation) is designed in this phase, not before.
 
 **Phase 3 — Real adapter for at least one capability** (most likely OCR, as the highest-value real signal), behind the same port, validated against the deterministic baseline's contract.
 
-**Phase 4 — Basic `DocumentAuthenticity` and `IdentityConsistency`**, once Decisions 5/6 and Open Question 5 are settled.
+**Phase 4 — `IdentityConsistency`**, once Open Question 5 (its inputs/algorithm) is settled. `DocumentAuthenticity` is explicitly NOT implemented in this phase or any phase of this vertical slice, per Decision 6 — it remains an unimplemented capability pending a dedicated future discovery once a real signal beyond deferred territory exists.
 
 Each phase gets its own hostile-validation pass once built, following the exact HV-XXX discipline this session established — not bundled into one giant HV-010.
 
