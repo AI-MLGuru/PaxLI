@@ -16,6 +16,7 @@ Skipped when Postgres and/or MinIO aren't reachable, mirroring
 tests/integration/test_evidence_submission_failure_injection.py.
 """
 
+import asyncio
 import socket
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlparse
@@ -23,6 +24,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.paxli_api.config import get_settings
 from core.audit.service import AuditService
@@ -349,6 +351,53 @@ async def test_ambiguous_captures_produce_inconclusive_without_invoking_any_capa
             assert result.source_reference is None  # no single capture to attribute to
 
 
+async def test_concurrent_process_calls_converge_on_one_effective_result_per_type() -> None:
+    """HV-010: two concurrent process() calls for the same session (the
+    real-world shape of a client double-submitting, or WF-006's GET-
+    triggered PROCESSING recovery racing a still-in-flight /submit) must
+    not both reach create() for the same (session_id, evidence_type) --
+    the partial unique index on is_effective is the final backstop, but a
+    raw IntegrityError surfacing out of DocumentProcessor.process() would
+    still be a real defect this test rules out directly, mirroring
+    test_submit_api_wiring.py's own concurrent-convergence proof one layer
+    up."""
+    tenant_id = f"tenant-docproc-race-{uuid4()}"
+    key_id = f"key-{uuid4()}"
+    storage = _storage(key_id)
+
+    async with session_factory() as session:
+        session_id = await _create_session(session, tenant_id)
+        capture_id = await _upload_document(
+            session, tenant_id, session_id, storage,
+            MINIMAL_JPEG_BYTES + b"0" * 2000 + b"PAXLI_TEST_STANDARD_NIN_SLIP",
+        )
+        await session.commit()
+
+    processor_a = _processor(key_id, storage)
+    processor_b = _processor(key_id, storage)
+
+    await asyncio.gather(
+        processor_a.process(session_id=UUID(session_id), tenant_id=tenant_id),
+        processor_b.process(session_id=UUID(session_id), tenant_id=tenant_id),
+    )
+
+    async with session_factory() as session:
+        for evidence_type in ("DOCUMENT_QUALITY", "DOCUMENT_CLASSIFICATION"):
+            effective_rows = await session.execute(
+                select(EvidenceResultRecord).where(
+                    EvidenceResultRecord.session_id == session_id,
+                    EvidenceResultRecord.evidence_type == evidence_type,
+                    EvidenceResultRecord.is_effective.is_(True),
+                )
+            )
+            rows = effective_rows.scalars().all()
+            assert len(rows) == 1, (
+                f"{evidence_type}: expected exactly one effective row, got {len(rows)}"
+            )
+            assert rows[0].status == EvidenceResultStatus.PASS.value
+            assert rows[0].source_reference == str(capture_id)
+
+
 async def test_retry_does_not_recompute_an_already_reusable_result() -> None:
     tenant_id = f"tenant-docproc-convergence-{uuid4()}"
     key_id = f"key-{uuid4()}"
@@ -564,3 +613,122 @@ async def test_document_unsupported_lets_policy_not_document_processor_decide_ou
 
     assert rejected is DecisionOutcome.REJECTED
     assert review_required is DecisionOutcome.REVIEW_REQUIRED
+
+
+async def test_concurrent_submit_with_a_real_document_converges_on_one_decision() -> None:
+    """HV-010 category 5: the SAME race
+    test_submit_api_wiring.py's test_workflow_service_di_wiring_concurrent_
+    submit_converges already proves at the workflow-DI level, but that
+    test uploads no evidence at all, so DocumentProcessor always took its
+    zero-captures no-op path there -- it never actually exercised
+    DocumentProcessor under concurrency. workflow.py's submit() has no CAS
+    gate immediately around document_processor.process() itself: the CAS
+    transition into PROCESSING only gates WHICH caller performs that one
+    hop, but both a winner that just transitioned in and a caller that
+    independently finds the session already sitting in PROCESSING land in
+    the same branch and both call document_processor.process() -- so this
+    race is genuinely reachable through the real submit() entrypoint, not
+    a scenario invented only at the DocumentProcessor layer. With a real
+    DOCUMENT evidence capture present, drives two full concurrent
+    submit() calls through the DI-equivalent stack and confirms they
+    converge on one decision AND exactly one effective row per document
+    evidence-result type, closing the loop from the isolated
+    DocumentProcessor-level proof
+    (test_concurrent_process_calls_converge_on_one_effective_result_per_type)
+    up through the real public entrypoint."""
+    tenant_id = f"tenant-docproc-submit-race-{uuid4()}"
+    key_id = f"key-{uuid4()}"
+    storage = _storage(key_id)
+    key_provider = LocalAesGcmKeyProvider({key_id: b"0" * 32})
+
+    async with session_factory() as session:
+        policy_service = PolicyService(
+            SqlAlchemyVerificationPolicyRepository(session),
+            AuditService(SqlAlchemyAuditEventRepository(session)),
+            EvidenceResultSchemaCatalog(),
+        )
+        await policy_service.create_and_activate(
+            tenant_id=tenant_id,
+            policy_id="policy-docproc-submit-race",
+            assurance_level=AssuranceLevel.STANDARD,
+            created_by="admin",
+            default_outcome=DecisionOutcome.INCONCLUSIVE,
+        )
+        session_service = VerificationSessionService(
+            SqlAlchemyVerificationSessionRepository(session),
+            audit_service=AuditService(SqlAlchemyAuditEventRepository(session)),
+            policy_service=policy_service,
+            session_ttl_minutes=30,
+        )
+        created_session = await session_service.create(
+            tenant_id=tenant_id, external_reference=None, assurance_level=AssuranceLevel.STANDARD
+        )
+        await session.commit()
+
+    async with session_factory() as session:
+        capture_id = await _upload_document(
+            session, tenant_id, str(created_session.id), storage,
+            MINIMAL_JPEG_BYTES + b"0" * 2000 + b"PAXLI_TEST_STANDARD_NIN_SLIP",
+        )
+        await session.commit()
+
+    def _build_workflow(session: AsyncSession) -> VerificationWorkflowService:
+        policy_service = PolicyService(
+            SqlAlchemyVerificationPolicyRepository(session),
+            AuditService(SqlAlchemyAuditEventRepository(session)),
+            EvidenceResultSchemaCatalog(),
+        )
+        session_service = VerificationSessionService(
+            SqlAlchemyVerificationSessionRepository(session),
+            audit_service=AuditService(SqlAlchemyAuditEventRepository(session)),
+            policy_service=policy_service,
+            session_ttl_minutes=30,
+        )
+        evidence_result_service = EvidenceResultService(
+            SqlAlchemyEvidenceResultRepository(session, key_provider, key_id),
+            AuditService(SqlAlchemyAuditEventRepository(session)),
+            SqlAlchemyEvidenceRepository(session),
+        )
+        audit_service = AuditService(SqlAlchemyAuditEventRepository(session))
+        persistence_service = DecisionPersistenceService(
+            SqlAlchemyDecisionRepository(session), audit_service
+        )
+        orchestrator = DecisionOrchestrator(
+            session_service, policy_service, evidence_result_service,
+            persistence_service, audit_service,
+        )
+        document_processor = SqlAlchemyDocumentProcessor(
+            session_factory, key_provider, key_id, storage,
+            DeterministicQualityAssessor(), DeterministicDocumentClassifier(),
+        )
+        return VerificationWorkflowService(
+            session_service, orchestrator, audit_service, document_processor
+        )
+
+    async def _submit_attempt() -> UUID:
+        async with session_factory() as session:
+            workflow = _build_workflow(session)
+            _session, decision = await workflow.submit(
+                session_id=created_session.id, tenant_id=tenant_id
+            )
+            await session.commit()
+            return decision.decision_id
+
+    decision_ids = await asyncio.gather(_submit_attempt(), _submit_attempt())
+    assert decision_ids[0] == decision_ids[1]
+
+    async with session_factory() as session:
+        for evidence_type in ("DOCUMENT_QUALITY", "DOCUMENT_CLASSIFICATION"):
+            effective_rows = (
+                await session.execute(
+                    select(EvidenceResultRecord).where(
+                        EvidenceResultRecord.session_id == str(created_session.id),
+                        EvidenceResultRecord.evidence_type == evidence_type,
+                        EvidenceResultRecord.is_effective.is_(True),
+                    )
+                )
+            ).scalars().all()
+            assert len(effective_rows) == 1, (
+                f"{evidence_type}: expected exactly one effective row, got {len(effective_rows)}"
+            )
+            assert effective_rows[0].source_reference == str(capture_id)

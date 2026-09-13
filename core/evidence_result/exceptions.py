@@ -26,6 +26,18 @@ class InvalidSupersessionError(ValueError):
     evidence input for a session it has no authority over."""
 
 
+class EffectiveResultAlreadyExistsError(Exception):
+    """Raised by the repository's add() when a concurrent create() for the
+    same (tenant_id, session_id, evidence_type) already won the race for
+    the partial unique index on is_effective (HV-010): under READ
+    COMMITTED, two callers can both see "no existing effective result" and
+    both attempt create() before either commits. The database, not
+    application logic, is the final arbiter here (same DE-003 §14
+    philosophy as DecisionAlreadyExistsError) -- EvidenceResultService.
+    create() catches this and converges on whichever attempt actually won,
+    rather than letting a raw IntegrityError escape to the caller."""
+
+
 class InvalidProvenanceReferenceError(ValueError):
     """Raised by EvidenceResultService.create() when a caller-supplied
     `source_reference` or `parent_evidence_result_ids` entry does not

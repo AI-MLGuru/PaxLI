@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.deletion.exceptions import DeletionAlreadyRequestedError, TombstoneNotFoundError
 from core.evidence_result.classification import classify
 from core.evidence_result.enums import EvidenceResultStatus, EvidenceResultType
+from core.evidence_result.exceptions import EffectiveResultAlreadyExistsError
 from core.evidence_result.models import EvidenceResult, EvidenceResultTombstone, ModelReference
 from core.security.classification import DataClassification
 from core.security.keys import KeyProvider
@@ -37,9 +38,34 @@ class SqlAlchemyEvidenceResultRepository:
     async def add(
         self, evidence_result: EvidenceResult, idempotency_key: str | None = None
     ) -> EvidenceResult:
+        """Uses a SAVEPOINT (`begin_nested()`) around the insert, same
+        shape as SqlAlchemyDecisionRepository.add(): confines a partial-
+        unique-index violation's rollback to just this insert, so the
+        caller's whole request-scoped session/transaction survives it
+        intact for EvidenceResultService.create()'s recovery fetch (HV-010).
+
+        idempotency_key is NULL for every non-idempotent create() (SQL
+        NULL is never equal to itself in a unique constraint), so when it
+        is None here the only unique constraint this INSERT could possibly
+        violate is the one-effective-per-type partial index -- translated
+        to EffectiveResultAlreadyExistsError. When idempotency_key is
+        supplied, a conflict could instead be the separate
+        (tenant_id, session_id, idempotency_key) constraint; that path is
+        unchanged (raises IntegrityError as before) since it is a
+        different, not-yet-confirmed race this fix does not address."""
         record = await self._to_record(evidence_result, idempotency_key)
-        self.session.add(record)
-        await self.session.flush()
+        try:
+            async with self.session.begin_nested():
+                self.session.add(record)
+                await self.session.flush()
+        except IntegrityError as exception:
+            if idempotency_key is None:
+                raise EffectiveResultAlreadyExistsError(
+                    f"an effective {evidence_result.evidence_type.value} result already "
+                    f"exists for tenant={evidence_result.tenant_id!r} "
+                    f"session_id={evidence_result.session_id!s}"
+                ) from exception
+            raise
         return await self._to_domain(record)
 
     async def get_by_idempotency_key(

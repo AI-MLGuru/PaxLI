@@ -13,6 +13,7 @@ from core.deletion.validation import validate_deletion_request
 from core.evidence.repository import EvidenceRepository
 from core.evidence_result.enums import EvidenceResultStatus, EvidenceResultType
 from core.evidence_result.exceptions import (
+    EffectiveResultAlreadyExistsError,
     EvidenceResultNotFoundError,
     InvalidProvenanceReferenceError,
     InvalidSupersessionError,
@@ -219,7 +220,29 @@ class EvidenceResultService:
             ),
             retention_until=retention_until,
         )
-        saved = await self.repository.add(evidence_result, composed_idempotency_key)
+        try:
+            saved = await self.repository.add(evidence_result, composed_idempotency_key)
+        except EffectiveResultAlreadyExistsError:
+            # A concurrent create() for the same (tenant_id, session_id,
+            # evidence_type) won the race (HV-010) -- success, not this
+            # attempt's failure, same DE-003 §14 philosophy as
+            # DecisionPersistenceService.persist()'s identical recovery.
+            # The winner's own EVIDENCE_RESULT_CREATED audit event already
+            # covers "a result was produced for this type," so nothing new
+            # is recorded here.
+            existing = await self.get_effective_for_session_by_type(
+                session_id=session_id, tenant_id=tenant_id, evidence_type=evidence_type
+            )
+            if existing is None:
+                # Under READ COMMITTED a unique-index conflict on our own
+                # INSERT can only be raised once the conflicting row's
+                # transaction has already committed -- so this branch
+                # should be unreachable in normal operation. Surfacing the
+                # error rather than fabricating a result keeps that
+                # assumption honest, matching DecisionPersistenceService.
+                # persist()'s identical "should be unreachable" branch.
+                raise
+            return existing
         await self.audit_service.record(
             tenant_id=tenant_id,
             session_id=session_id,
