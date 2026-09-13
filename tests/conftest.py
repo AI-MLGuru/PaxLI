@@ -1,3 +1,5 @@
+import os
+import tempfile
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
@@ -6,14 +8,16 @@ import pytest
 import pytest_asyncio
 from fastapi import Depends
 from fastapi.testclient import TestClient
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.pool import StaticPool
 
 from apps.api.paxli_api.config import Settings, get_settings
 from apps.api.paxli_api.dependencies import (
     get_evidence_result_service,
     get_evidence_service,
+    get_object_storage,
     get_rate_limiter,
+    get_session_factory,
 )
 from apps.api.paxli_api.main import app
 from core.audit.service import AuditService
@@ -81,15 +85,52 @@ class AlwaysAllowRateLimiter:
 
 @pytest_asyncio.fixture
 async def db_engine():
+    """A per-test temp-file SQLite database, not a private `:memory:` one
+    -- required since DocumentProcessor (DP-001 Decision 4) opens its own
+    independent session(s) beyond whatever ambient request-scoped session
+    an api_client call already holds open for the whole request. A
+    single-connection StaticPool (this fixture's original approach)
+    cannot serve both the ambient session and DocumentProcessor's own at
+    once -- confirmed live as a genuine deadlock, not assumed.
+
+    A shared-cache in-memory database (`file::memory:?cache=shared`) was
+    tried first and rejected: it allows multiple simultaneous connections
+    in principle, but produced a genuine Windows access violation inside
+    SQLAlchemy's ORM session internals under real concurrent access from
+    this project's async stack -- a serious, not merely inconvenient,
+    failure mode, confirmed via a minimal reproduction outside pytest
+    before being ruled out. A real temp file, letting SQLite's normal
+    file-level concurrency control do its job, does not exhibit this;
+    confirmed via the same kind of minimal reproduction before adopting
+    it here."""
+    path = os.path.join(tempfile.gettempdir(), f"pytest_{uuid4().hex}.sqlite3")
     engine = create_async_engine(
-        "sqlite+aiosqlite:///:memory:",
-        poolclass=StaticPool,
+        f"sqlite+aiosqlite:///{path}",
         connect_args={"check_same_thread": False},
     )
+
+    # A real file's normal single-writer locking, discovered immediately
+    # after switching away from in-memory SQLite: concurrent sessions
+    # (the ambient request session plus DocumentProcessor's own) now hit
+    # genuine "database is locked" errors under SQLite's default
+    # rollback-journal mode. WAL mode allows one writer alongside
+    # concurrent readers without that contention; busy_timeout makes any
+    # remaining brief lock wait retry for up to 5s instead of failing
+    # immediately. Registered on the sync engine's "connect" event so
+    # every pooled connection gets both pragmas, not just the first.
+    @event.listens_for(engine.sync_engine, "connect")
+    def _set_sqlite_pragmas(dbapi_connection, connection_record):  # noqa: ANN001
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA busy_timeout=5000")
+        cursor.close()
+
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
     yield engine
     await engine.dispose()
+    if os.path.exists(path):
+        os.remove(path)
 
 
 @pytest.fixture
@@ -157,8 +198,23 @@ async def api_client(session_factory, raw_storage):
 
     key_provider = LocalAesGcmKeyProvider({"test-evidence-key": b"0" * 32})
 
+    # Depends(get_db_session) here, NOT Depends(override_get_db_session):
+    # FastAPI's dependency cache key is the declared `call` as WRITTEN in
+    # each Depends() marker, resolved to its override (if any) only at
+    # invocation time -- it does not unify two different declared
+    # dependencies just because they both happen to override to the same
+    # function. get_audit_service/get_credential_service elsewhere declare
+    # Depends(get_db_session); declaring Depends(override_get_db_session)
+    # here instead made FastAPI treat this as a SEPARATE, uncached
+    # dependency, so every request opened a second independent session/
+    # connection alongside the real ambient one. Under the old
+    # single-connection StaticPool SQLite setup the two sessions silently
+    # shared the same underlying DBAPI connection and this went unnoticed;
+    # switching to a real multi-connection temp-file database turned it
+    # into a genuine two-writer SQLite lock (confirmed live via connection-
+    # identity tracing, not assumed).
     async def override_get_evidence_service(
-        db_session: AsyncSession = Depends(override_get_db_session),  # noqa: B008
+        db_session: AsyncSession = Depends(get_db_session),  # noqa: B008
         settings: Settings = Depends(get_settings),  # noqa: B008
     ) -> AsyncIterator[EvidenceService]:
         session_repository = SqlAlchemyVerificationSessionRepository(db_session)
@@ -176,7 +232,7 @@ async def api_client(session_factory, raw_storage):
         )
 
     async def override_get_evidence_result_service(
-        db_session: AsyncSession = Depends(override_get_db_session),  # noqa: B008
+        db_session: AsyncSession = Depends(get_db_session),  # noqa: B008
     ) -> AsyncIterator[EvidenceResultService]:
         yield EvidenceResultService(
             SqlAlchemyEvidenceResultRepository(db_session, key_provider, "test-evidence-key"),
@@ -191,6 +247,16 @@ async def api_client(session_factory, raw_storage):
     app.dependency_overrides[get_evidence_service] = override_get_evidence_service
     app.dependency_overrides[get_evidence_result_service] = override_get_evidence_result_service
     app.dependency_overrides[get_rate_limiter] = lambda: AlwaysAllowRateLimiter()
+    # DocumentProcessor (via get_workflow_service) opens its OWN independent
+    # sessions/storage beyond the single ambient db_session (DP-001 Decision
+    # 4) -- get_db_session's override alone doesn't reach those, since they
+    # aren't sub-dependencies of it. Without these two, DocumentProcessor
+    # would silently talk to the real Postgres/MinIO backends on every
+    # /submit call in every SQLite-backed test.
+    app.dependency_overrides[get_session_factory] = lambda: session_factory
+    app.dependency_overrides[get_object_storage] = lambda: EncryptedObjectStorage(
+        raw_storage, key_provider, "test-evidence-key"
+    )
     original_db_session_factory = app.state.db_session_factory
     app.state.db_session_factory = session_factory
     try:
