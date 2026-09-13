@@ -8,7 +8,9 @@ from core.audit.service import AuditService
 from core.decision.orchestration import DecisionOrchestrator
 from core.decision.persistence import DecisionPersistenceService
 from core.document.deterministic import (
+    DeterministicBarcodeDecoder,
     DeterministicDocumentClassifier,
+    DeterministicMRZParser,
     DeterministicQualityAssessor,
 )
 from core.evidence.service import EvidenceService
@@ -212,6 +214,8 @@ async def get_workflow_service(
         document_storage,
         DeterministicQualityAssessor(),
         DeterministicDocumentClassifier(),
+        DeterministicMRZParser(),
+        DeterministicBarcodeDecoder(),
     )
     yield VerificationWorkflowService(
         session_service, orchestrator, audit_service, document_processor

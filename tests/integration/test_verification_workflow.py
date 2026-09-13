@@ -22,7 +22,9 @@ from core.decision.enums import DecisionOutcome, EngineReasonCode, EvaluationRea
 from core.decision.orchestration import DecisionOrchestrator
 from core.decision.persistence import DecisionPersistenceService
 from core.document.deterministic import (
+    DeterministicBarcodeDecoder,
     DeterministicDocumentClassifier,
+    DeterministicMRZParser,
     DeterministicQualityAssessor,
 )
 from core.evidence.enums import EvidenceType
@@ -123,6 +125,8 @@ def _services(session):
         _evidence_storage(),
         DeterministicQualityAssessor(),
         DeterministicDocumentClassifier(),
+        DeterministicMRZParser(),
+        DeterministicBarcodeDecoder(),
     )
     workflow = VerificationWorkflowService(
         session_service, orchestrator, audit_service, document_processor

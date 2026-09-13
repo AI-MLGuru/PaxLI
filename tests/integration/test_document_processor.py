@@ -32,12 +32,16 @@ from core.decision.enums import DecisionOutcome
 from core.decision.orchestration import DecisionOrchestrator
 from core.decision.persistence import DecisionPersistenceService
 from core.document.capabilities import (
+    BarcodeDecoder,
     CapabilityUnavailableError,
     DocumentClassifier,
+    MRZParser,
     QualityAssessor,
 )
 from core.document.deterministic import (
+    DeterministicBarcodeDecoder,
     DeterministicDocumentClassifier,
+    DeterministicMRZParser,
     DeterministicQualityAssessor,
 )
 from core.document.types import DocumentClassification, QualityAssessment
@@ -70,6 +74,13 @@ from infrastructure.storage.encrypted import EncryptedObjectStorage
 from infrastructure.storage.minio import MinioObjectStorage
 
 MINIMAL_JPEG_BYTES = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"
+
+# The canonical ICAO Doc 9303 Part 4 reference MRZ (Anna Maria Eriksson) --
+# same vector as tests/unit/test_mrz.py, reproduced here so this file's
+# integration tests don't depend on unit-test module internals.
+_MRZ_LINE1 = "P<UTOERIKSSON<<ANNA<MARIA" + "<" * (44 - len("P<UTOERIKSSON<<ANNA<MARIA"))
+_MRZ_LINE2 = "L898902C36UTO7408122F1204159ZE184226B<<<<<10"
+_MRZ_VALID_RAW = _MRZ_LINE1 + _MRZ_LINE2
 
 
 def _postgres_reachable() -> bool:
@@ -163,6 +174,8 @@ def _processor(
     storage,
     quality_assessor: QualityAssessor | None = None,
     document_classifier: DocumentClassifier | None = None,
+    mrz_parser: MRZParser | None = None,
+    barcode_decoder: BarcodeDecoder | None = None,
 ) -> SqlAlchemyDocumentProcessor:
     key_provider = LocalAesGcmKeyProvider({key_id: b"0" * 32})
     return SqlAlchemyDocumentProcessor(
@@ -172,6 +185,8 @@ def _processor(
         storage,
         quality_assessor or DeterministicQualityAssessor(),
         document_classifier or DeterministicDocumentClassifier(),
+        mrz_parser or DeterministicMRZParser(),
+        barcode_decoder or DeterministicBarcodeDecoder(),
     )
 
 
@@ -226,6 +241,31 @@ class _BuggyQualityAssessor(QualityAssessor):
 
     async def assess(self, image: bytes) -> QualityAssessment:
         raise AttributeError("simulated programming defect, not a known capability failure")
+
+
+class _CountingMRZParser(MRZParser):
+    def __init__(self, delegate: MRZParser) -> None:
+        self.calls = 0
+        self._delegate = delegate
+
+    async def parse(self, image: bytes):
+        self.calls += 1
+        return await self._delegate.parse(image)
+
+
+class _CountingBarcodeDecoder(BarcodeDecoder):
+    def __init__(self, delegate: BarcodeDecoder) -> None:
+        self.calls = 0
+        self._delegate = delegate
+
+    async def decode(self, image: bytes):
+        self.calls += 1
+        return await self._delegate.decode(image)
+
+
+class _UnavailableMRZParser(MRZParser):
+    async def parse(self, image: bytes):
+        raise CapabilityUnavailableError("MODEL_UNAVAILABLE")
 
 
 async def test_full_round_trip_produces_correct_quality_and_classification() -> None:
@@ -333,18 +373,26 @@ async def test_ambiguous_captures_produce_inconclusive_without_invoking_any_capa
 
     quality_assessor = _CountingQualityAssessor(DeterministicQualityAssessor())
     document_classifier = _CountingDocumentClassifier(DeterministicDocumentClassifier())
-    processor = _processor(key_id, storage, quality_assessor, document_classifier)
+    mrz_parser = _CountingMRZParser(DeterministicMRZParser())
+    barcode_decoder = _CountingBarcodeDecoder(DeterministicBarcodeDecoder())
+    processor = _processor(
+        key_id, storage, quality_assessor, document_classifier, mrz_parser, barcode_decoder
+    )
     await processor.process(session_id=UUID(session_id), tenant_id=tenant_id)
 
     assert quality_assessor.calls == 0  # precondition short-circuits before any capability runs
     assert document_classifier.calls == 0
+    assert mrz_parser.calls == 0
+    assert barcode_decoder.calls == 0
 
     async with session_factory() as session:
         quality = await _effective_result(session, session_id, tenant_id, "DOCUMENT_QUALITY")
         classification = await _effective_result(
             session, session_id, tenant_id, "DOCUMENT_CLASSIFICATION"
         )
-        for result in (quality, classification):
+        mrz = await _effective_result(session, session_id, tenant_id, "MRZ")
+        barcode = await _effective_result(session, session_id, tenant_id, "BARCODE_QR")
+        for result in (quality, classification, mrz, barcode):
             assert result is not None
             assert result.status == EvidenceResultStatus.INCONCLUSIVE.value
             assert result.reason_codes_json == ["AMBIGUOUS_DOCUMENT_CAPTURE"]
@@ -471,15 +519,56 @@ async def test_retry_does_not_recompute_an_already_reusable_result() -> None:
 
     quality_assessor = _CountingQualityAssessor(DeterministicQualityAssessor())
     document_classifier = _CountingDocumentClassifier(DeterministicDocumentClassifier())
-    processor = _processor(key_id, storage, quality_assessor, document_classifier)
+    mrz_parser = _CountingMRZParser(DeterministicMRZParser())
+    barcode_decoder = _CountingBarcodeDecoder(DeterministicBarcodeDecoder())
+    processor = _processor(
+        key_id, storage, quality_assessor, document_classifier, mrz_parser, barcode_decoder
+    )
 
     await processor.process(session_id=UUID(session_id), tenant_id=tenant_id)
     assert quality_assessor.calls == 1
     assert document_classifier.calls == 1
+    assert mrz_parser.calls == 1
+    assert barcode_decoder.calls == 1
 
     await processor.process(session_id=UUID(session_id), tenant_id=tenant_id)
     assert quality_assessor.calls == 1  # NOT recomputed -- PASS is terminal/reusable
     assert document_classifier.calls == 1
+    # No MRZ/barcode marker on this fixture -> NOT_SUBMITTED -- DP-003
+    # Decision 9's terminal/reusable claim confirmed directly, not assumed.
+    assert mrz_parser.calls == 1
+    assert barcode_decoder.calls == 1
+
+
+async def test_mrz_pass_result_is_not_recomputed_on_retry() -> None:
+    """DP-003 Decision 9 for the VALID/PASS branch specifically -- the
+    prior test proves NOT_SUBMITTED's reusability; this proves a real
+    successful MRZ read is equally terminal, not just the absence case."""
+    tenant_id = f"tenant-docproc-mrz-convergence-{uuid4()}"
+    key_id = f"key-{uuid4()}"
+    storage = _storage(key_id)
+
+    async with session_factory() as session:
+        session_id = await _create_session(session, tenant_id)
+        marker = b"PAXLI_TEST_MRZ:" + _MRZ_VALID_RAW.encode("ascii")
+        await _upload_document(
+            session, tenant_id, session_id, storage,
+            MINIMAL_JPEG_BYTES + b"0" * 2000 + b"PAXLI_TEST_ICAO_PASSPORT_DATA_PAGE" + marker,
+        )
+        await session.commit()
+
+    mrz_parser = _CountingMRZParser(DeterministicMRZParser())
+    processor = _processor(key_id, storage, mrz_parser=mrz_parser)
+
+    await processor.process(session_id=UUID(session_id), tenant_id=tenant_id)
+    assert mrz_parser.calls == 1
+    async with session_factory() as session:
+        mrz = await _effective_result(session, session_id, tenant_id, "MRZ")
+        assert mrz is not None
+        assert mrz.status == EvidenceResultStatus.PASS.value
+
+    await processor.process(session_id=UUID(session_id), tenant_id=tenant_id)
+    assert mrz_parser.calls == 1  # NOT recomputed
 
 
 async def test_capability_unavailable_error_produces_unavailable_result_and_is_retryable() -> None:
@@ -527,6 +616,191 @@ async def test_capability_unavailable_error_produces_unavailable_result_and_is_r
             )
         )
         assert len(result.scalars().all()) == 1
+
+
+async def test_mrz_unavailable_result_is_retryable_and_superseded_by_real_attempt() -> None:
+    tenant_id = f"tenant-docproc-mrz-unavailable-{uuid4()}"
+    key_id = f"key-{uuid4()}"
+    storage = _storage(key_id)
+
+    async with session_factory() as session:
+        session_id = await _create_session(session, tenant_id)
+        marker = b"PAXLI_TEST_MRZ:" + _MRZ_VALID_RAW.encode("ascii")
+        await _upload_document(
+            session, tenant_id, session_id, storage,
+            MINIMAL_JPEG_BYTES + b"0" * 2000 + b"PAXLI_TEST_ICAO_PASSPORT_DATA_PAGE" + marker,
+        )
+        await session.commit()
+
+    failing_processor = _processor(key_id, storage, mrz_parser=_UnavailableMRZParser())
+    await failing_processor.process(session_id=UUID(session_id), tenant_id=tenant_id)
+
+    async with session_factory() as session:
+        mrz = await _effective_result(session, session_id, tenant_id, "MRZ")
+        assert mrz is not None
+        assert mrz.status == EvidenceResultStatus.UNAVAILABLE.value
+        assert mrz.reason_codes_json == ["MODEL_UNAVAILABLE"]
+        first_attempt_id = mrz.id
+
+    working_processor = _processor(key_id, storage)
+    await working_processor.process(session_id=UUID(session_id), tenant_id=tenant_id)
+
+    async with session_factory() as session:
+        mrz = await _effective_result(session, session_id, tenant_id, "MRZ")
+        assert mrz is not None
+        assert mrz.status == EvidenceResultStatus.PASS.value
+        assert mrz.id != first_attempt_id
+        assert mrz.supersedes_id == first_attempt_id
+
+        result = await session.execute(
+            select(EvidenceResultRecord).where(
+                EvidenceResultRecord.session_id == session_id,
+                EvidenceResultRecord.evidence_type == "MRZ",
+                EvidenceResultRecord.is_effective.is_(True),
+            )
+        )
+        assert len(result.scalars().all()) == 1
+
+
+async def test_mrz_full_round_trip_covers_every_outcome_state() -> None:
+    """DP-003 §7's frozen MRZ mapping, proven end to end for every state
+    except UNAVAILABLE (covered separately above, since it needs a
+    failing capability double rather than a marker) and NOT_SUBMITTED
+    (already covered by test_retry_does_not_recompute_an_already_
+    reusable_result's no-marker fixture)."""
+    corrupted_line2 = _MRZ_LINE2[:9] + "5" + _MRZ_LINE2[10:]  # doc-number check digit was 6
+
+    cases = (
+        ("PAXLI_TEST_MRZ_UNREADABLE", EvidenceResultStatus.INCONCLUSIVE, "MRZ_UNREADABLE", False),
+        (
+            "PAXLI_TEST_MRZ:not a valid mrz structure at all" + "0" * 20,
+            EvidenceResultStatus.INCONCLUSIVE,
+            "MRZ_MALFORMED",
+            True,
+        ),
+        (
+            "PAXLI_TEST_MRZ:" + _MRZ_LINE1 + corrupted_line2,
+            EvidenceResultStatus.FAIL,
+            "MRZ_CHECK_DIGIT_MISMATCH",
+            True,
+        ),
+        ("PAXLI_TEST_MRZ:" + _MRZ_VALID_RAW, EvidenceResultStatus.PASS, None, True),
+    )
+
+    for marker_text, expected_status, expected_reason, expect_result in cases:
+        tenant_id = f"tenant-docproc-mrz-outcome-{uuid4()}"
+        key_id = f"key-{uuid4()}"
+        storage = _storage(key_id)
+
+        async with session_factory() as session:
+            session_id = await _create_session(session, tenant_id)
+            capture_id = await _upload_document(
+                session, tenant_id, session_id, storage,
+                MINIMAL_JPEG_BYTES + b"0" * 2000 + marker_text.encode("ascii"),
+            )
+            await session.commit()
+
+        processor = _processor(key_id, storage)
+        await processor.process(session_id=UUID(session_id), tenant_id=tenant_id)
+
+        async with session_factory() as session:
+            mrz = await _effective_result(session, session_id, tenant_id, "MRZ")
+            assert mrz is not None, f"case {marker_text!r}: no MRZ result persisted"
+            assert mrz.status == expected_status.value, f"case {marker_text!r}"
+            assert mrz.source_reference == str(capture_id)
+            if expected_reason:
+                assert mrz.reason_codes_json == [expected_reason], f"case {marker_text!r}"
+            else:
+                assert mrz.reason_codes_json == [], f"case {marker_text!r}"
+            # MRZ is HIGHLY_SENSITIVE (DP-001 Decision 1) -- a populated
+            # result is encrypted, never plaintext result_json.
+            assert mrz.result_json is None, f"case {marker_text!r}"
+            if expect_result:
+                assert mrz.result_ciphertext is not None, f"case {marker_text!r}"
+            else:
+                assert mrz.result_ciphertext is None, f"case {marker_text!r}"
+
+
+async def test_barcode_full_round_trip_covers_every_outcome_state() -> None:
+    """DP-003 §7's frozen Barcode/QR mapping, proven end to end for
+    every state -- explicitly confirming FAIL is never among them."""
+    cases = (
+        ("PAXLI_TEST_BARCODE_UNREADABLE", EvidenceResultStatus.INCONCLUSIVE, "BARCODE_UNREADABLE"),
+        (
+            "PAXLI_TEST_BARCODE_UNRECOGNIZED:QR_CODE:opaque-token\x00",
+            EvidenceResultStatus.INCONCLUSIVE,
+            "BARCODE_PAYLOAD_UNRECOGNIZED",
+        ),
+        (
+            "PAXLI_TEST_BARCODE_MALFORMED:PDF417:document_number=\x00",
+            EvidenceResultStatus.INCONCLUSIVE,
+            "BARCODE_PAYLOAD_MALFORMED",
+        ),
+        (
+            "PAXLI_TEST_BARCODE_VALID:PDF417:document_number=A1234567\x00",
+            EvidenceResultStatus.PASS,
+            None,
+        ),
+    )
+
+    for marker_text, expected_status, expected_reason in cases:
+        tenant_id = f"tenant-docproc-barcode-outcome-{uuid4()}"
+        key_id = f"key-{uuid4()}"
+        storage = _storage(key_id)
+
+        async with session_factory() as session:
+            session_id = await _create_session(session, tenant_id)
+            capture_id = await _upload_document(
+                session, tenant_id, session_id, storage,
+                MINIMAL_JPEG_BYTES + b"0" * 2000 + marker_text.encode("ascii"),
+            )
+            await session.commit()
+
+        processor = _processor(key_id, storage)
+        await processor.process(session_id=UUID(session_id), tenant_id=tenant_id)
+
+        async with session_factory() as session:
+            barcode = await _effective_result(session, session_id, tenant_id, "BARCODE_QR")
+            assert barcode is not None, f"case {marker_text!r}: no BARCODE_QR result persisted"
+            assert barcode.status == expected_status.value, f"case {marker_text!r}"
+            assert barcode.status != EvidenceResultStatus.FAIL.value
+            assert barcode.source_reference == str(capture_id)
+            if expected_reason:
+                assert barcode.reason_codes_json == [expected_reason], f"case {marker_text!r}"
+
+
+async def test_mrz_check_digit_mismatch_does_not_affect_quality_or_classification() -> None:
+    """Partial-stage independence (REL-10.15), extended from Phase 1's
+    unrecognized-document test to a Phase 2 stage."""
+    tenant_id = f"tenant-docproc-mrz-partial-{uuid4()}"
+    key_id = f"key-{uuid4()}"
+    storage = _storage(key_id)
+    corrupted_line2 = _MRZ_LINE2[:9] + "5" + _MRZ_LINE2[10:]
+    marker = b"PAXLI_TEST_MRZ:" + (_MRZ_LINE1 + corrupted_line2).encode("ascii")
+
+    async with session_factory() as session:
+        session_id = await _create_session(session, tenant_id)
+        await _upload_document(
+            session, tenant_id, session_id, storage,
+            MINIMAL_JPEG_BYTES + b"0" * 2000 + b"PAXLI_TEST_ICAO_PASSPORT_DATA_PAGE" + marker,
+        )
+        await session.commit()
+
+    processor = _processor(key_id, storage)
+    await processor.process(session_id=UUID(session_id), tenant_id=tenant_id)
+
+    async with session_factory() as session:
+        quality = await _effective_result(session, session_id, tenant_id, "DOCUMENT_QUALITY")
+        classification = await _effective_result(
+            session, session_id, tenant_id, "DOCUMENT_CLASSIFICATION"
+        )
+        mrz = await _effective_result(session, session_id, tenant_id, "MRZ")
+        assert quality is not None
+        assert quality.status == EvidenceResultStatus.PASS.value  # unaffected
+        assert classification is not None
+        assert classification.status == EvidenceResultStatus.PASS.value  # unaffected
+        assert mrz is not None
+        assert mrz.status == EvidenceResultStatus.FAIL.value
 
 
 async def test_unexpected_capability_exception_propagates_uncaught() -> None:
@@ -656,6 +930,7 @@ async def test_document_unsupported_lets_policy_not_document_processor_decide_ou
             document_processor = SqlAlchemyDocumentProcessor(
                 session_factory, key_provider, key_id, storage,
                 DeterministicQualityAssessor(), DeterministicDocumentClassifier(),
+                DeterministicMRZParser(), DeterministicBarcodeDecoder(),
             )
             workflow = VerificationWorkflowService(
                 session_service, orchestrator, audit_service, document_processor
@@ -671,6 +946,105 @@ async def test_document_unsupported_lets_policy_not_document_processor_decide_ou
 
     assert rejected is DecisionOutcome.REJECTED
     assert review_required is DecisionOutcome.REVIEW_REQUIRED
+
+
+async def test_mrz_check_digit_mismatch_lets_policy_not_document_processor_decide_outcome() -> None:
+    """DP-004 §8/§12 closure criterion: 'a policy can require and
+    condition on either [MRZ/BARCODE_QR] type today through the
+    unmodified Decision Engine' -- demonstrated end to end via a real
+    /submit call driven by MRZ evidence specifically, mirroring the
+    DOCUMENT_CLASSIFICATION version of this same proof above."""
+    key_id = f"key-{uuid4()}"
+    storage = _storage(key_id)
+    key_provider = LocalAesGcmKeyProvider({key_id: b"0" * 32})
+    corrupted_line2 = _MRZ_LINE2[:9] + "5" + _MRZ_LINE2[10:]
+    marker = b"PAXLI_TEST_MRZ:" + (_MRZ_LINE1 + corrupted_line2).encode("ascii")
+
+    tenant_id = f"tenant-docproc-mrz-policy-{uuid4()}"
+    async with session_factory() as session:
+        policy_service = PolicyService(
+            SqlAlchemyVerificationPolicyRepository(session),
+            AuditService(SqlAlchemyAuditEventRepository(session)),
+            EvidenceResultSchemaCatalog(),
+        )
+        await policy_service.create_and_activate(
+            tenant_id=tenant_id,
+            policy_id="policy-docproc-mrz",
+            assurance_level=AssuranceLevel.STANDARD,
+            created_by="admin",
+            evidence_requirements=(
+                EvidenceRequirement(evidence_type="MRZ", level=EvidenceRequirementLevel.REQUIRED),
+            ),
+            rules=(
+                Rule(
+                    id="r1",
+                    condition=EvidenceCondition(
+                        evidence_type="MRZ", field="status", operator="==", expected_value="FAIL",
+                    ),
+                    outcome=DecisionOutcome.REJECTED,
+                    priority=10,
+                    reason_code="POLICY:MRZ_CHECK_DIGIT_MISMATCH",
+                ),
+            ),
+        )
+        session_service = VerificationSessionService(
+            SqlAlchemyVerificationSessionRepository(session),
+            audit_service=AuditService(SqlAlchemyAuditEventRepository(session)),
+            policy_service=policy_service,
+            session_ttl_minutes=30,
+        )
+        created_session = await session_service.create(
+            tenant_id=tenant_id, external_reference=None, assurance_level=AssuranceLevel.STANDARD
+        )
+        await session.commit()
+
+    async with session_factory() as session:
+        await _upload_document(
+            session, tenant_id, str(created_session.id), storage,
+            MINIMAL_JPEG_BYTES + b"0" * 2000 + b"PAXLI_TEST_ICAO_PASSPORT_DATA_PAGE" + marker,
+        )
+        await session.commit()
+
+    async with session_factory() as session:
+        policy_service = PolicyService(
+            SqlAlchemyVerificationPolicyRepository(session),
+            AuditService(SqlAlchemyAuditEventRepository(session)),
+            EvidenceResultSchemaCatalog(),
+        )
+        session_service = VerificationSessionService(
+            SqlAlchemyVerificationSessionRepository(session),
+            audit_service=AuditService(SqlAlchemyAuditEventRepository(session)),
+            policy_service=policy_service,
+            session_ttl_minutes=30,
+        )
+        evidence_result_service = EvidenceResultService(
+            SqlAlchemyEvidenceResultRepository(session, key_provider, key_id),
+            AuditService(SqlAlchemyAuditEventRepository(session)),
+            SqlAlchemyEvidenceRepository(session),
+        )
+        audit_service = AuditService(SqlAlchemyAuditEventRepository(session))
+        persistence_service = DecisionPersistenceService(
+            SqlAlchemyDecisionRepository(session), audit_service
+        )
+        orchestrator = DecisionOrchestrator(
+            session_service, policy_service, evidence_result_service,
+            persistence_service, audit_service,
+        )
+        document_processor = SqlAlchemyDocumentProcessor(
+            session_factory, key_provider, key_id, storage,
+            DeterministicQualityAssessor(), DeterministicDocumentClassifier(),
+            DeterministicMRZParser(), DeterministicBarcodeDecoder(),
+        )
+        workflow = VerificationWorkflowService(
+            session_service, orchestrator, audit_service, document_processor
+        )
+        _session, decision = await workflow.submit(
+            session_id=created_session.id, tenant_id=tenant_id
+        )
+        await session.commit()
+
+    assert decision.outcome is DecisionOutcome.REJECTED
+    assert "POLICY:MRZ_CHECK_DIGIT_MISMATCH" in decision.reason_codes
 
 
 async def test_concurrent_submit_with_a_real_document_converges_on_one_decision() -> None:
@@ -758,6 +1132,7 @@ async def test_concurrent_submit_with_a_real_document_converges_on_one_decision(
         document_processor = SqlAlchemyDocumentProcessor(
             session_factory, key_provider, key_id, storage,
             DeterministicQualityAssessor(), DeterministicDocumentClassifier(),
+            DeterministicMRZParser(), DeterministicBarcodeDecoder(),
         )
         return VerificationWorkflowService(
             session_service, orchestrator, audit_service, document_processor

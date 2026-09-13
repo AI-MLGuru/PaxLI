@@ -24,11 +24,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from core.audit.service import AuditService
 from core.document.capabilities import (
+    BarcodeDecoder,
     CapabilityUnavailableError,
     DocumentClassifier,
+    MRZParser,
     QualityAssessor,
 )
 from core.document.reason_codes import DocumentReasonCode
+from core.document.types import BarcodeReadOutcome, MRZReadOutcome
 from core.evidence.enums import EvidenceType
 from core.evidence_result.enums import EvidenceResultStatus, EvidenceResultType
 from core.evidence_result.models import EvidenceResult
@@ -43,7 +46,48 @@ if TYPE_CHECKING:
 
 _PRODUCER_QUALITY = "document-quality-assessor-deterministic"
 _PRODUCER_CLASSIFIER = "document-classifier-deterministic"
+_PRODUCER_MRZ = "document-mrz-parser-deterministic"
+_PRODUCER_BARCODE = "document-barcode-decoder-deterministic"
 _PRODUCER_VERSION = "1.0"
+
+# DP-003 §7's frozen MRZ/Barcode failure-mapping table, encoded directly
+# -- an exhaustiveness test iterates each outcome enum's members and
+# asserts every one has an entry here, so a future new outcome member
+# can't silently fall through un-mapped.
+_MRZ_OUTCOME_MAP: dict[MRZReadOutcome, tuple[EvidenceResultStatus, str | None]] = {
+    MRZReadOutcome.UNREADABLE: (
+        EvidenceResultStatus.INCONCLUSIVE,
+        DocumentReasonCode.MRZ_UNREADABLE.value,
+    ),
+    MRZReadOutcome.MALFORMED: (
+        EvidenceResultStatus.INCONCLUSIVE,
+        DocumentReasonCode.MRZ_MALFORMED.value,
+    ),
+    MRZReadOutcome.CHECK_DIGIT_MISMATCH: (
+        EvidenceResultStatus.FAIL,
+        DocumentReasonCode.MRZ_CHECK_DIGIT_MISMATCH.value,
+    ),
+    MRZReadOutcome.VALID: (EvidenceResultStatus.PASS, None),
+}
+
+# No EvidenceResultStatus.FAIL value anywhere in this map -- BarcodeReadOutcome
+# has no member corresponding to one (DP-003 Decision 2), so there is no
+# code path, not merely a convention, by which BARCODE_QR could reach FAIL.
+_BARCODE_OUTCOME_MAP: dict[BarcodeReadOutcome, tuple[EvidenceResultStatus, str | None]] = {
+    BarcodeReadOutcome.UNREADABLE: (
+        EvidenceResultStatus.INCONCLUSIVE,
+        DocumentReasonCode.BARCODE_UNREADABLE.value,
+    ),
+    BarcodeReadOutcome.PAYLOAD_UNRECOGNIZED: (
+        EvidenceResultStatus.INCONCLUSIVE,
+        DocumentReasonCode.BARCODE_PAYLOAD_UNRECOGNIZED.value,
+    ),
+    BarcodeReadOutcome.PAYLOAD_MALFORMED: (
+        EvidenceResultStatus.INCONCLUSIVE,
+        DocumentReasonCode.BARCODE_PAYLOAD_MALFORMED.value,
+    ),
+    BarcodeReadOutcome.VALID: (EvidenceResultStatus.PASS, None),
+}
 
 # A policy-agnostic midpoint DocumentProcessor applies to map a
 # capability's raw score to PASS/FAIL -- decoupled from however a given
@@ -71,6 +115,8 @@ class SqlAlchemyDocumentProcessor:
         storage: "ObjectStorage",
         quality_assessor: QualityAssessor,
         document_classifier: DocumentClassifier,
+        mrz_parser: MRZParser,
+        barcode_decoder: BarcodeDecoder,
     ) -> None:
         self._session_factory = session_factory
         self._key_provider = key_provider
@@ -78,6 +124,8 @@ class SqlAlchemyDocumentProcessor:
         self._storage = storage
         self._quality_assessor = quality_assessor
         self._document_classifier = document_classifier
+        self._mrz_parser = mrz_parser
+        self._barcode_decoder = barcode_decoder
 
     async def process(
         self,
@@ -129,6 +177,30 @@ class SqlAlchemyDocumentProcessor:
             correlation_id=correlation_id,
         )
         await self._run_classification(
+            session_id=session_id,
+            tenant_id=tenant_id,
+            capture_id=capture_id,
+            object_key=object_key,
+            ambiguous=ambiguous,
+            request_id=request_id,
+            correlation_id=correlation_id,
+        )
+        # DP-003 Decision 7: invoked unconditionally, identically to the
+        # two stages above -- no branching on DOCUMENT_CLASSIFICATION's
+        # result to skip MRZ/Barcode for document types not expected to
+        # carry them. NOT_SUBMITTED absorbs "no applicable zone/symbol
+        # found" regardless of document type; any different evidentiary
+        # weight is a policy concern, not evidence-producer logic.
+        await self._run_mrz(
+            session_id=session_id,
+            tenant_id=tenant_id,
+            capture_id=capture_id,
+            object_key=object_key,
+            ambiguous=ambiguous,
+            request_id=request_id,
+            correlation_id=correlation_id,
+        )
+        await self._run_barcode(
             session_id=session_id,
             tenant_id=tenant_id,
             capture_id=capture_id,
@@ -361,6 +433,202 @@ class SqlAlchemyDocumentProcessor:
                 result={"document_type": classification.document_type.value},
                 score=classification.confidence,
                 producer=_PRODUCER_CLASSIFIER,
+                source_reference=capture_id,
+                request_id=request_id,
+                correlation_id=correlation_id,
+            )
+            await session.commit()
+
+    async def _run_mrz(
+        self,
+        *,
+        session_id: UUID,
+        tenant_id: str,
+        capture_id: UUID | None,
+        object_key: str | None,
+        ambiguous: bool,
+        request_id: str | None,
+        correlation_id: str | None,
+    ) -> None:
+        async with self._session_factory() as session:
+            service = self._build_evidence_result_service(session)
+            existing = await service.get_effective_for_session_by_type(
+                session_id=session_id,
+                tenant_id=tenant_id,
+                evidence_type=EvidenceResultType.MRZ,
+            )
+            if existing is not None and _is_reusable(existing.status):
+                return
+
+            if ambiguous:
+                await self._persist_stage(
+                    service,
+                    existing,
+                    session_id=session_id,
+                    tenant_id=tenant_id,
+                    evidence_type=EvidenceResultType.MRZ,
+                    status=EvidenceResultStatus.INCONCLUSIVE,
+                    reason_codes=(DocumentReasonCode.AMBIGUOUS_DOCUMENT_CAPTURE.value,),
+                    producer=_PRODUCER_MRZ,
+                    request_id=request_id,
+                    correlation_id=correlation_id,
+                )
+                await session.commit()
+                return
+
+            assert object_key is not None and capture_id is not None  # ambiguous handled above
+            image = await self._storage.get(object_key)
+            try:
+                read_result = await self._mrz_parser.parse(image)
+            except CapabilityUnavailableError as exc:
+                await self._persist_stage(
+                    service,
+                    existing,
+                    session_id=session_id,
+                    tenant_id=tenant_id,
+                    evidence_type=EvidenceResultType.MRZ,
+                    status=EvidenceResultStatus.UNAVAILABLE,
+                    reason_codes=(exc.reason_code,),
+                    producer=_PRODUCER_MRZ,
+                    source_reference=capture_id,
+                    request_id=request_id,
+                    correlation_id=correlation_id,
+                )
+                await session.commit()
+                return
+
+            if read_result is None:
+                await self._persist_stage(
+                    service,
+                    existing,
+                    session_id=session_id,
+                    tenant_id=tenant_id,
+                    evidence_type=EvidenceResultType.MRZ,
+                    status=EvidenceResultStatus.NOT_SUBMITTED,
+                    producer=_PRODUCER_MRZ,
+                    source_reference=capture_id,
+                    request_id=request_id,
+                    correlation_id=correlation_id,
+                )
+                await session.commit()
+                return
+
+            status, reason_code = _MRZ_OUTCOME_MAP[read_result.outcome]
+            result_payload = (
+                {"raw": read_result.extraction.raw, "fields": read_result.extraction.fields}
+                if read_result.extraction is not None
+                else None
+            )
+            await self._persist_stage(
+                service,
+                existing,
+                session_id=session_id,
+                tenant_id=tenant_id,
+                evidence_type=EvidenceResultType.MRZ,
+                status=status,
+                reason_codes=(reason_code,) if reason_code else (),
+                result=result_payload,
+                producer=_PRODUCER_MRZ,
+                source_reference=capture_id,
+                request_id=request_id,
+                correlation_id=correlation_id,
+            )
+            await session.commit()
+
+    async def _run_barcode(
+        self,
+        *,
+        session_id: UUID,
+        tenant_id: str,
+        capture_id: UUID | None,
+        object_key: str | None,
+        ambiguous: bool,
+        request_id: str | None,
+        correlation_id: str | None,
+    ) -> None:
+        async with self._session_factory() as session:
+            service = self._build_evidence_result_service(session)
+            existing = await service.get_effective_for_session_by_type(
+                session_id=session_id,
+                tenant_id=tenant_id,
+                evidence_type=EvidenceResultType.BARCODE_QR,
+            )
+            if existing is not None and _is_reusable(existing.status):
+                return
+
+            if ambiguous:
+                await self._persist_stage(
+                    service,
+                    existing,
+                    session_id=session_id,
+                    tenant_id=tenant_id,
+                    evidence_type=EvidenceResultType.BARCODE_QR,
+                    status=EvidenceResultStatus.INCONCLUSIVE,
+                    reason_codes=(DocumentReasonCode.AMBIGUOUS_DOCUMENT_CAPTURE.value,),
+                    producer=_PRODUCER_BARCODE,
+                    request_id=request_id,
+                    correlation_id=correlation_id,
+                )
+                await session.commit()
+                return
+
+            assert object_key is not None and capture_id is not None  # ambiguous handled above
+            image = await self._storage.get(object_key)
+            try:
+                read_result = await self._barcode_decoder.decode(image)
+            except CapabilityUnavailableError as exc:
+                await self._persist_stage(
+                    service,
+                    existing,
+                    session_id=session_id,
+                    tenant_id=tenant_id,
+                    evidence_type=EvidenceResultType.BARCODE_QR,
+                    status=EvidenceResultStatus.UNAVAILABLE,
+                    reason_codes=(exc.reason_code,),
+                    producer=_PRODUCER_BARCODE,
+                    source_reference=capture_id,
+                    request_id=request_id,
+                    correlation_id=correlation_id,
+                )
+                await session.commit()
+                return
+
+            if read_result is None:
+                await self._persist_stage(
+                    service,
+                    existing,
+                    session_id=session_id,
+                    tenant_id=tenant_id,
+                    evidence_type=EvidenceResultType.BARCODE_QR,
+                    status=EvidenceResultStatus.NOT_SUBMITTED,
+                    producer=_PRODUCER_BARCODE,
+                    source_reference=capture_id,
+                    request_id=request_id,
+                    correlation_id=correlation_id,
+                )
+                await session.commit()
+                return
+
+            status, reason_code = _BARCODE_OUTCOME_MAP[read_result.outcome]
+            result_payload = (
+                {
+                    "raw": read_result.extraction.raw,
+                    "fields": read_result.extraction.fields,
+                    "symbology": read_result.extraction.symbology,
+                }
+                if read_result.extraction is not None
+                else None
+            )
+            await self._persist_stage(
+                service,
+                existing,
+                session_id=session_id,
+                tenant_id=tenant_id,
+                evidence_type=EvidenceResultType.BARCODE_QR,
+                status=status,
+                reason_codes=(reason_code,) if reason_code else (),
+                result=result_payload,
+                producer=_PRODUCER_BARCODE,
                 source_reference=capture_id,
                 request_id=request_id,
                 correlation_id=correlation_id,

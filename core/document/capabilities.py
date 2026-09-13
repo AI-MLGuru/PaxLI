@@ -8,11 +8,18 @@ identifiers (e.g. a classification EvidenceResult's row ID) -- only the
 domain-level value it needs (e.g. a plain document_type string/enum
 member for AuthenticityChecker, if that capability is ever built).
 
-Only QualityAssessor and DocumentClassifier have Phase 1 implementations
-(core.document.deterministic). OCREngine/MRZParser/BarcodeDecoder are
-defined now so DocumentProcessor's later orchestration shape doesn't
-need rework, but receive no implementation, deterministic or real,
-until DP-001 Decisions 5/7 are consumed by real work (Phase 2+).
+QualityAssessor, DocumentClassifier (Phase 1), MRZParser, and
+BarcodeDecoder (Phase 2, DP-003/DP-004) have deterministic
+implementations (core.document.deterministic). OCREngine remains
+interface-only -- DP-003 Decision 11 keeps OCR and DOCUMENT_FIELD_
+EXTRACTION reconciliation out of scope pending a future phase.
+
+Where a capability's own return type is Optional (MRZParser, BarcodeDecoder):
+None means the capability found no applicable input/presence to
+process; it is a legitimate outcome and never represents failure.
+Capabilities whose domain necessarily applies to every submitted
+capture (QualityAssessor, DocumentClassifier) need not use an optional
+return.
 
 AuthenticityChecker is deliberately NOT defined here at all. DP-001
 Decision 6 found no defensible V1 authenticity signal exists outside
@@ -25,9 +32,9 @@ discipline argues against.
 from abc import ABC, abstractmethod
 
 from core.document.types import (
-    BarcodeExtraction,
+    BarcodeReadResult,
     DocumentClassification,
-    MRZExtraction,
+    MRZReadResult,
     OCRExtraction,
     QualityAssessment,
 )
@@ -76,19 +83,21 @@ class OCREngine(ABC):
 
 
 class MRZParser(ABC):
-    """No Phase 1 implementation -- interface only (DP-001 Decision 3)."""
+    """DP-003/DP-004 Phase 2."""
 
     @abstractmethod
-    async def parse(self, image: bytes) -> MRZExtraction | None:
-        """None = no MRZ zone present -- a legitimate outcome
-        (-> MRZ=NOT_SUBMITTED), never an error."""
+    async def parse(self, image: bytes) -> MRZReadResult | None:
+        """None = no MRZ zone present at all -> MRZ=NOT_SUBMITTED. A
+        populated MRZReadResult explicitly states what happened
+        attempting to read/parse/validate whatever zone was found --
+        DocumentProcessor never infers this from extraction's shape."""
         raise NotImplementedError
 
 
 class BarcodeDecoder(ABC):
-    """No Phase 1 implementation -- interface only (DP-001 Decision 3)."""
+    """DP-003/DP-004 Phase 2."""
 
     @abstractmethod
-    async def decode(self, image: bytes) -> BarcodeExtraction | None:
-        """None = no barcode/QR present -> BARCODE_QR=NOT_SUBMITTED."""
+    async def decode(self, image: bytes) -> BarcodeReadResult | None:
+        """None = no barcode/QR symbol present at all -> BARCODE_QR=NOT_SUBMITTED."""
         raise NotImplementedError

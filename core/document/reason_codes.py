@@ -1,15 +1,14 @@
-"""Evidence-level reason codes (Part III §3.14) this Phase 1 slice
-actually produces.
+"""Evidence-level reason codes (Part III §3.14) this document-processing
+slice actually produces.
 
 DP-001 Open Question 3 ("where do evidence-level reason codes live in
 code") remains genuinely open -- no canonical home or namespace
 convention (e.g. an `EVIDENCE:` prefix mirroring EngineReasonCode's
 `ENGINE:` and core.policy.reason_codes's `POLICY:`) has been decided.
-This module is Phase 1's narrow, minimal instance of that open
-question, not its resolution: it defines only the codes this phase's
-own capabilities and DocumentProcessor actually emit, using bare names
-matching exactly how Part III's own text quotes them, with no invented
-namespace prefix.
+This module extends Phase 1's narrow, minimal instance of that open
+question (DP-003 Decision 3), not its resolution: it defines only the
+codes this project's own capabilities and DocumentProcessor actually
+emit, using bare names with no invented namespace prefix.
 """
 
 from enum import StrEnum
@@ -25,3 +24,12 @@ class DocumentReasonCode(StrEnum):
     # principle ("PaxLI must never infer certainty from ambiguity")
     # applies directly.
     AMBIGUOUS_DOCUMENT_CAPTURE = "AMBIGUOUS_DOCUMENT_CAPTURE"
+    # DP-003 Decision 3 (Phase 2): distinct codes per distinguishable MRZ/
+    # barcode failure mode -- "couldn't see it" / "couldn't parse it" /
+    # "parsed it but it's wrong" must stay distinguishable, not collapsed.
+    MRZ_UNREADABLE = "MRZ_UNREADABLE"
+    MRZ_MALFORMED = "MRZ_MALFORMED"
+    MRZ_CHECK_DIGIT_MISMATCH = "MRZ_CHECK_DIGIT_MISMATCH"
+    BARCODE_UNREADABLE = "BARCODE_UNREADABLE"
+    BARCODE_PAYLOAD_UNRECOGNIZED = "BARCODE_PAYLOAD_UNRECOGNIZED"
+    BARCODE_PAYLOAD_MALFORMED = "BARCODE_PAYLOAD_MALFORMED"

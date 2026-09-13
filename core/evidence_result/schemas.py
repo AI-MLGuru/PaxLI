@@ -61,6 +61,7 @@ class MrzResult(BaseModel):
 class BarcodeQrResult(BaseModel):
     raw: str
     fields: dict[str, str] = {}
+    symbology: str | None = None
 
 
 class DocumentAuthenticityResult(BaseModel):
