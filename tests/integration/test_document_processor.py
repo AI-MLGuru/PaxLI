@@ -351,6 +351,64 @@ async def test_ambiguous_captures_produce_inconclusive_without_invoking_any_capa
             assert result.source_reference is None  # no single capture to attribute to
 
 
+async def test_wrong_tenant_id_sees_no_captures_and_never_touches_the_owning_tenant() -> None:
+    """HV-010: list_for_session filters by (session_id, tenant_id) together,
+    so a session_id belonging to one tenant, processed under a DIFFERENT
+    tenant_id, must be indistinguishable from a genuinely empty session --
+    never an implicit cross-tenant read of the real owner's document, and
+    never an EvidenceResult row materializing under either tenant as a
+    side effect. Attacks the boundary directly at the capability-
+    invocation level (0 calls), not just the persisted-result level, since
+    a leak that stopped short of persisting but still fed the wrong
+    tenant's document bytes into a capability would still be a real
+    breach."""
+    owning_tenant = f"tenant-docproc-owner-{uuid4()}"
+    attacking_tenant = f"tenant-docproc-attacker-{uuid4()}"
+    key_id = f"key-{uuid4()}"
+    storage = _storage(key_id)
+
+    async with session_factory() as session:
+        session_id = await _create_session(session, owning_tenant)
+        await _upload_document(
+            session, owning_tenant, session_id, storage,
+            MINIMAL_JPEG_BYTES + b"0" * 2000 + b"PAXLI_TEST_STANDARD_NIN_SLIP",
+        )
+        await session.commit()
+
+    quality_assessor = _CountingQualityAssessor(DeterministicQualityAssessor())
+    document_classifier = _CountingDocumentClassifier(DeterministicDocumentClassifier())
+    processor = _processor(key_id, storage, quality_assessor, document_classifier)
+    # The attacker supplies the victim's real session_id but their OWN
+    # tenant_id -- exactly the shape a tenant-scoping bug elsewhere in the
+    # call chain (a forged header, a stale principal, a wiring mistake)
+    # would produce by the time it reaches DocumentProcessor.
+    await processor.process(session_id=UUID(session_id), tenant_id=attacking_tenant)
+
+    assert quality_assessor.calls == 0
+    assert document_classifier.calls == 0
+
+    async with session_factory() as session:
+        for tenant_id in (owning_tenant, attacking_tenant):
+            assert (
+                await _effective_result(session, session_id, tenant_id, "DOCUMENT_QUALITY") is None
+            )
+            assert (
+                await _effective_result(session, session_id, tenant_id, "DOCUMENT_CLASSIFICATION")
+                is None
+            )
+
+    # The real owner's document is still unprocessed and processes
+    # correctly once addressed under its own tenant -- proving the prior
+    # call didn't corrupt or consume it.
+    await processor.process(session_id=UUID(session_id), tenant_id=owning_tenant)
+    assert quality_assessor.calls == 1
+    assert document_classifier.calls == 1
+    async with session_factory() as session:
+        quality = await _effective_result(session, session_id, owning_tenant, "DOCUMENT_QUALITY")
+        assert quality is not None
+        assert quality.status == EvidenceResultStatus.PASS.value
+
+
 async def test_concurrent_process_calls_converge_on_one_effective_result_per_type() -> None:
     """HV-010: two concurrent process() calls for the same session (the
     real-world shape of a client double-submitting, or WF-006's GET-

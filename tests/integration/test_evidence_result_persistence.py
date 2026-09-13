@@ -13,6 +13,7 @@ from sqlalchemy.exc import IntegrityError
 
 from apps.api.paxli_api.config import get_settings
 from core.audit.service import AuditService
+from core.evidence_result.classification import DataClassification, classify
 from core.evidence_result.enums import EvidenceResultStatus, EvidenceResultType
 from core.evidence_result.service import EvidenceResultService
 from infrastructure.database.models.evidence_result import EvidenceResultRecord
@@ -160,6 +161,77 @@ async def test_highly_sensitive_result_is_encrypted_at_rest_and_round_trips() ->
         fetched = await repo.get(saved.id, "tenant-persist-encrypted")
         assert fetched is not None
         assert fetched.result == {"embedding": canary_embedding, "embedding_dimensions": 3}
+
+
+@pytest.mark.parametrize(
+    "evidence_type",
+    [
+        EvidenceResultType.OCR_EXTRACTION,
+        EvidenceResultType.DOCUMENT_FIELD_EXTRACTION,
+        EvidenceResultType.MRZ,
+        EvidenceResultType.BARCODE_QR,
+    ],
+)
+async def test_document_extraction_types_are_highly_sensitive_and_encrypted_at_rest(
+    evidence_type: EvidenceResultType,
+) -> None:
+    """HV-010: DP-001 Decision 1 classifies OCR_EXTRACTION, MRZ, BARCODE_QR,
+    and DOCUMENT_FIELD_EXTRACTION as HIGHLY_SENSITIVE -- they carry raw or
+    reconciled identity-field VALUES, unlike DOCUMENT_QUALITY/
+    DOCUMENT_CLASSIFICATION's category-only outputs (Phase 1's own two
+    producers). No Phase 2+ capability writes these types yet, so nothing
+    has ever actually exercised the classification->encryption wiring for
+    them -- confirmed directly here rather than assumed from the
+    classification map alone, the same way test_highly_sensitive_result_
+    is_encrypted_at_rest_and_round_trips already confirms it for
+    FACE_EMBEDDING."""
+    assert classify(evidence_type) == DataClassification.HIGHLY_SENSITIVE
+
+    canary_value = f"CANARY-IDENTITY-VALUE-{uuid4()}"
+    # Each type's registered result schema (core.evidence_result.schemas)
+    # requires different fields -- a generic payload would fail schema
+    # validation before ever reaching the encryption boundary this test
+    # targets, so the canary is embedded in whatever shape each type
+    # actually requires.
+    payload_by_type = {
+        EvidenceResultType.OCR_EXTRACTION: {"fields": {"surname": canary_value}},
+        EvidenceResultType.DOCUMENT_FIELD_EXTRACTION: {"fields": {"surname": canary_value}},
+        EvidenceResultType.MRZ: {"raw": canary_value, "fields": {"surname": canary_value}},
+        EvidenceResultType.BARCODE_QR: {"raw": canary_value, "fields": {}},
+    }
+    result_payload = payload_by_type[evidence_type]
+
+    async with session_factory() as session:
+        session_id = await _create_session(session, f"tenant-persist-{evidence_type.value.lower()}")
+        key_provider = LocalAesGcmKeyProvider({"test-evidence-result-key": b"0" * 32})
+        repo = SqlAlchemyEvidenceResultRepository(session, key_provider, "test-evidence-result-key")
+        svc = EvidenceResultService(
+            repo,
+            AuditService(SqlAlchemyAuditEventRepository(session)),
+            SqlAlchemyEvidenceRepository(session),
+        )
+
+        saved = await svc.create(
+            tenant_id=f"tenant-persist-{evidence_type.value.lower()}",
+            session_id=UUID(session_id),
+            evidence_type=evidence_type,
+            status=EvidenceResultStatus.PASS,
+            producer="hv-010-canary-producer",
+            producer_version="1.0",
+            result=result_payload,
+        )
+        await session.commit()
+
+        record = await session.get(EvidenceResultRecord, str(saved.id))
+        assert record is not None
+        assert record.result_json is None
+        assert record.result_ciphertext is not None
+        assert record.result_key_id == "test-evidence-result-key"
+        assert canary_value.encode() not in record.result_ciphertext
+
+        fetched = await repo.get(saved.id, f"tenant-persist-{evidence_type.value.lower()}")
+        assert fetched is not None
+        assert fetched.result == result_payload
 
 
 async def test_cross_tenant_get_returns_none() -> None:
