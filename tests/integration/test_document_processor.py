@@ -268,6 +268,26 @@ class _UnavailableMRZParser(MRZParser):
         raise CapabilityUnavailableError("MODEL_UNAVAILABLE")
 
 
+class _BuggyMRZParser(MRZParser):
+    """HV-011: simulates a genuine programming defect in the real
+    zone-detection/parsing pipeline -- NOT a known, self-diagnosed
+    failure. Must propagate out of DocumentProcessor uncaught, exactly
+    like _BuggyQualityAssessor already proves for Phase 1's capabilities."""
+
+    async def parse(self, image: bytes):
+        raise AttributeError("simulated programming defect, not a known capability failure")
+
+
+class _BuggyBarcodeDecoder(BarcodeDecoder):
+    async def decode(self, image: bytes):
+        raise AttributeError("simulated programming defect, not a known capability failure")
+
+
+class _UnavailableBarcodeDecoder(BarcodeDecoder):
+    async def decode(self, image: bytes):
+        raise CapabilityUnavailableError("MODEL_UNAVAILABLE")
+
+
 async def test_full_round_trip_produces_correct_quality_and_classification() -> None:
     tenant_id = f"tenant-docproc-happy-{uuid4()}"
     key_id = f"key-{uuid4()}"
@@ -425,7 +445,11 @@ async def test_wrong_tenant_id_sees_no_captures_and_never_touches_the_owning_ten
 
     quality_assessor = _CountingQualityAssessor(DeterministicQualityAssessor())
     document_classifier = _CountingDocumentClassifier(DeterministicDocumentClassifier())
-    processor = _processor(key_id, storage, quality_assessor, document_classifier)
+    mrz_parser = _CountingMRZParser(DeterministicMRZParser())
+    barcode_decoder = _CountingBarcodeDecoder(DeterministicBarcodeDecoder())
+    processor = _processor(
+        key_id, storage, quality_assessor, document_classifier, mrz_parser, barcode_decoder
+    )
     # The attacker supplies the victim's real session_id but their OWN
     # tenant_id -- exactly the shape a tenant-scoping bug elsewhere in the
     # call chain (a forged header, a stale principal, a wiring mistake)
@@ -434,16 +458,16 @@ async def test_wrong_tenant_id_sees_no_captures_and_never_touches_the_owning_ten
 
     assert quality_assessor.calls == 0
     assert document_classifier.calls == 0
+    assert mrz_parser.calls == 0  # HV-011: attacked directly at the new stages too
+    assert barcode_decoder.calls == 0
 
     async with session_factory() as session:
         for tenant_id in (owning_tenant, attacking_tenant):
-            assert (
-                await _effective_result(session, session_id, tenant_id, "DOCUMENT_QUALITY") is None
-            )
-            assert (
-                await _effective_result(session, session_id, tenant_id, "DOCUMENT_CLASSIFICATION")
-                is None
-            )
+            for evidence_type in (
+                "DOCUMENT_QUALITY", "DOCUMENT_CLASSIFICATION", "MRZ", "BARCODE_QR",
+            ):
+                result = await _effective_result(session, session_id, tenant_id, evidence_type)
+                assert result is None
 
     # The real owner's document is still unprocessed and processes
     # correctly once addressed under its own tenant -- proving the prior
@@ -451,6 +475,8 @@ async def test_wrong_tenant_id_sees_no_captures_and_never_touches_the_owning_ten
     await processor.process(session_id=UUID(session_id), tenant_id=owning_tenant)
     assert quality_assessor.calls == 1
     assert document_classifier.calls == 1
+    assert mrz_parser.calls == 1
+    assert barcode_decoder.calls == 1
     async with session_factory() as session:
         quality = await _effective_result(session, session_id, owning_tenant, "DOCUMENT_QUALITY")
         assert quality is not None
@@ -502,6 +528,146 @@ async def test_concurrent_process_calls_converge_on_one_effective_result_per_typ
             )
             assert rows[0].status == EvidenceResultStatus.PASS.value
             assert rows[0].source_reference == str(capture_id)
+
+
+async def _effective_row_count(session_id: str, evidence_type: str) -> int:
+    async with session_factory() as session:
+        result = await session.execute(
+            select(EvidenceResultRecord).where(
+                EvidenceResultRecord.session_id == session_id,
+                EvidenceResultRecord.evidence_type == evidence_type,
+                EvidenceResultRecord.is_effective.is_(True),
+            )
+        )
+        return len(result.scalars().all())
+
+
+async def test_concurrent_mrz_processing_converges_on_one_effective_result() -> None:
+    """HV-011: HV-010's concurrent-create fix (EffectiveResultAlreadyExistsError)
+    is generic across EvidenceResultType, but inheritance is NOT assumed
+    here -- attacked directly at MRZ's own call site with a real VALID
+    marker (exercising the full real check-digit-validation path under
+    the race, not just the cheap NOT_SUBMITTED path the general Phase 1
+    concurrency test happens to exercise for this type)."""
+    tenant_id = f"tenant-docproc-mrz-race-{uuid4()}"
+    key_id = f"key-{uuid4()}"
+    storage = _storage(key_id)
+    marker = b"PAXLI_TEST_MRZ:" + _MRZ_VALID_RAW.encode("ascii")
+
+    async with session_factory() as session:
+        session_id = await _create_session(session, tenant_id)
+        capture_id = await _upload_document(
+            session, tenant_id, session_id, storage,
+            MINIMAL_JPEG_BYTES + b"0" * 2000 + b"PAXLI_TEST_ICAO_PASSPORT_DATA_PAGE" + marker,
+        )
+        await session.commit()
+
+    processor_a = _processor(key_id, storage)
+    processor_b = _processor(key_id, storage)
+
+    await asyncio.gather(
+        processor_a.process(session_id=UUID(session_id), tenant_id=tenant_id),
+        processor_b.process(session_id=UUID(session_id), tenant_id=tenant_id),
+    )
+
+    assert await _effective_row_count(session_id, "MRZ") == 1
+    async with session_factory() as session:
+        mrz = await _effective_result(session, session_id, tenant_id, "MRZ")
+        assert mrz is not None
+        assert mrz.status == EvidenceResultStatus.PASS.value
+        assert mrz.source_reference == str(capture_id)
+
+
+async def test_concurrent_barcode_processing_converges_on_one_effective_result() -> None:
+    """HV-011: same attack, at BarcodeDecoder's own call site."""
+    tenant_id = f"tenant-docproc-barcode-race-{uuid4()}"
+    key_id = f"key-{uuid4()}"
+    storage = _storage(key_id)
+    marker = b"PAXLI_TEST_BARCODE_VALID:PDF417:document_number=A1234567\x00"
+
+    async with session_factory() as session:
+        session_id = await _create_session(session, tenant_id)
+        capture_id = await _upload_document(
+            session, tenant_id, session_id, storage,
+            MINIMAL_JPEG_BYTES + b"0" * 2000 + marker,
+        )
+        await session.commit()
+
+    processor_a = _processor(key_id, storage)
+    processor_b = _processor(key_id, storage)
+
+    await asyncio.gather(
+        processor_a.process(session_id=UUID(session_id), tenant_id=tenant_id),
+        processor_b.process(session_id=UUID(session_id), tenant_id=tenant_id),
+    )
+
+    assert await _effective_row_count(session_id, "BARCODE_QR") == 1
+    async with session_factory() as session:
+        barcode = await _effective_result(session, session_id, tenant_id, "BARCODE_QR")
+        assert barcode is not None
+        assert barcode.status == EvidenceResultStatus.PASS.value
+        assert barcode.source_reference == str(capture_id)
+
+
+async def test_concurrent_processing_of_different_captures_does_not_interfere() -> None:
+    """HV-011: a fix that eliminated the concurrent-create race by
+    serializing ALL document processing globally would technically pass
+    the two tests above while introducing an unacceptable throughput
+    regression -- ruled out directly by processing two genuinely
+    different sessions/captures/tenants concurrently and confirming both
+    converge to their own correct, independent result. The
+    EffectiveResultAlreadyExistsError fix is a SAVEPOINT scoped to one
+    row's own insert attempt (infrastructure/database/repositories/
+    evidence_result.py), never a table- or session-wide lock -- this is
+    the functional proof that holds regardless of the underlying
+    mechanism."""
+    key_id = f"key-{uuid4()}"
+    storage = _storage(key_id)
+
+    async def _create_and_process(marker_suffix: bytes) -> tuple[str, UUID]:
+        tenant_id = f"tenant-docproc-crosscapture-{uuid4()}"
+        async with session_factory() as session:
+            session_id = await _create_session(session, tenant_id)
+            capture_id = await _upload_document(
+                session, tenant_id, session_id, storage,
+                MINIMAL_JPEG_BYTES + b"0" * 2000
+                + b"PAXLI_TEST_ICAO_PASSPORT_DATA_PAGE" + marker_suffix,
+            )
+            await session.commit()
+        processor = _processor(key_id, storage)
+        await processor.process(session_id=UUID(session_id), tenant_id=tenant_id)
+        return session_id, capture_id
+
+    marker_a = b"PAXLI_TEST_MRZ:" + _MRZ_VALID_RAW.encode("ascii")
+    corrupted_line2 = _MRZ_LINE2[:9] + "5" + _MRZ_LINE2[10:]
+    marker_b = b"PAXLI_TEST_MRZ:" + (_MRZ_LINE1 + corrupted_line2).encode("ascii")
+
+    (session_id_a, capture_a), (session_id_b, capture_b) = await asyncio.gather(
+        _create_and_process(marker_a), _create_and_process(marker_b)
+    )
+
+    async with session_factory() as session:
+        mrz_a = await session.execute(
+            select(EvidenceResultRecord).where(
+                EvidenceResultRecord.session_id == session_id_a,
+                EvidenceResultRecord.evidence_type == "MRZ",
+                EvidenceResultRecord.is_effective.is_(True),
+            )
+        )
+        row_a = mrz_a.scalar_one()
+        assert row_a.status == EvidenceResultStatus.PASS.value
+        assert row_a.source_reference == str(capture_a)
+
+        mrz_b = await session.execute(
+            select(EvidenceResultRecord).where(
+                EvidenceResultRecord.session_id == session_id_b,
+                EvidenceResultRecord.evidence_type == "MRZ",
+                EvidenceResultRecord.is_effective.is_(True),
+            )
+        )
+        row_b = mrz_b.scalar_one()
+        assert row_b.status == EvidenceResultStatus.FAIL.value
+        assert row_b.source_reference == str(capture_b)
 
 
 async def test_retry_does_not_recompute_an_already_reusable_result() -> None:
@@ -771,18 +937,23 @@ async def test_barcode_full_round_trip_covers_every_outcome_state() -> None:
 
 async def test_mrz_check_digit_mismatch_does_not_affect_quality_or_classification() -> None:
     """Partial-stage independence (REL-10.15), extended from Phase 1's
-    unrecognized-document test to a Phase 2 stage."""
+    unrecognized-document test to a Phase 2 stage -- and, per HV-011,
+    to ALL FOUR stages simultaneously with genuinely mixed outcomes
+    (MRZ FAIL, Barcode PASS, Quality/Classification PASS), not just a
+    two-stage snapshot."""
     tenant_id = f"tenant-docproc-mrz-partial-{uuid4()}"
     key_id = f"key-{uuid4()}"
     storage = _storage(key_id)
     corrupted_line2 = _MRZ_LINE2[:9] + "5" + _MRZ_LINE2[10:]
-    marker = b"PAXLI_TEST_MRZ:" + (_MRZ_LINE1 + corrupted_line2).encode("ascii")
+    mrz_marker = b"PAXLI_TEST_MRZ:" + (_MRZ_LINE1 + corrupted_line2).encode("ascii")
+    barcode_marker = b"PAXLI_TEST_BARCODE_VALID:PDF417:document_number=A1234567\x00"
 
     async with session_factory() as session:
         session_id = await _create_session(session, tenant_id)
         await _upload_document(
             session, tenant_id, session_id, storage,
-            MINIMAL_JPEG_BYTES + b"0" * 2000 + b"PAXLI_TEST_ICAO_PASSPORT_DATA_PAGE" + marker,
+            MINIMAL_JPEG_BYTES + b"0" * 2000 + b"PAXLI_TEST_ICAO_PASSPORT_DATA_PAGE"
+            + mrz_marker + barcode_marker,
         )
         await session.commit()
 
@@ -795,12 +966,15 @@ async def test_mrz_check_digit_mismatch_does_not_affect_quality_or_classificatio
             session, session_id, tenant_id, "DOCUMENT_CLASSIFICATION"
         )
         mrz = await _effective_result(session, session_id, tenant_id, "MRZ")
+        barcode = await _effective_result(session, session_id, tenant_id, "BARCODE_QR")
         assert quality is not None
         assert quality.status == EvidenceResultStatus.PASS.value  # unaffected
         assert classification is not None
         assert classification.status == EvidenceResultStatus.PASS.value  # unaffected
         assert mrz is not None
         assert mrz.status == EvidenceResultStatus.FAIL.value
+        assert barcode is not None
+        assert barcode.status == EvidenceResultStatus.PASS.value  # unaffected by MRZ's failure
 
 
 async def test_unexpected_capability_exception_propagates_uncaught() -> None:
@@ -833,6 +1007,66 @@ async def test_unexpected_capability_exception_propagates_uncaught() -> None:
     async with session_factory() as session:
         # No DOCUMENT_QUALITY row was fabricated to paper over the defect.
         assert await _effective_result(session, session_id, tenant_id, "DOCUMENT_QUALITY") is None
+
+
+async def test_mrz_parser_unexpected_exception_propagates_uncaught() -> None:
+    """HV-011: the same exception-taxonomy proof as above, for the new
+    MRZParser capability boundary specifically -- not assumed inherited
+    from the generic CapabilityUnavailableError-only catch, confirmed
+    directly for this new call site."""
+    tenant_id = f"tenant-docproc-mrz-defect-{uuid4()}"
+    key_id = f"key-{uuid4()}"
+    storage = _storage(key_id)
+
+    async with session_factory() as session:
+        session_id = await _create_session(session, tenant_id)
+        await _upload_document(
+            session, tenant_id, session_id, storage,
+            MINIMAL_JPEG_BYTES + b"0" * 2000 + b"PAXLI_TEST_ICAO_PASSPORT_DATA_PAGE",
+        )
+        await session.commit()
+
+    processor = _processor(key_id, storage, mrz_parser=_BuggyMRZParser())
+
+    with pytest.raises(AttributeError, match="simulated programming defect"):
+        await processor.process(session_id=UUID(session_id), tenant_id=tenant_id)
+
+    async with session_factory() as session:
+        assert await _effective_result(session, session_id, tenant_id, "MRZ") is None
+        # Stages ordered before MRZ (quality/classification) are unaffected
+        # by a later stage's defect -- confirms the defect doesn't corrupt
+        # or roll back already-committed sibling work.
+        quality = await _effective_result(session, session_id, tenant_id, "DOCUMENT_QUALITY")
+        assert quality is not None
+        assert quality.status == EvidenceResultStatus.PASS.value
+
+
+async def test_barcode_decoder_unexpected_exception_propagates_uncaught() -> None:
+    """HV-011: same proof for BarcodeDecoder specifically."""
+    tenant_id = f"tenant-docproc-barcode-defect-{uuid4()}"
+    key_id = f"key-{uuid4()}"
+    storage = _storage(key_id)
+
+    async with session_factory() as session:
+        session_id = await _create_session(session, tenant_id)
+        await _upload_document(
+            session, tenant_id, session_id, storage,
+            MINIMAL_JPEG_BYTES + b"0" * 2000 + b"PAXLI_TEST_ICAO_PASSPORT_DATA_PAGE",
+        )
+        await session.commit()
+
+    processor = _processor(key_id, storage, barcode_decoder=_BuggyBarcodeDecoder())
+
+    with pytest.raises(AttributeError, match="simulated programming defect"):
+        await processor.process(session_id=UUID(session_id), tenant_id=tenant_id)
+
+    async with session_factory() as session:
+        assert await _effective_result(session, session_id, tenant_id, "BARCODE_QR") is None
+        # MRZ (ordered before barcode) already committed successfully and
+        # is unaffected by barcode's later defect.
+        mrz = await _effective_result(session, session_id, tenant_id, "MRZ")
+        assert mrz is not None
+        assert mrz.status == EvidenceResultStatus.NOT_SUBMITTED.value
 
 
 async def test_document_unsupported_lets_policy_not_document_processor_decide_outcome() -> None:
