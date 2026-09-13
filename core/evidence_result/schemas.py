@@ -46,6 +46,7 @@ class DocumentClassificationResult(BaseModel):
 
 
 class OcrExtractionResult(BaseModel):
+    raw: str
     fields: dict[str, str]
 
 

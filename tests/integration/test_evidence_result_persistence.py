@@ -194,7 +194,10 @@ async def test_document_extraction_types_are_highly_sensitive_and_encrypted_at_r
     # targets, so the canary is embedded in whatever shape each type
     # actually requires.
     payload_by_type = {
-        EvidenceResultType.OCR_EXTRACTION: {"fields": {"surname": canary_value}},
+        EvidenceResultType.OCR_EXTRACTION: {
+            "raw": canary_value,
+            "fields": {"surname": canary_value},
+        },
         EvidenceResultType.DOCUMENT_FIELD_EXTRACTION: {"fields": {"surname": canary_value}},
         EvidenceResultType.MRZ: {"raw": canary_value, "fields": {"surname": canary_value}},
         EvidenceResultType.BARCODE_QR: {"raw": canary_value, "fields": {}},

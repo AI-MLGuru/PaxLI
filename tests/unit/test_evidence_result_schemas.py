@@ -40,5 +40,6 @@ def test_valid_face_embedding_payload_passes() -> None:
 
 def test_valid_ocr_extraction_payload_passes() -> None:
     validate_result_payload(
-        EvidenceResultType.OCR_EXTRACTION, {"fields": {"name": "CANARY_NAME"}}
+        EvidenceResultType.OCR_EXTRACTION,
+        {"raw": "CANARY RAW TEXT", "fields": {"name": "CANARY_NAME"}},
     )

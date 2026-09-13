@@ -11,6 +11,7 @@ from core.document.deterministic import (
     DeterministicBarcodeDecoder,
     DeterministicDocumentClassifier,
     DeterministicMRZParser,
+    DeterministicOCREngine,
     DeterministicQualityAssessor,
 )
 from core.evidence.service import EvidenceService
@@ -216,6 +217,7 @@ async def get_workflow_service(
         DeterministicDocumentClassifier(),
         DeterministicMRZParser(),
         DeterministicBarcodeDecoder(),
+        DeterministicOCREngine(),
     )
     yield VerificationWorkflowService(
         session_service, orchestrator, audit_service, document_processor

@@ -21,6 +21,8 @@ __all__ = [
     "MRZReadOutcome",
     "MRZReadResult",
     "OCRExtraction",
+    "OCRReadOutcome",
+    "OCRReadResult",
     "QualityAssessment",
 ]
 
@@ -43,11 +45,41 @@ class DocumentClassification:
 
 @dataclass(frozen=True)
 class OCRExtraction:
-    """Raw, per-source, non-canonical -- DP-001 Decision 7 keeps this
-    shape unchanged; only DOCUMENT_FIELD_EXTRACTION (Phase 2) gets the
-    hybrid canonical schema. No Phase 1 producer exists for this type."""
+    """Pure extracted data -- DP-005 Decision 7. Carries no outcome/status
+    information of its own; see OCRReadOutcome/OCRReadResult below for how
+    an extraction attempt's outcome is expressed. `fields` is source-
+    specific, non-canonical -- only DOCUMENT_FIELD_EXTRACTION (Phase 4)
+    gets the hybrid canonical schema."""
 
+    raw: str
     fields: dict[str, str]
+
+
+class OCRReadOutcome(StrEnum):
+    """Explicit domain-level pipeline outcome for one OCR attempt (DP-005
+    Decisions 1/2). Deliberately NOT EvidenceResultStatus -- core/document/
+    MUST NOT import or produce EvidenceResultStatus directly (DP-001
+    Decision 3's domain/persistence boundary); DocumentProcessor alone
+    translates this into an EvidenceResultStatus + reason code, via the
+    explicit table in infrastructure/document/processor.py, never by
+    inference. No FAIL/MALFORMED members exist -- OCR has no standards-
+    defined negative condition and no structural grammar to violate
+    (DP-005 Decision 2)."""
+
+    UNREADABLE = "UNREADABLE"
+    VALID = "VALID"
+
+
+@dataclass(frozen=True)
+class OCRReadResult:
+    """Returned by OCREngine.extract() -- always, never None (DP-005
+    Decision 3: OCR has no capability-level absence/not-applicable state;
+    a document image is inherently an OCR input, unlike an MRZ zone or a
+    barcode symbol that may genuinely be physically absent). `extraction`
+    is None exactly when outcome=UNREADABLE."""
+
+    outcome: OCRReadOutcome
+    extraction: OCRExtraction | None
 
 
 @dataclass(frozen=True)

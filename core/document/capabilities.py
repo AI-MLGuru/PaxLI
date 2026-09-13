@@ -8,17 +8,18 @@ identifiers (e.g. a classification EvidenceResult's row ID) -- only the
 domain-level value it needs (e.g. a plain document_type string/enum
 member for AuthenticityChecker, if that capability is ever built).
 
-QualityAssessor, DocumentClassifier (Phase 1), MRZParser, and
-BarcodeDecoder (Phase 2, DP-003/DP-004) have deterministic
-implementations (core.document.deterministic). OCREngine remains
-interface-only -- DP-003 Decision 11 keeps OCR and DOCUMENT_FIELD_
-EXTRACTION reconciliation out of scope pending a future phase.
+QualityAssessor, DocumentClassifier (Phase 1), MRZParser, BarcodeDecoder
+(Phase 2, DP-003/DP-004), and OCREngine (Phase 3, DP-005/DP-006) all
+have deterministic implementations (core.document.deterministic).
+DOCUMENT_FIELD_EXTRACTION reconciliation remains out of scope pending a
+future phase (DP-005 Decision 0/11).
 
 Where a capability's own return type is Optional (MRZParser, BarcodeDecoder):
 None means the capability found no applicable input/presence to
 process; it is a legitimate outcome and never represents failure.
 Capabilities whose domain necessarily applies to every submitted
-capture (QualityAssessor, DocumentClassifier) need not use an optional
+capture (QualityAssessor, DocumentClassifier, and -- for a different
+reason, DP-005 Decision 3 -- OCREngine) need not use an optional
 return.
 
 AuthenticityChecker is deliberately NOT defined here at all. DP-001
@@ -35,7 +36,7 @@ from core.document.types import (
     BarcodeReadResult,
     DocumentClassification,
     MRZReadResult,
-    OCRExtraction,
+    OCRReadResult,
     QualityAssessment,
 )
 
@@ -75,10 +76,21 @@ class DocumentClassifier(ABC):
 
 
 class OCREngine(ABC):
-    """No Phase 1 implementation -- interface only (DP-001 Decision 3)."""
+    """DP-005/DP-006 Phase 3."""
 
     @abstractmethod
-    async def extract(self, image: bytes) -> OCRExtraction:
+    async def extract(self, image: bytes) -> OCRReadResult:
+        """Always returns a populated OCRReadResult -- never None (DP-005
+        Decision 3). OCR has no capability-level absence/not-applicable
+        state: whenever this method is actually called, inability to
+        recognize usable text is the outcome UNREADABLE, never an
+        absence of applicability. This says nothing about WHETHER the
+        capability gets called for a given capture -- DocumentProcessor's
+        existing ambiguous-capture precondition still short-circuits
+        BEFORE any capability invocation, exactly as it already does for
+        every other stage; that is pipeline-level precondition handling,
+        not a capability-level absence state, and Decision 3 does not
+        touch it."""
         raise NotImplementedError
 
 

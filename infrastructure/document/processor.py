@@ -28,10 +28,11 @@ from core.document.capabilities import (
     CapabilityUnavailableError,
     DocumentClassifier,
     MRZParser,
+    OCREngine,
     QualityAssessor,
 )
 from core.document.reason_codes import DocumentReasonCode
-from core.document.types import BarcodeReadOutcome, MRZReadOutcome
+from core.document.types import BarcodeReadOutcome, MRZReadOutcome, OCRReadOutcome
 from core.evidence.enums import EvidenceType
 from core.evidence_result.enums import EvidenceResultStatus, EvidenceResultType
 from core.evidence_result.models import EvidenceResult
@@ -48,6 +49,7 @@ _PRODUCER_QUALITY = "document-quality-assessor-deterministic"
 _PRODUCER_CLASSIFIER = "document-classifier-deterministic"
 _PRODUCER_MRZ = "document-mrz-parser-deterministic"
 _PRODUCER_BARCODE = "document-barcode-decoder-deterministic"
+_PRODUCER_OCR = "document-ocr-engine-deterministic"
 _PRODUCER_VERSION = "1.0"
 
 # DP-003 §7's frozen MRZ/Barcode failure-mapping table, encoded directly
@@ -89,6 +91,19 @@ _BARCODE_OUTCOME_MAP: dict[BarcodeReadOutcome, tuple[EvidenceResultStatus, str |
     BarcodeReadOutcome.VALID: (EvidenceResultStatus.PASS, None),
 }
 
+# DP-005 §7's frozen OCR failure-mapping table. No UNREADABLE/NOT_SUBMITTED
+# split exists here the way MRZ/Barcode's maps have one -- OCR has no
+# NOT_SUBMITTED outcome at all (DP-005 Decision 3), so this map only ever
+# needs to cover OCRReadOutcome's two members. No FAIL entry either, for
+# the same structural reason as _BARCODE_OUTCOME_MAP (DP-005 Decision 2).
+_OCR_OUTCOME_MAP: dict[OCRReadOutcome, tuple[EvidenceResultStatus, str | None]] = {
+    OCRReadOutcome.UNREADABLE: (
+        EvidenceResultStatus.INCONCLUSIVE,
+        DocumentReasonCode.OCR_UNREADABLE.value,
+    ),
+    OCRReadOutcome.VALID: (EvidenceResultStatus.PASS, None),
+}
+
 # A policy-agnostic midpoint DocumentProcessor applies to map a
 # capability's raw score to PASS/FAIL -- decoupled from however a given
 # QualityAssessor implementation computes its score (EVD-3.12.3: quality
@@ -117,6 +132,7 @@ class SqlAlchemyDocumentProcessor:
         document_classifier: DocumentClassifier,
         mrz_parser: MRZParser,
         barcode_decoder: BarcodeDecoder,
+        ocr_engine: OCREngine,
     ) -> None:
         self._session_factory = session_factory
         self._key_provider = key_provider
@@ -126,6 +142,7 @@ class SqlAlchemyDocumentProcessor:
         self._document_classifier = document_classifier
         self._mrz_parser = mrz_parser
         self._barcode_decoder = barcode_decoder
+        self._ocr_engine = ocr_engine
 
     async def process(
         self,
@@ -201,6 +218,23 @@ class SqlAlchemyDocumentProcessor:
             correlation_id=correlation_id,
         )
         await self._run_barcode(
+            session_id=session_id,
+            tenant_id=tenant_id,
+            capture_id=capture_id,
+            object_key=object_key,
+            ambiguous=ambiguous,
+            request_id=request_id,
+            correlation_id=correlation_id,
+        )
+        # DP-005 Decision 3: invoked unconditionally, like every stage
+        # above -- OCR has no capability-level absence state (a document
+        # image is inherently an OCR input, unlike an MRZ zone or barcode
+        # symbol that may genuinely be physically absent). The shared
+        # ambiguous-capture precondition below still short-circuits
+        # BEFORE OCREngine.extract() is ever called, exactly as it does
+        # for every other stage -- that pipeline-level precondition is
+        # unrelated to, and unaffected by, Decision 3.
+        await self._run_ocr(
             session_id=session_id,
             tenant_id=tenant_id,
             capture_id=capture_id,
@@ -629,6 +663,88 @@ class SqlAlchemyDocumentProcessor:
                 reason_codes=(reason_code,) if reason_code else (),
                 result=result_payload,
                 producer=_PRODUCER_BARCODE,
+                source_reference=capture_id,
+                request_id=request_id,
+                correlation_id=correlation_id,
+            )
+            await session.commit()
+
+    async def _run_ocr(
+        self,
+        *,
+        session_id: UUID,
+        tenant_id: str,
+        capture_id: UUID | None,
+        object_key: str | None,
+        ambiguous: bool,
+        request_id: str | None,
+        correlation_id: str | None,
+    ) -> None:
+        async with self._session_factory() as session:
+            service = self._build_evidence_result_service(session)
+            existing = await service.get_effective_for_session_by_type(
+                session_id=session_id,
+                tenant_id=tenant_id,
+                evidence_type=EvidenceResultType.OCR_EXTRACTION,
+            )
+            if existing is not None and _is_reusable(existing.status):
+                return
+
+            if ambiguous:
+                await self._persist_stage(
+                    service,
+                    existing,
+                    session_id=session_id,
+                    tenant_id=tenant_id,
+                    evidence_type=EvidenceResultType.OCR_EXTRACTION,
+                    status=EvidenceResultStatus.INCONCLUSIVE,
+                    reason_codes=(DocumentReasonCode.AMBIGUOUS_DOCUMENT_CAPTURE.value,),
+                    producer=_PRODUCER_OCR,
+                    request_id=request_id,
+                    correlation_id=correlation_id,
+                )
+                await session.commit()
+                return
+
+            assert object_key is not None and capture_id is not None  # ambiguous handled above
+            image = await self._storage.get(object_key)
+            try:
+                read_result = await self._ocr_engine.extract(image)
+            except CapabilityUnavailableError as exc:
+                await self._persist_stage(
+                    service,
+                    existing,
+                    session_id=session_id,
+                    tenant_id=tenant_id,
+                    evidence_type=EvidenceResultType.OCR_EXTRACTION,
+                    status=EvidenceResultStatus.UNAVAILABLE,
+                    reason_codes=(exc.reason_code,),
+                    producer=_PRODUCER_OCR,
+                    source_reference=capture_id,
+                    request_id=request_id,
+                    correlation_id=correlation_id,
+                )
+                await session.commit()
+                return
+
+            # No `if read_result is None` branch here -- unlike MRZ/Barcode,
+            # OCREngine.extract() never returns None (DP-005 Decision 3).
+            status, reason_code = _OCR_OUTCOME_MAP[read_result.outcome]
+            result_payload = (
+                {"raw": read_result.extraction.raw, "fields": read_result.extraction.fields}
+                if read_result.extraction is not None
+                else None
+            )
+            await self._persist_stage(
+                service,
+                existing,
+                session_id=session_id,
+                tenant_id=tenant_id,
+                evidence_type=EvidenceResultType.OCR_EXTRACTION,
+                status=status,
+                reason_codes=(reason_code,) if reason_code else (),
+                result=result_payload,
+                producer=_PRODUCER_OCR,
                 source_reference=capture_id,
                 request_id=request_id,
                 correlation_id=correlation_id,

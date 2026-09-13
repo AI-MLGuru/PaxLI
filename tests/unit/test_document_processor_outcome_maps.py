@@ -1,19 +1,25 @@
-"""DP-004 §6/§8: _MRZ_OUTCOME_MAP/_BARCODE_OUTCOME_MAP encode DP-003 §7's
-frozen failure-mapping table directly as code. Exhaustiveness (every
-outcome enum member has an entry) is enforced here, not assumed -- a
-future new outcome member added to MRZReadOutcome/BarcodeReadOutcome
-without a corresponding map entry would raise a KeyError at runtime in
-_run_mrz/_run_barcode; this test catches that at commit time instead.
+"""DP-004 §6/§8 / DP-006 §5: _MRZ_OUTCOME_MAP/_BARCODE_OUTCOME_MAP/
+_OCR_OUTCOME_MAP encode DP-003 §7 / DP-005 §7's frozen failure-mapping
+tables directly as code. Exhaustiveness (every outcome enum member has
+an entry) is enforced here, not assumed -- a future new outcome member
+added to MRZReadOutcome/BarcodeReadOutcome/OCRReadOutcome without a
+corresponding map entry would raise a KeyError at runtime in
+_run_mrz/_run_barcode/_run_ocr; this test catches that at commit time
+instead.
 
 Pure data-structure tests, no DB/session dependency -- infrastructure.
 document.processor's own module docstring notes it has "no fake-
 repository seam to unit-test against" for its orchestration behavior,
-but these two dicts are plain data and need no such seam.
+but these dicts are plain data and need no such seam.
 """
 
-from core.document.types import BarcodeReadOutcome, MRZReadOutcome
+from core.document.types import BarcodeReadOutcome, MRZReadOutcome, OCRReadOutcome
 from core.evidence_result.enums import EvidenceResultStatus
-from infrastructure.document.processor import _BARCODE_OUTCOME_MAP, _MRZ_OUTCOME_MAP
+from infrastructure.document.processor import (
+    _BARCODE_OUTCOME_MAP,
+    _MRZ_OUTCOME_MAP,
+    _OCR_OUTCOME_MAP,
+)
 
 
 def test_mrz_outcome_map_is_exhaustive() -> None:
@@ -53,4 +59,22 @@ def test_no_barcode_outcome_ever_maps_to_fail() -> None:
     asserted directly against the map, not inferred from an absence of
     counter-examples."""
     mapped_statuses = {status for status, _reason in _BARCODE_OUTCOME_MAP.values()}
+    assert EvidenceResultStatus.FAIL not in mapped_statuses
+
+
+def test_ocr_outcome_map_is_exhaustive() -> None:
+    for outcome in OCRReadOutcome:
+        assert outcome in _OCR_OUTCOME_MAP, f"{outcome} has no entry in _OCR_OUTCOME_MAP"
+
+
+def test_ocr_outcome_map_matches_dp005_frozen_table() -> None:
+    assert _OCR_OUTCOME_MAP[OCRReadOutcome.UNREADABLE][0] is EvidenceResultStatus.INCONCLUSIVE
+    assert _OCR_OUTCOME_MAP[OCRReadOutcome.VALID] == (EvidenceResultStatus.PASS, None)
+
+
+def test_no_ocr_outcome_ever_maps_to_fail() -> None:
+    """DP-005 Decision 2: OCR_EXTRACTION MUST NOT emit FAIL in Phase 3 --
+    asserted directly against the map, not inferred from an absence of
+    counter-examples."""
+    mapped_statuses = {status for status, _reason in _OCR_OUTCOME_MAP.values()}
     assert EvidenceResultStatus.FAIL not in mapped_statuses

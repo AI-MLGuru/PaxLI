@@ -33,3 +33,7 @@ class DocumentReasonCode(StrEnum):
     BARCODE_UNREADABLE = "BARCODE_UNREADABLE"
     BARCODE_PAYLOAD_UNRECOGNIZED = "BARCODE_PAYLOAD_UNRECOGNIZED"
     BARCODE_PAYLOAD_MALFORMED = "BARCODE_PAYLOAD_MALFORMED"
+    # DP-005 Decision 5 (Phase 3): spec-blessed (EVD-3.14), not a PaxLI
+    # coinage like every MRZ/Barcode code above -- OCR's own outcome
+    # space (DP-005 Decision 2) has only one failure mode to name.
+    OCR_UNREADABLE = "OCR_UNREADABLE"

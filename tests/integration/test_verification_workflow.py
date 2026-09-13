@@ -25,6 +25,7 @@ from core.document.deterministic import (
     DeterministicBarcodeDecoder,
     DeterministicDocumentClassifier,
     DeterministicMRZParser,
+    DeterministicOCREngine,
     DeterministicQualityAssessor,
 )
 from core.evidence.enums import EvidenceType
@@ -127,6 +128,7 @@ def _services(session):
         DeterministicDocumentClassifier(),
         DeterministicMRZParser(),
         DeterministicBarcodeDecoder(),
+        DeterministicOCREngine(),
     )
     workflow = VerificationWorkflowService(
         session_service, orchestrator, audit_service, document_processor

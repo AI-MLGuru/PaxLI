@@ -36,12 +36,14 @@ from core.document.capabilities import (
     CapabilityUnavailableError,
     DocumentClassifier,
     MRZParser,
+    OCREngine,
     QualityAssessor,
 )
 from core.document.deterministic import (
     DeterministicBarcodeDecoder,
     DeterministicDocumentClassifier,
     DeterministicMRZParser,
+    DeterministicOCREngine,
     DeterministicQualityAssessor,
 )
 from core.document.types import DocumentClassification, QualityAssessment
@@ -176,6 +178,7 @@ def _processor(
     document_classifier: DocumentClassifier | None = None,
     mrz_parser: MRZParser | None = None,
     barcode_decoder: BarcodeDecoder | None = None,
+    ocr_engine: OCREngine | None = None,
 ) -> SqlAlchemyDocumentProcessor:
     key_provider = LocalAesGcmKeyProvider({key_id: b"0" * 32})
     return SqlAlchemyDocumentProcessor(
@@ -187,6 +190,7 @@ def _processor(
         document_classifier or DeterministicDocumentClassifier(),
         mrz_parser or DeterministicMRZParser(),
         barcode_decoder or DeterministicBarcodeDecoder(),
+        ocr_engine or DeterministicOCREngine(),
     )
 
 
@@ -285,6 +289,26 @@ class _BuggyBarcodeDecoder(BarcodeDecoder):
 
 class _UnavailableBarcodeDecoder(BarcodeDecoder):
     async def decode(self, image: bytes):
+        raise CapabilityUnavailableError("MODEL_UNAVAILABLE")
+
+
+class _CountingOCREngine(OCREngine):
+    def __init__(self, delegate: OCREngine) -> None:
+        self.calls = 0
+        self._delegate = delegate
+
+    async def extract(self, image: bytes):
+        self.calls += 1
+        return await self._delegate.extract(image)
+
+
+class _BuggyOCREngine(OCREngine):
+    async def extract(self, image: bytes):
+        raise AttributeError("simulated programming defect, not a known capability failure")
+
+
+class _UnavailableOCREngine(OCREngine):
+    async def extract(self, image: bytes):
         raise CapabilityUnavailableError("MODEL_UNAVAILABLE")
 
 
@@ -395,8 +419,10 @@ async def test_ambiguous_captures_produce_inconclusive_without_invoking_any_capa
     document_classifier = _CountingDocumentClassifier(DeterministicDocumentClassifier())
     mrz_parser = _CountingMRZParser(DeterministicMRZParser())
     barcode_decoder = _CountingBarcodeDecoder(DeterministicBarcodeDecoder())
+    ocr_engine = _CountingOCREngine(DeterministicOCREngine())
     processor = _processor(
-        key_id, storage, quality_assessor, document_classifier, mrz_parser, barcode_decoder
+        key_id, storage, quality_assessor, document_classifier, mrz_parser, barcode_decoder,
+        ocr_engine,
     )
     await processor.process(session_id=UUID(session_id), tenant_id=tenant_id)
 
@@ -404,6 +430,7 @@ async def test_ambiguous_captures_produce_inconclusive_without_invoking_any_capa
     assert document_classifier.calls == 0
     assert mrz_parser.calls == 0
     assert barcode_decoder.calls == 0
+    assert ocr_engine.calls == 0
 
     async with session_factory() as session:
         quality = await _effective_result(session, session_id, tenant_id, "DOCUMENT_QUALITY")
@@ -412,7 +439,8 @@ async def test_ambiguous_captures_produce_inconclusive_without_invoking_any_capa
         )
         mrz = await _effective_result(session, session_id, tenant_id, "MRZ")
         barcode = await _effective_result(session, session_id, tenant_id, "BARCODE_QR")
-        for result in (quality, classification, mrz, barcode):
+        ocr = await _effective_result(session, session_id, tenant_id, "OCR_EXTRACTION")
+        for result in (quality, classification, mrz, barcode, ocr):
             assert result is not None
             assert result.status == EvidenceResultStatus.INCONCLUSIVE.value
             assert result.reason_codes_json == ["AMBIGUOUS_DOCUMENT_CAPTURE"]
@@ -447,8 +475,15 @@ async def test_wrong_tenant_id_sees_no_captures_and_never_touches_the_owning_ten
     document_classifier = _CountingDocumentClassifier(DeterministicDocumentClassifier())
     mrz_parser = _CountingMRZParser(DeterministicMRZParser())
     barcode_decoder = _CountingBarcodeDecoder(DeterministicBarcodeDecoder())
+    ocr_engine = _CountingOCREngine(DeterministicOCREngine())
     processor = _processor(
-        key_id, storage, quality_assessor, document_classifier, mrz_parser, barcode_decoder
+        key_id,
+        storage,
+        quality_assessor,
+        document_classifier,
+        mrz_parser,
+        barcode_decoder,
+        ocr_engine,
     )
     # The attacker supplies the victim's real session_id but their OWN
     # tenant_id -- exactly the shape a tenant-scoping bug elsewhere in the
@@ -460,11 +495,16 @@ async def test_wrong_tenant_id_sees_no_captures_and_never_touches_the_owning_ten
     assert document_classifier.calls == 0
     assert mrz_parser.calls == 0  # HV-011: attacked directly at the new stages too
     assert barcode_decoder.calls == 0
+    assert ocr_engine.calls == 0  # HV-012: and at Phase 3's new stage too
 
     async with session_factory() as session:
         for tenant_id in (owning_tenant, attacking_tenant):
             for evidence_type in (
-                "DOCUMENT_QUALITY", "DOCUMENT_CLASSIFICATION", "MRZ", "BARCODE_QR",
+                "DOCUMENT_QUALITY",
+                "DOCUMENT_CLASSIFICATION",
+                "MRZ",
+                "BARCODE_QR",
+                "OCR_EXTRACTION",
             ):
                 result = await _effective_result(session, session_id, tenant_id, evidence_type)
                 assert result is None
@@ -477,6 +517,7 @@ async def test_wrong_tenant_id_sees_no_captures_and_never_touches_the_owning_ten
     assert document_classifier.calls == 1
     assert mrz_parser.calls == 1
     assert barcode_decoder.calls == 1
+    assert ocr_engine.calls == 1
     async with session_factory() as session:
         quality = await _effective_result(session, session_id, owning_tenant, "DOCUMENT_QUALITY")
         assert quality is not None
@@ -528,6 +569,23 @@ async def test_concurrent_process_calls_converge_on_one_effective_result_per_typ
             )
             assert rows[0].status == EvidenceResultStatus.PASS.value
             assert rows[0].source_reference == str(capture_id)
+
+        # HV-012: this fixture carries no OCR marker, so OCR converges on
+        # UNREADABLE rather than PASS -- still exactly one effective row.
+        ocr_rows = (
+            await session.execute(
+                select(EvidenceResultRecord).where(
+                    EvidenceResultRecord.session_id == session_id,
+                    EvidenceResultRecord.evidence_type == "OCR_EXTRACTION",
+                    EvidenceResultRecord.is_effective.is_(True),
+                )
+            )
+        ).scalars().all()
+        assert len(ocr_rows) == 1, (
+            f"OCR_EXTRACTION: expected exactly one effective row, got {len(ocr_rows)}"
+        )
+        assert ocr_rows[0].status == EvidenceResultStatus.INCONCLUSIVE.value
+        assert ocr_rows[0].source_reference == str(capture_id)
 
 
 async def _effective_row_count(session_id: str, evidence_type: str) -> int:
@@ -609,6 +667,37 @@ async def test_concurrent_barcode_processing_converges_on_one_effective_result()
         assert barcode.source_reference == str(capture_id)
 
 
+async def test_concurrent_ocr_processing_converges_on_one_effective_result() -> None:
+    """HV-012: same attack, at OCREngine's own call site."""
+    tenant_id = f"tenant-docproc-ocr-race-{uuid4()}"
+    key_id = f"key-{uuid4()}"
+    storage = _storage(key_id)
+    marker = b"PAXLI_TEST_OCR_VALID:surname=ERIKSSON\x00"
+
+    async with session_factory() as session:
+        session_id = await _create_session(session, tenant_id)
+        capture_id = await _upload_document(
+            session, tenant_id, session_id, storage,
+            MINIMAL_JPEG_BYTES + b"0" * 2000 + marker,
+        )
+        await session.commit()
+
+    processor_a = _processor(key_id, storage)
+    processor_b = _processor(key_id, storage)
+
+    await asyncio.gather(
+        processor_a.process(session_id=UUID(session_id), tenant_id=tenant_id),
+        processor_b.process(session_id=UUID(session_id), tenant_id=tenant_id),
+    )
+
+    assert await _effective_row_count(session_id, "OCR_EXTRACTION") == 1
+    async with session_factory() as session:
+        ocr = await _effective_result(session, session_id, tenant_id, "OCR_EXTRACTION")
+        assert ocr is not None
+        assert ocr.status == EvidenceResultStatus.PASS.value
+        assert ocr.source_reference == str(capture_id)
+
+
 async def test_concurrent_processing_of_different_captures_does_not_interfere() -> None:
     """HV-011: a fix that eliminated the concurrent-create race by
     serializing ALL document processing globally would technically pass
@@ -687,8 +776,15 @@ async def test_retry_does_not_recompute_an_already_reusable_result() -> None:
     document_classifier = _CountingDocumentClassifier(DeterministicDocumentClassifier())
     mrz_parser = _CountingMRZParser(DeterministicMRZParser())
     barcode_decoder = _CountingBarcodeDecoder(DeterministicBarcodeDecoder())
+    ocr_engine = _CountingOCREngine(DeterministicOCREngine())
     processor = _processor(
-        key_id, storage, quality_assessor, document_classifier, mrz_parser, barcode_decoder
+        key_id,
+        storage,
+        quality_assessor,
+        document_classifier,
+        mrz_parser,
+        barcode_decoder,
+        ocr_engine,
     )
 
     await processor.process(session_id=UUID(session_id), tenant_id=tenant_id)
@@ -696,14 +792,17 @@ async def test_retry_does_not_recompute_an_already_reusable_result() -> None:
     assert document_classifier.calls == 1
     assert mrz_parser.calls == 1
     assert barcode_decoder.calls == 1
+    assert ocr_engine.calls == 1
 
     await processor.process(session_id=UUID(session_id), tenant_id=tenant_id)
     assert quality_assessor.calls == 1  # NOT recomputed -- PASS is terminal/reusable
     assert document_classifier.calls == 1
-    # No MRZ/barcode marker on this fixture -> NOT_SUBMITTED -- DP-003
-    # Decision 9's terminal/reusable claim confirmed directly, not assumed.
+    # No MRZ/barcode/OCR marker on this fixture -> NOT_SUBMITTED/UNREADABLE
+    # -- DP-003 Decision 9's terminal/reusable claim confirmed directly,
+    # not assumed.
     assert mrz_parser.calls == 1
     assert barcode_decoder.calls == 1
+    assert ocr_engine.calls == 1
 
 
 async def test_mrz_pass_result_is_not_recomputed_on_retry() -> None:
@@ -735,6 +834,38 @@ async def test_mrz_pass_result_is_not_recomputed_on_retry() -> None:
 
     await processor.process(session_id=UUID(session_id), tenant_id=tenant_id)
     assert mrz_parser.calls == 1  # NOT recomputed
+
+
+async def test_ocr_valid_result_is_not_recomputed_on_retry() -> None:
+    """DP-005 Decision 9 for the VALID branch specifically -- mirrors
+    test_mrz_pass_result_is_not_recomputed_on_retry exactly, confirming
+    OCR's terminal/reusable behavior is proven directly rather than
+    assumed inherited from MRZ/Barcode's own proofs."""
+    tenant_id = f"tenant-docproc-ocr-convergence-{uuid4()}"
+    key_id = f"key-{uuid4()}"
+    storage = _storage(key_id)
+
+    async with session_factory() as session:
+        session_id = await _create_session(session, tenant_id)
+        marker = b"PAXLI_TEST_OCR_VALID:surname=ERIKSSON\x00"
+        await _upload_document(
+            session, tenant_id, session_id, storage,
+            MINIMAL_JPEG_BYTES + b"0" * 2000 + marker,
+        )
+        await session.commit()
+
+    ocr_engine = _CountingOCREngine(DeterministicOCREngine())
+    processor = _processor(key_id, storage, ocr_engine=ocr_engine)
+
+    await processor.process(session_id=UUID(session_id), tenant_id=tenant_id)
+    assert ocr_engine.calls == 1
+    async with session_factory() as session:
+        ocr = await _effective_result(session, session_id, tenant_id, "OCR_EXTRACTION")
+        assert ocr is not None
+        assert ocr.status == EvidenceResultStatus.PASS.value
+
+    await processor.process(session_id=UUID(session_id), tenant_id=tenant_id)
+    assert ocr_engine.calls == 1  # NOT recomputed
 
 
 async def test_capability_unavailable_error_produces_unavailable_result_and_is_retryable() -> None:
@@ -822,6 +953,52 @@ async def test_mrz_unavailable_result_is_retryable_and_superseded_by_real_attemp
             select(EvidenceResultRecord).where(
                 EvidenceResultRecord.session_id == session_id,
                 EvidenceResultRecord.evidence_type == "MRZ",
+                EvidenceResultRecord.is_effective.is_(True),
+            )
+        )
+        assert len(result.scalars().all()) == 1
+
+
+async def test_ocr_unavailable_result_is_retryable_and_superseded_by_real_attempt() -> None:
+    """Mirrors test_mrz_unavailable_result_is_retryable_and_superseded_by_
+    real_attempt exactly, for OCREngine's own UNAVAILABLE/retry path."""
+    tenant_id = f"tenant-docproc-ocr-unavailable-{uuid4()}"
+    key_id = f"key-{uuid4()}"
+    storage = _storage(key_id)
+    marker = b"PAXLI_TEST_OCR_VALID:surname=ERIKSSON\x00"
+
+    async with session_factory() as session:
+        session_id = await _create_session(session, tenant_id)
+        await _upload_document(
+            session, tenant_id, session_id, storage,
+            MINIMAL_JPEG_BYTES + b"0" * 2000 + marker,
+        )
+        await session.commit()
+
+    failing_processor = _processor(key_id, storage, ocr_engine=_UnavailableOCREngine())
+    await failing_processor.process(session_id=UUID(session_id), tenant_id=tenant_id)
+
+    async with session_factory() as session:
+        ocr = await _effective_result(session, session_id, tenant_id, "OCR_EXTRACTION")
+        assert ocr is not None
+        assert ocr.status == EvidenceResultStatus.UNAVAILABLE.value
+        assert ocr.reason_codes_json == ["MODEL_UNAVAILABLE"]
+        first_attempt_id = ocr.id
+
+    working_processor = _processor(key_id, storage)
+    await working_processor.process(session_id=UUID(session_id), tenant_id=tenant_id)
+
+    async with session_factory() as session:
+        ocr = await _effective_result(session, session_id, tenant_id, "OCR_EXTRACTION")
+        assert ocr is not None
+        assert ocr.status == EvidenceResultStatus.PASS.value
+        assert ocr.id != first_attempt_id
+        assert ocr.supersedes_id == first_attempt_id
+
+        result = await session.execute(
+            select(EvidenceResultRecord).where(
+                EvidenceResultRecord.session_id == session_id,
+                EvidenceResultRecord.evidence_type == "OCR_EXTRACTION",
                 EvidenceResultRecord.is_effective.is_(True),
             )
         )
@@ -935,25 +1112,77 @@ async def test_barcode_full_round_trip_covers_every_outcome_state() -> None:
                 assert barcode.reason_codes_json == [expected_reason], f"case {marker_text!r}"
 
 
+async def test_ocr_full_round_trip_covers_every_outcome_state() -> None:
+    """DP-005 §7's frozen OCR mapping, proven end to end for both states
+    (UNREADABLE and VALID) -- explicitly confirming FAIL is never among
+    them (DP-005 Decision 2: OCR has no standards-defined negative
+    condition). OCR_EXTRACTION is HIGHLY_SENSITIVE (DP-005 Decision 7 /
+    DP-001 Decision 1), so a populated result must be encrypted, never
+    plaintext result_json -- mirrors test_mrz_full_round_trip_covers_
+    every_outcome_state's encryption-boundary proof."""
+    cases = (
+        ("PAXLI_TEST_OCR_UNREADABLE", EvidenceResultStatus.INCONCLUSIVE, "OCR_UNREADABLE", False),
+        (
+            "PAXLI_TEST_OCR_VALID:surname=ERIKSSON;given_names=ANNA MARIA\x00",
+            EvidenceResultStatus.PASS,
+            None,
+            True,
+        ),
+    )
+
+    for marker_text, expected_status, expected_reason, expect_result in cases:
+        tenant_id = f"tenant-docproc-ocr-outcome-{uuid4()}"
+        key_id = f"key-{uuid4()}"
+        storage = _storage(key_id)
+
+        async with session_factory() as session:
+            session_id = await _create_session(session, tenant_id)
+            capture_id = await _upload_document(
+                session, tenant_id, session_id, storage,
+                MINIMAL_JPEG_BYTES + b"0" * 2000 + marker_text.encode("utf-8"),
+            )
+            await session.commit()
+
+        processor = _processor(key_id, storage)
+        await processor.process(session_id=UUID(session_id), tenant_id=tenant_id)
+
+        async with session_factory() as session:
+            ocr = await _effective_result(session, session_id, tenant_id, "OCR_EXTRACTION")
+            assert ocr is not None, f"case {marker_text!r}: no OCR_EXTRACTION result persisted"
+            assert ocr.status == expected_status.value, f"case {marker_text!r}"
+            assert ocr.status != EvidenceResultStatus.FAIL.value
+            assert ocr.source_reference == str(capture_id)
+            if expected_reason:
+                assert ocr.reason_codes_json == [expected_reason], f"case {marker_text!r}"
+            else:
+                assert ocr.reason_codes_json == [], f"case {marker_text!r}"
+            assert ocr.result_json is None, f"case {marker_text!r}"
+            if expect_result:
+                assert ocr.result_ciphertext is not None, f"case {marker_text!r}"
+            else:
+                assert ocr.result_ciphertext is None, f"case {marker_text!r}"
+
+
 async def test_mrz_check_digit_mismatch_does_not_affect_quality_or_classification() -> None:
     """Partial-stage independence (REL-10.15), extended from Phase 1's
-    unrecognized-document test to a Phase 2 stage -- and, per HV-011,
-    to ALL FOUR stages simultaneously with genuinely mixed outcomes
-    (MRZ FAIL, Barcode PASS, Quality/Classification PASS), not just a
-    two-stage snapshot."""
+    unrecognized-document test to a Phase 2 stage -- and, per HV-011/
+    HV-012, to ALL FIVE stages simultaneously with genuinely mixed
+    outcomes (MRZ FAIL, Barcode PASS, OCR PASS, Quality/Classification
+    PASS), not just a two-stage snapshot."""
     tenant_id = f"tenant-docproc-mrz-partial-{uuid4()}"
     key_id = f"key-{uuid4()}"
     storage = _storage(key_id)
     corrupted_line2 = _MRZ_LINE2[:9] + "5" + _MRZ_LINE2[10:]
     mrz_marker = b"PAXLI_TEST_MRZ:" + (_MRZ_LINE1 + corrupted_line2).encode("ascii")
     barcode_marker = b"PAXLI_TEST_BARCODE_VALID:PDF417:document_number=A1234567\x00"
+    ocr_marker = b"PAXLI_TEST_OCR_VALID:surname=ERIKSSON\x00"
 
     async with session_factory() as session:
         session_id = await _create_session(session, tenant_id)
         await _upload_document(
             session, tenant_id, session_id, storage,
             MINIMAL_JPEG_BYTES + b"0" * 2000 + b"PAXLI_TEST_ICAO_PASSPORT_DATA_PAGE"
-            + mrz_marker + barcode_marker,
+            + mrz_marker + barcode_marker + ocr_marker,
         )
         await session.commit()
 
@@ -967,6 +1196,7 @@ async def test_mrz_check_digit_mismatch_does_not_affect_quality_or_classificatio
         )
         mrz = await _effective_result(session, session_id, tenant_id, "MRZ")
         barcode = await _effective_result(session, session_id, tenant_id, "BARCODE_QR")
+        ocr = await _effective_result(session, session_id, tenant_id, "OCR_EXTRACTION")
         assert quality is not None
         assert quality.status == EvidenceResultStatus.PASS.value  # unaffected
         assert classification is not None
@@ -975,6 +1205,8 @@ async def test_mrz_check_digit_mismatch_does_not_affect_quality_or_classificatio
         assert mrz.status == EvidenceResultStatus.FAIL.value
         assert barcode is not None
         assert barcode.status == EvidenceResultStatus.PASS.value  # unaffected by MRZ's failure
+        assert ocr is not None
+        assert ocr.status == EvidenceResultStatus.PASS.value  # unaffected by MRZ's failure
 
 
 async def test_unexpected_capability_exception_propagates_uncaught() -> None:
@@ -1067,6 +1299,34 @@ async def test_barcode_decoder_unexpected_exception_propagates_uncaught() -> Non
         mrz = await _effective_result(session, session_id, tenant_id, "MRZ")
         assert mrz is not None
         assert mrz.status == EvidenceResultStatus.NOT_SUBMITTED.value
+
+
+async def test_ocr_engine_unexpected_exception_propagates_uncaught() -> None:
+    """HV-012: same proof for OCREngine specifically."""
+    tenant_id = f"tenant-docproc-ocr-defect-{uuid4()}"
+    key_id = f"key-{uuid4()}"
+    storage = _storage(key_id)
+
+    async with session_factory() as session:
+        session_id = await _create_session(session, tenant_id)
+        await _upload_document(
+            session, tenant_id, session_id, storage,
+            MINIMAL_JPEG_BYTES + b"0" * 2000 + b"PAXLI_TEST_ICAO_PASSPORT_DATA_PAGE",
+        )
+        await session.commit()
+
+    processor = _processor(key_id, storage, ocr_engine=_BuggyOCREngine())
+
+    with pytest.raises(AttributeError, match="simulated programming defect"):
+        await processor.process(session_id=UUID(session_id), tenant_id=tenant_id)
+
+    async with session_factory() as session:
+        assert await _effective_result(session, session_id, tenant_id, "OCR_EXTRACTION") is None
+        # Stages ordered before OCR (barcode) already committed
+        # successfully and are unaffected by OCR's later defect.
+        barcode = await _effective_result(session, session_id, tenant_id, "BARCODE_QR")
+        assert barcode is not None
+        assert barcode.status == EvidenceResultStatus.NOT_SUBMITTED.value
 
 
 async def test_document_unsupported_lets_policy_not_document_processor_decide_outcome() -> None:
@@ -1165,6 +1425,7 @@ async def test_document_unsupported_lets_policy_not_document_processor_decide_ou
                 session_factory, key_provider, key_id, storage,
                 DeterministicQualityAssessor(), DeterministicDocumentClassifier(),
                 DeterministicMRZParser(), DeterministicBarcodeDecoder(),
+                DeterministicOCREngine(),
             )
             workflow = VerificationWorkflowService(
                 session_service, orchestrator, audit_service, document_processor
@@ -1268,6 +1529,7 @@ async def test_mrz_check_digit_mismatch_lets_policy_not_document_processor_decid
             session_factory, key_provider, key_id, storage,
             DeterministicQualityAssessor(), DeterministicDocumentClassifier(),
             DeterministicMRZParser(), DeterministicBarcodeDecoder(),
+            DeterministicOCREngine(),
         )
         workflow = VerificationWorkflowService(
             session_service, orchestrator, audit_service, document_processor
@@ -1279,6 +1541,109 @@ async def test_mrz_check_digit_mismatch_lets_policy_not_document_processor_decid
 
     assert decision.outcome is DecisionOutcome.REJECTED
     assert "POLICY:MRZ_CHECK_DIGIT_MISMATCH" in decision.reason_codes
+
+
+async def test_ocr_unreadable_lets_policy_not_document_processor_decide_outcome() -> None:
+    """DP-006 §7: the same policy-visibility proof, driven by OCR_EXTRACTION
+    specifically. OCR has no FAIL member (DP-005 Decision 2), so unlike
+    the MRZ version above the rule conditions on OCR's own actual negative
+    outcome, INCONCLUSIVE (UNREADABLE) -- proving the Decision Engine sees
+    and can act on OCR's real vocabulary, not a borrowed MRZ shape."""
+    key_id = f"key-{uuid4()}"
+    storage = _storage(key_id)
+    key_provider = LocalAesGcmKeyProvider({key_id: b"0" * 32})
+
+    tenant_id = f"tenant-docproc-ocr-policy-{uuid4()}"
+    async with session_factory() as session:
+        policy_service = PolicyService(
+            SqlAlchemyVerificationPolicyRepository(session),
+            AuditService(SqlAlchemyAuditEventRepository(session)),
+            EvidenceResultSchemaCatalog(),
+        )
+        await policy_service.create_and_activate(
+            tenant_id=tenant_id,
+            policy_id="policy-docproc-ocr",
+            assurance_level=AssuranceLevel.STANDARD,
+            created_by="admin",
+            evidence_requirements=(
+                EvidenceRequirement(
+                    evidence_type="OCR_EXTRACTION", level=EvidenceRequirementLevel.REQUIRED
+                ),
+            ),
+            rules=(
+                Rule(
+                    id="r1",
+                    condition=EvidenceCondition(
+                        evidence_type="OCR_EXTRACTION",
+                        field="status",
+                        operator="==",
+                        expected_value="INCONCLUSIVE",
+                    ),
+                    outcome=DecisionOutcome.REVIEW_REQUIRED,
+                    priority=10,
+                    reason_code="POLICY:OCR_UNREADABLE",
+                ),
+            ),
+        )
+        session_service = VerificationSessionService(
+            SqlAlchemyVerificationSessionRepository(session),
+            audit_service=AuditService(SqlAlchemyAuditEventRepository(session)),
+            policy_service=policy_service,
+            session_ttl_minutes=30,
+        )
+        created_session = await session_service.create(
+            tenant_id=tenant_id, external_reference=None, assurance_level=AssuranceLevel.STANDARD
+        )
+        await session.commit()
+
+    async with session_factory() as session:
+        await _upload_document(
+            session, tenant_id, str(created_session.id), storage,
+            MINIMAL_JPEG_BYTES + b"0" * 2000 + b"PAXLI_TEST_OCR_UNREADABLE",
+        )
+        await session.commit()
+
+    async with session_factory() as session:
+        policy_service = PolicyService(
+            SqlAlchemyVerificationPolicyRepository(session),
+            AuditService(SqlAlchemyAuditEventRepository(session)),
+            EvidenceResultSchemaCatalog(),
+        )
+        session_service = VerificationSessionService(
+            SqlAlchemyVerificationSessionRepository(session),
+            audit_service=AuditService(SqlAlchemyAuditEventRepository(session)),
+            policy_service=policy_service,
+            session_ttl_minutes=30,
+        )
+        evidence_result_service = EvidenceResultService(
+            SqlAlchemyEvidenceResultRepository(session, key_provider, key_id),
+            AuditService(SqlAlchemyAuditEventRepository(session)),
+            SqlAlchemyEvidenceRepository(session),
+        )
+        audit_service = AuditService(SqlAlchemyAuditEventRepository(session))
+        persistence_service = DecisionPersistenceService(
+            SqlAlchemyDecisionRepository(session), audit_service
+        )
+        orchestrator = DecisionOrchestrator(
+            session_service, policy_service, evidence_result_service,
+            persistence_service, audit_service,
+        )
+        document_processor = SqlAlchemyDocumentProcessor(
+            session_factory, key_provider, key_id, storage,
+            DeterministicQualityAssessor(), DeterministicDocumentClassifier(),
+            DeterministicMRZParser(), DeterministicBarcodeDecoder(),
+            DeterministicOCREngine(),
+        )
+        workflow = VerificationWorkflowService(
+            session_service, orchestrator, audit_service, document_processor
+        )
+        _session, decision = await workflow.submit(
+            session_id=created_session.id, tenant_id=tenant_id
+        )
+        await session.commit()
+
+    assert decision.outcome is DecisionOutcome.REVIEW_REQUIRED
+    assert "POLICY:OCR_UNREADABLE" in decision.reason_codes
 
 
 async def test_concurrent_submit_with_a_real_document_converges_on_one_decision() -> None:
@@ -1367,6 +1732,7 @@ async def test_concurrent_submit_with_a_real_document_converges_on_one_decision(
             session_factory, key_provider, key_id, storage,
             DeterministicQualityAssessor(), DeterministicDocumentClassifier(),
             DeterministicMRZParser(), DeterministicBarcodeDecoder(),
+            DeterministicOCREngine(),
         )
         return VerificationWorkflowService(
             session_service, orchestrator, audit_service, document_processor

@@ -9,7 +9,10 @@ equivalent stand-in, but its check-digit validation is REAL (see
 tests/unit/test_mrz.py for that logic's own dedicated coverage) --
 tests here only confirm the outcome-wrapper plumbing around it.
 DeterministicBarcodeDecoder is a full stand-in, mirroring
-DeterministicDocumentClassifier's pattern exactly."""
+DeterministicDocumentClassifier's pattern exactly.
+
+DP-005/DP-006 Phase 3: DeterministicOCREngine is a full stand-in too
+(no equivalent to MRZ's real check-digit subset exists for OCR)."""
 
 import pytest
 
@@ -17,9 +20,10 @@ from core.document.deterministic import (
     DeterministicBarcodeDecoder,
     DeterministicDocumentClassifier,
     DeterministicMRZParser,
+    DeterministicOCREngine,
     DeterministicQualityAssessor,
 )
-from core.document.types import BarcodeReadOutcome, MRZReadOutcome
+from core.document.types import BarcodeReadOutcome, MRZReadOutcome, OCRReadOutcome
 from core.evidence_result.enums import DocumentType
 from tests.unit.test_mrz import _LINE1, _LINE2, _VALID_RAW
 
@@ -281,4 +285,127 @@ async def test_barcode_marker_followed_by_non_ascii_bytes_degrades_to_unreadable
     )
     assert result is not None
     assert result.outcome is BarcodeReadOutcome.UNREADABLE
+    assert result.extraction is None
+
+
+# --- DeterministicOCREngine (DP-005/DP-006 Phase 3) ---------------------
+
+
+@pytest.mark.asyncio
+async def test_ocr_engine_reports_unreadable_with_no_marker() -> None:
+    """DP-005 Decision 3: OCR has no NOT_SUBMITTED outcome -- a missing
+    marker (the "nothing to recognize" case) still degrades to
+    UNREADABLE, never None, unlike MRZ/Barcode's parse()/decode()."""
+    engine = DeterministicOCREngine()
+    result = await engine.extract(MINIMAL_JPEG_BYTES + b"an ordinary document, no OCR marker")
+    assert result.outcome is OCRReadOutcome.UNREADABLE
+    assert result.extraction is None
+
+
+@pytest.mark.asyncio
+async def test_ocr_engine_reports_unreadable_with_explicit_marker() -> None:
+    engine = DeterministicOCREngine()
+    result = await engine.extract(MINIMAL_JPEG_BYTES + b"PAXLI_TEST_OCR_UNREADABLE")
+    assert result.outcome is OCRReadOutcome.UNREADABLE
+    assert result.extraction is None
+
+
+@pytest.mark.asyncio
+async def test_ocr_engine_reports_valid() -> None:
+    engine = DeterministicOCREngine()
+    marker = b"PAXLI_TEST_OCR_VALID:FEDERAL REPUBLIC OF NIGERIA;surname=DOE\x00"
+    result = await engine.extract(MINIMAL_JPEG_BYTES + marker)
+    assert result.outcome is OCRReadOutcome.VALID
+    assert result.extraction is not None
+    assert result.extraction.raw == "FEDERAL REPUBLIC OF NIGERIA;surname=DOE"
+    assert result.extraction.fields == {"surname": "DOE"}
+
+
+@pytest.mark.asyncio
+async def test_ocr_engine_fields_ignore_segments_without_equals() -> None:
+    """_parse_ocr_fields()'s deterministic contract (DP-006 §4): a
+    segment with no '=' is silently ignored, not an error."""
+    engine = DeterministicOCREngine()
+    marker = b"PAXLI_TEST_OCR_VALID:not a field;surname=DOE;also not a field\x00"
+    result = await engine.extract(MINIMAL_JPEG_BYTES + marker)
+    assert result.extraction is not None
+    assert result.extraction.fields == {"surname": "DOE"}
+
+
+@pytest.mark.asyncio
+async def test_ocr_engine_never_interprets_incidental_substrings() -> None:
+    engine = DeterministicOCREngine()
+    result = await engine.extract(
+        MINIMAL_JPEG_BYTES + b"discussing PAXLI_TEST_OCR_ENGINE in a memo"
+    )
+    assert result.outcome is OCRReadOutcome.UNREADABLE
+    assert result.extraction is None
+
+
+@pytest.mark.asyncio
+async def test_ocr_engine_marker_at_end_of_image_with_no_payload_is_unreadable() -> None:
+    engine = DeterministicOCREngine()
+    result = await engine.extract(MINIMAL_JPEG_BYTES + b"PAXLI_TEST_OCR_VALID:")
+    assert result.outcome is OCRReadOutcome.UNREADABLE
+    assert result.extraction is None
+
+
+@pytest.mark.asyncio
+async def test_ocr_engine_marker_found_amid_large_surrounding_binary_noise() -> None:
+    noise_before = bytes((i * 37) % 256 for i in range(5000))
+    noise_after = bytes((i * 53) % 256 for i in range(5000))
+    marker = b"PAXLI_TEST_OCR_VALID:recognized text\x00"
+    engine = DeterministicOCREngine()
+    result = await engine.extract(noise_before + marker + noise_after)
+    assert result.outcome is OCRReadOutcome.VALID
+    assert result.extraction is not None
+    assert result.extraction.raw == "recognized text"
+
+
+@pytest.mark.asyncio
+async def test_ocr_engine_unreadable_marker_takes_precedence_when_both_present() -> None:
+    """Marker precedence (DP-006 §4): if both markers are present, the
+    explicit unreadable marker wins -- checked first, unconditionally."""
+    both = b"PAXLI_TEST_OCR_UNREADABLE" + b"PAXLI_TEST_OCR_VALID:some text\x00"
+    engine = DeterministicOCREngine()
+    result = await engine.extract(MINIMAL_JPEG_BYTES + both)
+    assert result.outcome is OCRReadOutcome.UNREADABLE
+
+
+@pytest.mark.asyncio
+async def test_ocr_engine_payload_without_terminator_is_truncated() -> None:
+    huge_untruncated_payload = b"A" * 10_000
+    engine = DeterministicOCREngine()
+    result = await engine.extract(
+        MINIMAL_JPEG_BYTES + b"PAXLI_TEST_OCR_VALID:" + huge_untruncated_payload
+    )
+    assert result.outcome is OCRReadOutcome.VALID
+    assert result.extraction is not None
+    assert len(result.extraction.raw) < 10_000
+
+
+@pytest.mark.asyncio
+async def test_ocr_engine_carries_adversarial_unicode_through_the_full_pipeline() -> None:
+    """DP-006 §4's deliberate utf-8 (not ascii) decoding choice: OCR is
+    the one capability whose real output is genuinely unconstrained
+    Unicode (SEC-7.21) -- confirmed here that the deterministic stand-in
+    actually carries right-to-left script, combining characters, and a
+    zero-width character through cleanly, giving HV-012 a real surface
+    to attack rather than an artificially ASCII-only one."""
+    adversarial_text = "مرحباً é​ test"  # Arabic + combining + ZWSP
+    marker = f"PAXLI_TEST_OCR_VALID:{adversarial_text}\x00".encode()
+    engine = DeterministicOCREngine()
+    result = await engine.extract(MINIMAL_JPEG_BYTES + marker)
+    assert result.outcome is OCRReadOutcome.VALID
+    assert result.extraction is not None
+    assert result.extraction.raw == adversarial_text
+
+
+@pytest.mark.asyncio
+async def test_ocr_engine_non_utf8_bytes_degrade_to_unreadable_not_a_crash() -> None:
+    engine = DeterministicOCREngine()
+    result = await engine.extract(
+        MINIMAL_JPEG_BYTES + b"PAXLI_TEST_OCR_VALID:" + b"\xff\xfe\x00\x01" * 20
+    )
+    assert result.outcome is OCRReadOutcome.UNREADABLE
     assert result.extraction is None

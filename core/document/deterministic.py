@@ -1,5 +1,5 @@
-"""DP-002 Phase 1 / DP-003-DP-004 Phase 2: deterministic capability
-implementations.
+"""DP-002 Phase 1 / DP-003-DP-004 Phase 2 / DP-005-DP-006 Phase 3:
+deterministic capability implementations.
 
 Phase 1's QualityAssessor/DocumentClassifier prove the DocumentProcessor
 orchestration/lineage/persistence path -- they are NOT a stand-in for
@@ -14,6 +14,11 @@ digit validation (core.document.mrz) is real ICAO 9303 logic -- a fake
 check-digit validator would misrepresent what this phase actually
 proves. BarcodeDecoder has no equivalent real subset and is a full
 stand-in, mirroring DocumentClassifier's pattern exactly.
+
+Phase 3's OCREngine is a full stand-in too (DP-005 Decision 8) -- no
+equivalent to MRZ's "real check-digit validator" subset exists for OCR,
+since no standards-defined algorithm comparable to ICAO 9303 check
+digits operates on recognized text.
 
 All marker-extraction helpers below are private implementation
 scaffolding, NOT part of any capability's externally observable
@@ -32,6 +37,7 @@ from core.document.capabilities import (
     BarcodeDecoder,
     DocumentClassifier,
     MRZParser,
+    OCREngine,
     QualityAssessor,
 )
 from core.document.mrz import parse_icao9303_structure, validate_check_digits
@@ -43,6 +49,9 @@ from core.document.types import (
     MRZExtraction,
     MRZReadOutcome,
     MRZReadResult,
+    OCRExtraction,
+    OCRReadOutcome,
+    OCRReadResult,
     QualityAssessment,
 )
 from core.evidence_result.enums import DocumentType
@@ -212,4 +221,75 @@ class DeterministicBarcodeDecoder(BarcodeDecoder):
             extraction=BarcodeExtraction(
                 raw=marker.raw, symbology=marker.symbology, fields=marker.fields
             ),
+        )
+
+
+# --- OCR -----------------------------------------------------------------
+
+_OCR_UNREADABLE_MARKER = b"PAXLI_TEST_OCR_UNREADABLE"
+_OCR_VALID_PREFIX = b"PAXLI_TEST_OCR_VALID:"
+_OCR_PAYLOAD_MAX_BYTES = 2048
+_OCR_MARKER_TERMINATOR = b"\x00"
+
+
+def _extract_ocr_test_marker(image: bytes) -> str | None:
+    """Returns None (no OCR marker at all), "" (the explicit unreadable
+    marker, or a found marker whose payload can't be decoded as text),
+    or the raw recognized text following a found-OCR marker. Matches
+    only the exact literal prefixes above -- never a fuzzy/partial
+    match, never an interpretation of arbitrary document content. This
+    function returns no usable marker text for anything outside its
+    recognized deterministic fixture format; it is DeterministicOCREngine.
+    extract() below, not this helper, that converts that condition into
+    the actual OCRReadOutcome.UNREADABLE domain value -- this function
+    only ever returns plain str | None, never an OCRReadResult itself.
+
+    Marker precedence: if both the explicit unreadable marker and a
+    valid-marker prefix are present in the same image, the unreadable
+    marker wins (checked first, unconditionally). This is fixture
+    behavior only, arbitrarily chosen for deterministic-test purposes --
+    it has no bearing on how a future real OCR adapter would behave."""
+    if _OCR_UNREADABLE_MARKER in image:
+        return ""
+    index = image.find(_OCR_VALID_PREFIX)
+    if index == -1:
+        return None
+    start = index + len(_OCR_VALID_PREFIX)
+    end = image.find(_OCR_MARKER_TERMINATOR, start, start + _OCR_PAYLOAD_MAX_BYTES)
+    raw_bytes = image[start:end] if end != -1 else image[start : start + _OCR_PAYLOAD_MAX_BYTES]
+    try:
+        return raw_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        return ""
+
+
+def _parse_ocr_fields(raw: str) -> dict[str, str]:
+    """Deterministic test-fixture parser only -- NOT a field-extraction
+    or reconciliation algorithm, and must never grow into one. Splits
+    `raw` on `;`; splits each resulting segment on the FIRST `=`; a
+    segment with no `=` is silently ignored (not an error); no
+    normalization, casing, whitespace-trimming, or canonical-field
+    interpretation of any kind is applied -- `fields` stays exactly as
+    informal/non-canonical as DP-005 Decision 7 requires. Identical in
+    spirit to Barcode's _parse_kv_payload() (Phase 2)."""
+    fields: dict[str, str] = {}
+    for segment in raw.split(";"):
+        key, separator, value = segment.partition("=")
+        if separator and key:
+            fields[key] = value
+    return fields
+
+
+class DeterministicOCREngine(OCREngine):
+    """Fully stand-in -- no real recognition logic (DP-005 Decision 8),
+    mirroring DeterministicBarcodeDecoder's pattern exactly. Real OCR is
+    deferred to a future real-adapter phase."""
+
+    async def extract(self, image: bytes) -> OCRReadResult:
+        marker_text = _extract_ocr_test_marker(image)
+        if not marker_text:  # covers both None (no marker) and "" (explicit unreadable)
+            return OCRReadResult(outcome=OCRReadOutcome.UNREADABLE, extraction=None)
+        return OCRReadResult(
+            outcome=OCRReadOutcome.VALID,
+            extraction=OCRExtraction(raw=marker_text, fields=_parse_ocr_fields(marker_text)),
         )
