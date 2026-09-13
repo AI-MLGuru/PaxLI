@@ -12,6 +12,7 @@ from fastapi import (
     UploadFile,
     status,
 )
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.paxli_api.config import Settings, get_settings
 from apps.api.paxli_api.dependencies import (
@@ -43,6 +44,7 @@ from core.rate_limit.limiter import RateLimiterProtocol
 from core.security.authentication import AuthenticatedPrincipal
 from core.security.authorization import Permission, require_permission
 from core.verification.service import SessionExpiredError, SessionNotFoundError
+from infrastructure.database.session import get_db_session
 
 router = APIRouter(prefix="/verification-sessions", tags=["evidence"])
 
@@ -289,15 +291,29 @@ async def delete_evidence(
     principal: AuthenticatedPrincipal = Depends(get_principal),  # noqa: B008
     settings: Settings = Depends(get_settings),  # noqa: B008
     limiter: RateLimiterProtocol = Depends(get_rate_limiter),  # noqa: B008
+    db_session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> None:
     """Two-phase deletion (Invariant-06 remediation), driven synchronously
     within this one request since no worker/queue exists in v1: request_
     deletion (Phase 1, durable intent + REQUIRED audit) followed by
-    reconcile_deletion (Phase 2, its own independent transaction). If
-    Phase 2 raises, Phase 1's commit already stands -- the client sees an
-    error but a retried DELETE safely resumes from the tombstone via each
-    phase's idempotent short-circuit, never re-doing completed work or
-    setting executed_at prematurely.
+    reconcile_deletion (Phase 2, its own independent transaction opened via
+    session_factory). Phase 2's independent session can only see Phase 1's
+    tombstone once it is actually committed, not merely flushed on the
+    ambient session -- so this route explicitly commits the ambient
+    session (the same db_session get_evidence_service's own EvidenceService
+    was built on, via FastAPI's dependency cache) between the two phases,
+    rather than leaving that commit to the request-scoped get_db_session
+    dependency, which would otherwise only commit AFTER reconcile_deletion
+    has already run and failed. Confirmed live against a real
+    multi-connection database (not merely assumed): the ambient session and
+    the reconciler's session are genuinely separate connections, so without
+    this explicit commit Phase 2 always raised TombstoneNotFoundError --
+    masked only by a test fixture that, until fixed, accidentally shared a
+    single physical SQLite connection across both. If Phase 2 raises after
+    this commit, Phase 1's tombstone already durably stands -- the client
+    sees an error but a retried DELETE safely resumes from the tombstone
+    via each phase's idempotent short-circuit, never re-doing completed
+    work or setting executed_at prematurely.
 
     Administrative-only (Permission.EVIDENCE_DELETE); reuses the
     credential-management rate-limit bucket under a distinct operation
@@ -327,6 +343,7 @@ async def delete_evidence(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if tombstone.session_id != session_id:
         raise HTTPException(status_code=404, detail="Evidence not found")
+    await db_session.commit()
     await service.reconcile_deletion(
         evidence_id=evidence_id,
         tenant_id=principal.tenant_id,

@@ -1,6 +1,7 @@
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.paxli_api.config import Settings, get_settings
 from apps.api.paxli_api.dependencies import (
@@ -17,6 +18,7 @@ from core.evidence_result.service import EvidenceResultService
 from core.rate_limit.limiter import RateLimiterProtocol
 from core.security.authentication import AuthenticatedPrincipal
 from core.security.authorization import Permission, require_permission
+from infrastructure.database.session import get_db_session
 
 router = APIRouter(prefix="/management/evidence-results", tags=["management-evidence-results"])
 
@@ -30,6 +32,7 @@ async def delete_evidence_result(
     principal: AuthenticatedPrincipal = Depends(get_principal),  # noqa: B008
     settings: Settings = Depends(get_settings),  # noqa: B008
     limiter: RateLimiterProtocol = Depends(get_rate_limiter),  # noqa: B008
+    db_session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> None:
     """Evidence-result deletion boundary (Invariant-06 remediation Phase 4).
     A management-scoped route, not session-nested: unlike raw evidence,
@@ -38,7 +41,12 @@ async def delete_evidence_result(
     only the deletion lifecycle, the one capability explicitly in scope.
 
     Same two-phase, synchronous-within-one-request shape as
-    DELETE /verification-sessions/{session_id}/evidence/{evidence_id}."""
+    DELETE /verification-sessions/{session_id}/evidence/{evidence_id} --
+    including the same explicit commit of the ambient session between the
+    two phases, required because Phase 2's reconciler opens its own
+    independent connection via session_factory and can only see Phase 1's
+    tombstone once it is genuinely committed, not merely flushed. See that
+    route's docstring for the full explanation."""
     require_permission(principal, Permission.EVIDENCE_DELETE)
     await enforce_rate_limit(
         principal,
@@ -62,6 +70,7 @@ async def delete_evidence_result(
         raise HTTPException(status_code=404, detail="Evidence result not found") from exc
     except InvalidDeletionRequestError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await db_session.commit()
     await service.reconcile_deletion(
         evidence_result_id=evidence_result_id,
         tenant_id=principal.tenant_id,
