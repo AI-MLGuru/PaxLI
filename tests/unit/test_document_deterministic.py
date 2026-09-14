@@ -12,18 +12,37 @@ DeterministicBarcodeDecoder is a full stand-in, mirroring
 DeterministicDocumentClassifier's pattern exactly.
 
 DP-005/DP-006 Phase 3: DeterministicOCREngine is a full stand-in too
-(no equivalent to MRZ's real check-digit subset exists for OCR)."""
+(no equivalent to MRZ's real check-digit subset exists for OCR).
+
+DP-008/DP-009 Phase 4: DeterministicFieldReconciler is a full stand-in
+too, but tested differently from every capability above -- it is
+synchronous and takes already-parsed domain values (OCRExtraction/
+MRZExtraction/BarcodeExtraction), never image bytes, so there is no
+marker-extraction plumbing to test here at all. Coverage focuses on the
+normalization boundary specifically (DP-009's own explicit instruction):
+false agreement (whitespace/case differences must still agree) and
+false conflict (confusable characters, unconverted date formats must
+NOT silently agree) are the two failure modes that actually matter,
+not just a happy-path smoke test."""
 
 import pytest
 
 from core.document.deterministic import (
     DeterministicBarcodeDecoder,
     DeterministicDocumentClassifier,
+    DeterministicFieldReconciler,
     DeterministicMRZParser,
     DeterministicOCREngine,
     DeterministicQualityAssessor,
 )
-from core.document.types import BarcodeReadOutcome, MRZReadOutcome, OCRReadOutcome
+from core.document.types import (
+    BarcodeExtraction,
+    BarcodeReadOutcome,
+    MRZExtraction,
+    MRZReadOutcome,
+    OCRExtraction,
+    OCRReadOutcome,
+)
 from core.evidence_result.enums import DocumentType
 from tests.unit.test_mrz import _LINE1, _LINE2, _VALID_RAW
 
@@ -409,6 +428,202 @@ async def test_ocr_engine_non_utf8_bytes_degrade_to_unreadable_not_a_crash() -> 
     )
     assert result.outcome is OCRReadOutcome.UNREADABLE
     assert result.extraction is None
+
+
+# --- DeterministicFieldReconciler (DP-008/DP-009 Phase 4) ------------------
+
+
+def test_field_reconciler_single_source_is_agreement_not_conflict() -> None:
+    """One present source with no other observation to disagree with is
+    AGREEMENT (DP-008 §3.7), not INSUFFICIENT and not a conflict."""
+    reconciler = DeterministicFieldReconciler()
+    result = reconciler.reconcile(
+        ocr=OCRExtraction(raw="", fields={"full_name": "ANNA MARIA ERIKSSON"}),
+        mrz=None,
+        barcode=None,
+    )
+    assert result.full_name == "ANNA MARIA ERIKSSON"
+    assert result.conflicted_fields == ()
+
+
+def test_field_reconciler_insufficient_when_every_source_is_absent() -> None:
+    reconciler = DeterministicFieldReconciler()
+    result = reconciler.reconcile(ocr=None, mrz=None, barcode=None)
+    assert result.full_name is None
+    assert result.surname is None
+    assert result.given_names is None
+    assert result.date_of_birth is None
+    assert result.sex is None
+    assert result.document_number is None
+    assert result.nationality is None
+    assert result.expiry_date is None
+    assert result.extensions == {}
+    assert result.conflicted_fields == ()
+
+
+def test_field_reconciler_agreeing_sources_populate_the_field_without_conflict() -> None:
+    reconciler = DeterministicFieldReconciler()
+    result = reconciler.reconcile(
+        ocr=OCRExtraction(raw="", fields={"surname": "ERIKSSON"}),
+        mrz=MRZExtraction(raw="", fields={"surname": "ERIKSSON"}),
+        barcode=None,
+    )
+    assert result.surname == "ERIKSSON"
+    assert "surname" not in result.conflicted_fields
+
+
+def test_field_reconciler_disagreeing_sources_null_the_field_and_list_the_conflict() -> None:
+    """DP-009 §7.1: a populated MRZExtraction participates in
+    reconciliation regardless of whatever EvidenceResultStatus it came
+    from -- reconcile()'s own signature never receives status at all, so
+    this proves the point structurally, not just by convention."""
+    reconciler = DeterministicFieldReconciler()
+    result = reconciler.reconcile(
+        ocr=OCRExtraction(raw="", fields={"date_of_birth": "1990-01-01"}),
+        mrz=MRZExtraction(raw="", fields={"date_of_birth": "1990-01-02"}),
+        barcode=None,
+    )
+    assert result.date_of_birth is None
+    assert result.conflicted_fields == ("date_of_birth",)
+
+
+def test_field_reconciler_mixed_outcomes_across_several_fields_in_one_call() -> None:
+    """Agreement, disagreement, single-source, and insufficient all in
+    one reconciliation -- DP-009 §5's per-field independence must hold
+    within a single call, not just across separate isolated calls."""
+    reconciler = DeterministicFieldReconciler()
+    result = reconciler.reconcile(
+        ocr=OCRExtraction(
+            raw="",
+            fields={"full_name": "ANNA MARIA ERIKSSON", "date_of_birth": "1990-01-01"},
+        ),
+        mrz=MRZExtraction(
+            raw="",
+            fields={"date_of_birth": "1990-01-02", "surname": "ERIKSSON"},
+        ),
+        barcode=BarcodeExtraction(raw="", fields={"document_number": "A1234567"}),
+    )
+    assert result.full_name == "ANNA MARIA ERIKSSON"  # single source -> agreement
+    assert result.date_of_birth is None  # OCR vs MRZ disagree
+    assert result.surname == "ERIKSSON"  # single source -> agreement
+    assert result.document_number == "A1234567"  # single source -> agreement
+    assert result.sex is None  # no source observed it -> insufficient
+    assert result.conflicted_fields == ("date_of_birth",)
+
+
+def test_field_reconciler_extensions_is_always_empty_regardless_of_unmapped_source_fields() -> None:
+    """DP-009 §7.3: only the eight canonical fields participate. A
+    source's own unmapped keys (its own internal vocabulary, or a
+    genuinely foreign key) must never be promoted into extensions."""
+    reconciler = DeterministicFieldReconciler()
+    result = reconciler.reconcile(
+        ocr=OCRExtraction(raw="", fields={"some_unmapped_ocr_key": "A"}),
+        mrz=MRZExtraction(
+            raw="",
+            fields={"document_type": "P", "issuing_state": "UTO", "personal_number": "12345"},
+        ),
+        barcode=BarcodeExtraction(raw="", fields={"another_unmapped_key": "C"}),
+    )
+    assert result.extensions == {}
+
+
+def test_field_reconciler_mrz_never_contributes_full_name() -> None:
+    """ICAO 9303 TD3 has no combined-name field -- MRZ's own field
+    vocabulary has no concept of full_name at all. Even if an
+    MRZExtraction happened to carry a "full_name" key (never produced by
+    the real parser, but nothing stops a hand-built test double from
+    trying), the reconciler's canonical_name -> source_key mapping
+    direction means it is structurally impossible to pick up: there is
+    no MRZ source_key for canonical "full_name" to look up in the first
+    place."""
+    reconciler = DeterministicFieldReconciler()
+    result = reconciler.reconcile(
+        ocr=None,
+        mrz=MRZExtraction(raw="", fields={"full_name": "SHOULD NEVER BE PICKED UP"}),
+        barcode=None,
+    )
+    assert result.full_name is None
+
+
+def test_field_reconciler_mrz_date_of_expiry_maps_to_canonical_expiry_date() -> None:
+    """The one non-identity rename in MRZ's field map (DP-009 §4)."""
+    reconciler = DeterministicFieldReconciler()
+    result = reconciler.reconcile(
+        ocr=None,
+        mrz=MRZExtraction(raw="", fields={"date_of_expiry": "2030-01-01"}),
+        barcode=None,
+    )
+    assert result.expiry_date == "2030-01-01"
+
+
+def test_field_reconciler_normalization_collapses_whitespace_and_case() -> None:
+    """False conflict, ruled out: differently-formatted renderings of
+    the same underlying value must agree."""
+    reconciler = DeterministicFieldReconciler()
+    result = reconciler.reconcile(
+        ocr=OCRExtraction(raw="", fields={"full_name": "JOHN   DOE"}),
+        mrz=MRZExtraction(raw="", fields={}),  # no full_name concept, doesn't interfere
+        barcode=BarcodeExtraction(raw="", fields={"full_name": "john doe"}),
+    )
+    assert result.full_name == "JOHN DOE"
+    assert result.conflicted_fields == ()
+
+
+def test_field_reconciler_normalization_does_not_reinterpret_date_formats() -> None:
+    """False agreement, ruled out: DP-009 §4 deliberately applies no
+    real date-parsing library. "01/02/2000" and "02/01/2000" are NOT
+    silently treated as the same date under a different format -- that
+    would require actual date-semantic interpretation this baseline
+    explicitly does not perform."""
+    reconciler = DeterministicFieldReconciler()
+    result = reconciler.reconcile(
+        ocr=OCRExtraction(raw="", fields={"date_of_birth": "01/02/2000"}),
+        mrz=MRZExtraction(raw="", fields={"date_of_birth": "02/01/2000"}),
+        barcode=None,
+    )
+    assert result.date_of_birth is None
+    assert result.conflicted_fields == ("date_of_birth",)
+
+
+def test_field_reconciler_normalization_does_not_fold_confusable_characters() -> None:
+    """False agreement, ruled out: "O" and "0" must never default to
+    equal -- no character-confusable folding is applied."""
+    reconciler = DeterministicFieldReconciler()
+    result = reconciler.reconcile(
+        ocr=OCRExtraction(raw="", fields={"document_number": "A1234567O"}),
+        mrz=None,
+        barcode=BarcodeExtraction(raw="", fields={"document_number": "A12345670"}),
+    )
+    assert result.document_number is None
+    assert result.conflicted_fields == ("document_number",)
+
+
+def test_field_reconciler_conflicted_fields_ordering_matches_canonical_field_order() -> None:
+    """DP-008 §3.5: ordering is deterministic -- confirmed directly
+    against CANONICAL_FIELD_NAMES's own declared order, not merely
+    "some" deterministic order."""
+    reconciler = DeterministicFieldReconciler()
+    result = reconciler.reconcile(
+        ocr=OCRExtraction(
+            raw="",
+            fields={
+                "expiry_date": "2030-01-01",
+                "date_of_birth": "1990-01-01",
+                "full_name": "A",
+            },
+        ),
+        mrz=MRZExtraction(
+            raw="",
+            fields={
+                "date_of_expiry": "2031-01-01",
+                "date_of_birth": "1990-01-02",
+            },
+        ),
+        barcode=BarcodeExtraction(raw="", fields={"full_name": "B"}),
+    )
+    # date_of_birth precedes expiry_date in CANONICAL_FIELD_NAMES -- the
+    # conflicted tuple must reflect that order, not insertion/call order.
+    assert result.conflicted_fields == ("full_name", "date_of_birth", "expiry_date")
 
 
 # --- HV-012: hostile validation of the OCR surface ----------------------

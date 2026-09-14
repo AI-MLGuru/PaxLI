@@ -20,6 +20,16 @@ equivalent to MRZ's "real check-digit validator" subset exists for OCR,
 since no standards-defined algorithm comparable to ICAO 9303 check
 digits operates on recognized text.
 
+Phase 4's DeterministicFieldReconciler (DP-008/DP-009) is a full
+stand-in too, but of a different kind than the five capabilities above:
+it takes no `image: bytes` and has no marker-extraction helper, because
+its input is already-parsed domain values, not raw document bytes (see
+core.document.reconciliation's own module docstring for why it isn't a
+core.document.capabilities port at all). Its normalization/comparison
+logic is deliberately minimal -- whitespace-collapse and case-fold only,
+applied identically to every canonical field regardless of source -- not
+a production-grade reconciliation algorithm (DP-009 §4).
+
 All marker-extraction helpers below are private implementation
 scaffolding, NOT part of any capability's externally observable
 contract (DP-004's marker-mechanism safety boundary) -- they match only
@@ -41,11 +51,14 @@ from core.document.capabilities import (
     QualityAssessor,
 )
 from core.document.mrz import parse_icao9303_structure, validate_check_digits
+from core.document.reconciliation import DocumentFieldReconciler
 from core.document.types import (
+    CANONICAL_FIELD_NAMES,
     BarcodeExtraction,
     BarcodeReadOutcome,
     BarcodeReadResult,
     DocumentClassification,
+    FieldReconciliationResult,
     MRZExtraction,
     MRZReadOutcome,
     MRZReadResult,
@@ -292,4 +305,136 @@ class DeterministicOCREngine(OCREngine):
         return OCRReadResult(
             outcome=OCRReadOutcome.VALID,
             extraction=OCRExtraction(raw=marker_text, fields=_parse_ocr_fields(marker_text)),
+        )
+
+
+# --- Field reconciliation (Phase 4, DP-008/DP-009) ------------------------
+
+# canonical_name -> source-specific field key, one map per source
+# (DP-009 §3.11/§4: the reconciler owns this mapping, not each source).
+#
+# OCR and Barcode are fully synthetic deterministic fixtures with no
+# real controlled vocabulary (DP-005/DP-003 Decision 8) -- their test
+# fixtures are written directly in the canonical vocabulary, so their
+# mapping is the identity over CANONICAL_FIELD_NAMES.
+#
+# MRZ has a REAL, fixed ICAO 9303 vocabulary (core.document.mrz.
+# ParsedMRZTD3.fields), not a fixture author's free choice -- six
+# canonical names already match it verbatim; `expiry_date` is the one
+# rename (MRZ's own field is `date_of_expiry`). `full_name` is
+# deliberately ABSENT from this map: ICAO 9303 TD3 has no combined-name
+# field at all, so MRZ can never contribute an observation for it --
+# not an oversight, a real fact about the format. `document_type`,
+# `issuing_state`, and `personal_number` (MRZ's other real fields) have
+# no canonical counterpart and are correspondingly absent too --
+# per DP-009 §7.3, unmapped fields are never promoted anywhere.
+_OCR_FIELD_MAP: dict[str, str] = {name: name for name in CANONICAL_FIELD_NAMES}
+_BARCODE_FIELD_MAP: dict[str, str] = {name: name for name in CANONICAL_FIELD_NAMES}
+_MRZ_FIELD_MAP: dict[str, str] = {
+    "surname": "surname",
+    "given_names": "given_names",
+    "document_number": "document_number",
+    "nationality": "nationality",
+    "date_of_birth": "date_of_birth",
+    "sex": "sex",
+    "expiry_date": "date_of_expiry",
+}
+
+
+def _normalize_canonical_value(value: str) -> str:
+    """The one normalization pass every canonical field's comparison
+    goes through -- applied identically regardless of source or field
+    (DP-008 §3.7's frozen policy: compare normalized values, never raw
+    strings). This is also what satisfies DP-001 Decision 7's
+    consistency requirement for `full_name` vs. `surname`/`given_names`
+    structurally, not by extra derivation logic: literally the same
+    function runs over every field, so no per-field normalization can
+    ever diverge.
+
+    Deliberately minimal (DP-009 §4): whitespace-collapse and case-fold
+    only, nothing date-semantic, nothing fuzzy. `"JOHN   DOE"` and
+    `"JOHN DOE"` normalize identically; `"01/02/2000"` and `"02/01/2000"`
+    do NOT (no date interpretation is applied); `"O"` and `"0"` do NOT
+    (no character-confusable folding is applied) -- exactly the
+    boundary DP-009's reconciliation established this baseline must
+    hold."""
+    return " ".join(value.split()).upper()
+
+
+def _observed_values(
+    canonical_name: str,
+    *,
+    ocr: OCRExtraction | None,
+    mrz: MRZExtraction | None,
+    barcode: BarcodeExtraction | None,
+) -> tuple[str, ...]:
+    """Every present source's raw (pre-normalization) value for one
+    canonical field. A source contributes nothing if it is ABSENT
+    (DP-008 §3.7 -- represented here as `None`, already collapsed by
+    DocumentProcessor before this is ever called) or if its own field
+    vocabulary simply has no concept of this canonical field at all
+    (e.g. MRZ never has `full_name`) -- both cases are indistinguishable
+    to this function, deliberately: DP-008 draws no distinction between
+    them either."""
+    values: list[str] = []
+    for extraction, field_map in (
+        (ocr, _OCR_FIELD_MAP),
+        (mrz, _MRZ_FIELD_MAP),
+        (barcode, _BARCODE_FIELD_MAP),
+    ):
+        if extraction is None:
+            continue
+        source_key = field_map.get(canonical_name)
+        if source_key is not None and source_key in extraction.fields:
+            values.append(extraction.fields[source_key])
+    return tuple(values)
+
+
+class DeterministicFieldReconciler(DocumentFieldReconciler):
+    """Fully stand-in normalization/comparison logic (DP-009 §4) --
+    genuinely minimal, deliberately boring, matching Phase 1-3's own
+    deterministic-baseline discipline: no real date-parsing library, no
+    document-type-specific mapping registry, no fuzzy matching. A real
+    reconciliation algorithm is future work behind the same
+    DocumentFieldReconciler contract, exactly as OCR/MRZ/Barcode's real
+    adapters remain future work behind theirs.
+
+    On agreement (or a single present source), the field's canonical
+    value is the *normalized* representation, not one source's raw
+    string verbatim -- avoiding any implicit "which source's casing
+    wins" choice, which would itself be a small, unacknowledged
+    source-authority decision (DP-008 §3.9 forbids exactly this)."""
+
+    def reconcile(
+        self,
+        *,
+        ocr: OCRExtraction | None,
+        mrz: MRZExtraction | None,
+        barcode: BarcodeExtraction | None,
+    ) -> FieldReconciliationResult:
+        canonical_values: dict[str, str | None] = {}
+        conflicted: list[str] = []
+        for canonical_name in CANONICAL_FIELD_NAMES:
+            values = _observed_values(canonical_name, ocr=ocr, mrz=mrz, barcode=barcode)
+            if not values:
+                canonical_values[canonical_name] = None
+                continue
+            normalized = {_normalize_canonical_value(value) for value in values}
+            if len(normalized) == 1:
+                canonical_values[canonical_name] = next(iter(normalized))
+            else:
+                canonical_values[canonical_name] = None
+                conflicted.append(canonical_name)
+
+        return FieldReconciliationResult(
+            full_name=canonical_values["full_name"],
+            surname=canonical_values["surname"],
+            given_names=canonical_values["given_names"],
+            date_of_birth=canonical_values["date_of_birth"],
+            sex=canonical_values["sex"],
+            document_number=canonical_values["document_number"],
+            nationality=canonical_values["nationality"],
+            expiry_date=canonical_values["expiry_date"],
+            extensions={},
+            conflicted_fields=tuple(conflicted),
         )
