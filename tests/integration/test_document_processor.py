@@ -335,6 +335,18 @@ class _BuggyFieldReconciler(DocumentFieldReconciler):
         raise AttributeError("simulated programming defect, not a known capability failure")
 
 
+class _CapabilityUnavailableFieldReconciler(DocumentFieldReconciler):
+    """HV-013: a hostile double raising the exact exception type every
+    OTHER stage's capability uses for expected, self-diagnosed failure
+    -- DocumentFieldReconciler has no CapabilityUnavailableError analog
+    at all (DP-009 §3), so _run_field_extraction has no except-clause to
+    catch this with. Proves that type gets no special treatment here,
+    not merely that it's undocumented."""
+
+    def reconcile(self, *, ocr, mrz, barcode):
+        raise CapabilityUnavailableError("MODEL_UNAVAILABLE")
+
+
 async def test_full_round_trip_produces_correct_quality_and_classification() -> None:
     tenant_id = f"tenant-docproc-happy-{uuid4()}"
     key_id = f"key-{uuid4()}"
@@ -1229,6 +1241,172 @@ async def test_field_extraction_is_recomputed_when_a_parent_is_superseded() -> N
     assert field_reconciler.calls == 2  # actually recomputed, not reused
 
 
+async def test_field_extraction_recomputes_on_row_identity_change_even_with_byte_identical_content() -> None:  # noqa: E501
+    """HV-013: freshness is governed by parent ROW IDENTITY
+    (parent_evidence_result_ids), never by comparing parent CONTENT --
+    attacked directly by manually superseding OCR's row with a new row
+    carrying byte-identical result data. A content-based (not identity-
+    based) freshness check would wrongly conclude nothing changed and
+    reuse the stale DOCUMENT_FIELD_EXTRACTION row; the frozen tuple-
+    identity check (DP-008 §4) must still detect the new parent ID and
+    recompute regardless."""
+    tenant_id = f"tenant-docproc-field-extraction-identity-{uuid4()}"
+    key_id = f"key-{uuid4()}"
+    storage = _storage(key_id)
+    key_provider = LocalAesGcmKeyProvider({key_id: b"0" * 32})
+    marker = b"PAXLI_TEST_OCR_VALID:surname=ERIKSSON\x00"
+
+    async with session_factory() as session:
+        session_id = await _create_session(session, tenant_id)
+        await _upload_document(
+            session, tenant_id, session_id, storage,
+            MINIMAL_JPEG_BYTES + b"0" * 2000 + marker,
+        )
+        await session.commit()
+
+    field_reconciler = _CountingFieldReconciler(DeterministicFieldReconciler())
+    processor = _processor(key_id, storage, field_reconciler=field_reconciler)
+    await processor.process(session_id=UUID(session_id), tenant_id=tenant_id)
+    assert field_reconciler.calls == 1
+
+    async with session_factory() as session:
+        ocr_v1 = await _effective_result(session, session_id, tenant_id, "OCR_EXTRACTION")
+        first = await _effective_result(session, session_id, tenant_id, "DOCUMENT_FIELD_EXTRACTION")
+        assert ocr_v1 is not None and first is not None
+        first_id = first.id
+
+    # Manually supersede OCR's row with a NEW row carrying the exact
+    # SAME result content -- no real retry, no data change, only the
+    # row identity changes.
+    async with session_factory() as session:
+        service = EvidenceResultService(
+            SqlAlchemyEvidenceResultRepository(session, key_provider, key_id),
+            AuditService(SqlAlchemyAuditEventRepository(session)),
+            SqlAlchemyEvidenceRepository(session),
+        )
+        await service.supersede(
+            evidence_result_id=ocr_v1.id,
+            tenant_id=tenant_id,
+            session_id=UUID(session_id),
+            evidence_type=EvidenceResultType.OCR_EXTRACTION,
+            status=EvidenceResultStatus.PASS,
+            producer="hv-013-identity-probe",
+            producer_version="1.0",
+            result={"raw": "surname=ERIKSSON", "fields": {"surname": "ERIKSSON"}},
+        )
+        await session.commit()
+
+    await processor.process(session_id=UUID(session_id), tenant_id=tenant_id)
+
+    async with session_factory() as session:
+        ocr_v2 = await _effective_result(session, session_id, tenant_id, "OCR_EXTRACTION")
+        assert ocr_v2 is not None
+        assert ocr_v2.id != ocr_v1.id  # a genuinely new row
+        # NOT comparing raw ciphertext bytes here -- AES-GCM uses a fresh
+        # random nonce per encryption, so identical plaintext correctly
+        # produces different ciphertext each time (the security property
+        # this test must not treat as a bug). Confirm identical PLAINTEXT
+        # content instead, via the decrypting service.
+        service = EvidenceResultService(
+            SqlAlchemyEvidenceResultRepository(session, key_provider, key_id),
+            AuditService(SqlAlchemyAuditEventRepository(session)),
+            SqlAlchemyEvidenceRepository(session),
+        )
+        decrypted = await service.get(evidence_result_id=ocr_v2.id, tenant_id=tenant_id)
+        assert decrypted is not None
+        assert decrypted.result == {"raw": "surname=ERIKSSON", "fields": {"surname": "ERIKSSON"}}
+
+        second = await _effective_result(
+            session, session_id, tenant_id, "DOCUMENT_FIELD_EXTRACTION"
+        )
+        assert second is not None
+        assert second.id != first_id  # recomputed despite identical content
+        assert second.supersedes_id == first_id
+    assert field_reconciler.calls == 2  # NOT silently skipped because content was unchanged
+
+
+async def test_field_extraction_never_leaks_across_tenants_with_real_conflicting_data() -> None:
+    """HV-013 tenant-isolation category, attacked with real, DIFFERING
+    data on both sides rather than an empty/absent forged-tenant
+    attempt (HV-012's own pattern) -- two tenants share nothing but the
+    session_id coincidence a forged-header bug might produce; each has
+    its own real capture with genuinely different field values. Neither
+    tenant's reconciliation may ever reflect the other's data."""
+    tenant_a = f"tenant-docproc-field-extraction-iso-a-{uuid4()}"
+    tenant_b = f"tenant-docproc-field-extraction-iso-b-{uuid4()}"
+    key_id = f"key-{uuid4()}"
+    storage = _storage(key_id)
+
+    async def _seed_and_process(tenant_id: str, surname: str) -> str:
+        marker = f"PAXLI_TEST_OCR_VALID:surname={surname}\x00".encode()
+        async with session_factory() as session:
+            session_id = await _create_session(session, tenant_id)
+            await _upload_document(
+                session, tenant_id, session_id, storage,
+                MINIMAL_JPEG_BYTES + b"0" * 2000 + marker,
+            )
+            await session.commit()
+        processor = _processor(key_id, storage)
+        await processor.process(session_id=UUID(session_id), tenant_id=tenant_id)
+        return session_id
+
+    session_a = await _seed_and_process(tenant_a, "ANDERSSON")
+    session_b = await _seed_and_process(tenant_b, "BERGSTROM")
+
+    async with session_factory() as session:
+        field_a = await _effective_result(session, session_a, tenant_a, "DOCUMENT_FIELD_EXTRACTION")
+        field_b = await _effective_result(session, session_b, tenant_b, "DOCUMENT_FIELD_EXTRACTION")
+        assert field_a is not None and field_b is not None
+        assert field_a.status == EvidenceResultStatus.PASS.value
+        assert field_b.status == EvidenceResultStatus.PASS.value
+
+        # Cross-tenant lookups under the WRONG tenant must see nothing,
+        # even though a real effective row exists under the right one.
+        assert (
+            await _effective_result(session, session_a, tenant_b, "DOCUMENT_FIELD_EXTRACTION")
+            is None
+        )
+        assert (
+            await _effective_result(session, session_b, tenant_a, "DOCUMENT_FIELD_EXTRACTION")
+            is None
+        )
+
+
+async def test_field_reconciler_capability_unavailable_error_is_not_specially_caught() -> None:
+    """HV-013 exception-boundary category: even the exception type every
+    OTHER stage's capability uses for expected failure gets no special
+    handling here, because DocumentFieldReconciler has no such contract
+    at all (DP-009 §3) -- confirmed it propagates exactly like any other
+    unexpected exception, not silently converted to an UNAVAILABLE
+    result the way it would be for OCR/MRZ/Barcode/Quality/Classification."""
+    tenant_id = f"tenant-docproc-field-extraction-unavailable-shaped-{uuid4()}"
+    key_id = f"key-{uuid4()}"
+    storage = _storage(key_id)
+
+    async with session_factory() as session:
+        session_id = await _create_session(session, tenant_id)
+        await _upload_document(
+            session, tenant_id, session_id, storage,
+            MINIMAL_JPEG_BYTES + b"0" * 2000 + b"PAXLI_TEST_ICAO_PASSPORT_DATA_PAGE",
+        )
+        await session.commit()
+
+    processor = _processor(
+        key_id, storage, field_reconciler=_CapabilityUnavailableFieldReconciler()
+    )
+
+    with pytest.raises(CapabilityUnavailableError):
+        await processor.process(session_id=UUID(session_id), tenant_id=tenant_id)
+
+    async with session_factory() as session:
+        # No UNAVAILABLE row was fabricated -- the exception propagated
+        # instead of being caught and translated.
+        assert (
+            await _effective_result(session, session_id, tenant_id, "DOCUMENT_FIELD_EXTRACTION")
+            is None
+        )
+
+
 async def test_capability_unavailable_error_produces_unavailable_result_and_is_retryable() -> None:
     tenant_id = f"tenant-docproc-unavailable-{uuid4()}"
     key_id = f"key-{uuid4()}"
@@ -1585,6 +1763,62 @@ async def test_field_extraction_full_round_trip_covers_pass_and_inconclusive_out
             assert set(field_extraction.parent_evidence_result_ids_json) == {
                 str(ocr.id), str(mrz.id), str(barcode.id),
             }
+
+
+async def test_field_extraction_never_reaches_fail_across_many_conflict_shapes() -> None:
+    """HV-013 outcome-boundary category: DOCUMENT_FIELD_EXTRACTION has no
+    code path to FAIL at all (§5's status logic has exactly two
+    branches, confirmed by the contract audit) -- attacked here across
+    many genuinely different conflict shapes (single-field conflict,
+    multi-field conflict, conflict alongside agreement, all-absent) to
+    confirm that holds at runtime for every shape actually exercised,
+    not merely for the one or two cases the round-trip test already
+    covers."""
+    # Driven through OCR vs. Barcode only -- MRZ has no simple kv-payload
+    # test marker (its marker is a real 88-char ICAO structure), so its
+    # cross-source-conflict role is already covered separately by the
+    # round-trip and six-way partial-independence tests above.
+    cases = (
+        ({"surname": "A"}, {"surname": "B"}),  # single-field conflict
+        ({"surname": "A", "nationality": "USA"}, {"surname": "B", "nationality": "GBR"}),  # multi
+        ({"surname": "SAME", "date_of_birth": "1990-01-01"}, {"surname": "SAME"}),  # mixed
+        ({}, {}),  # nothing observed anywhere
+    )
+
+    for ocr_fields, barcode_fields in cases:
+        tenant_id = f"tenant-docproc-field-extraction-never-fail-{uuid4()}"
+        key_id = f"key-{uuid4()}"
+        storage = _storage(key_id)
+
+        ocr_payload = ";".join(f"{k}={v}" for k, v in ocr_fields.items())
+        ocr_marker = f"PAXLI_TEST_OCR_VALID:{ocr_payload}\x00".encode() if ocr_fields else b""
+        barcode_payload = ";".join(f"{k}={v}" for k, v in barcode_fields.items())
+        barcode_marker = (
+            f"PAXLI_TEST_BARCODE_VALID:PDF417:{barcode_payload}\x00".encode()
+            if barcode_fields
+            else b""
+        )
+
+        async with session_factory() as session:
+            session_id = await _create_session(session, tenant_id)
+            await _upload_document(
+                session, tenant_id, session_id, storage,
+                MINIMAL_JPEG_BYTES + b"0" * 2000 + ocr_marker + barcode_marker,
+            )
+            await session.commit()
+
+        processor = _processor(key_id, storage)
+        await processor.process(session_id=UUID(session_id), tenant_id=tenant_id)
+
+        async with session_factory() as session:
+            field_extraction = await _effective_result(
+                session, session_id, tenant_id, "DOCUMENT_FIELD_EXTRACTION"
+            )
+            assert field_extraction is not None, f"case {ocr_fields}/{barcode_fields}"
+            assert field_extraction.status in (
+                EvidenceResultStatus.PASS.value,
+                EvidenceResultStatus.INCONCLUSIVE.value,
+            ), f"case {ocr_fields}/{barcode_fields}: got {field_extraction.status}"
 
 
 async def test_mrz_check_digit_mismatch_does_not_affect_quality_or_classification() -> None:

@@ -770,3 +770,187 @@ async def test_ocr_engine_long_mixed_unicode_ascii_payload_round_trips_correctly
     assert result.extraction.raw == adversarial_text
     assert result.extraction.fields["surname"] == "Müller"
     assert result.extraction.fields["given_names"] == "François Núñez"
+
+
+# --- HV-013: hostile validation of the field-reconciliation surface -------
+#
+# For each case, the question is not "does the test pass" but "which
+# frozen contract prevents this input from producing an unsafe result."
+# Findings are recorded as they are found, not silently patched.
+
+
+def test_field_reconciler_unicode_case_folding_normalizes_deterministically() -> None:
+    """DP-008 §3.7: comparison uses normalized values -- Unicode case
+    folding (müller/MÜLLER) is within str.upper()'s own well-defined
+    behavior, not a bespoke Unicode-confusable heuristic this baseline
+    would otherwise be adding on its own."""
+    reconciler = DeterministicFieldReconciler()
+    result = reconciler.reconcile(
+        ocr=OCRExtraction(raw="", fields={"surname": "müller"}),
+        mrz=MRZExtraction(raw="", fields={"surname": "MÜLLER"}),
+        barcode=None,
+    )
+    assert result.surname == "MÜLLER"
+    assert result.conflicted_fields == ()
+
+
+def test_field_reconciler_zero_width_space_is_not_silently_collapsed() -> None:
+    """False-agreement boundary: a zero-width space (U+200B) is not
+    ASCII/Unicode whitespace to str.split() -- two sources differing
+    only by its presence must NOT be normalized into agreement. Verified
+    empirically against the real normalizer before asserting, not
+    assumed."""
+    reconciler = DeterministicFieldReconciler()
+    result = reconciler.reconcile(
+        ocr=OCRExtraction(raw="", fields={"given_names": "JOHN​DOE"}),
+        mrz=MRZExtraction(raw="", fields={"given_names": "JOHNDOE"}),
+        barcode=None,
+    )
+    assert result.given_names is None
+    assert result.conflicted_fields == ("given_names",)
+
+
+def test_field_reconciler_control_characters_do_not_crash_and_remain_significant() -> None:
+    """A source carrying an embedded control character (SOH) must not
+    crash the reconciler, and must not be silently stripped/normalized
+    away -- it remains a real, significant difference from a source
+    without it."""
+    reconciler = DeterministicFieldReconciler()
+    result = reconciler.reconcile(
+        ocr=OCRExtraction(raw="", fields={"document_number": "A1234\x01567"}),
+        mrz=None,
+        barcode=BarcodeExtraction(raw="", fields={"document_number": "A1234567"}),
+    )
+    assert result.document_number is None
+    assert result.conflicted_fields == ("document_number",)
+
+
+def test_field_reconciler_genuinely_different_names_never_falsely_agree() -> None:
+    """False agreement, ruled out at the most basic level: two
+    completely different names must disagree, not just confusable
+    near-misses."""
+    reconciler = DeterministicFieldReconciler()
+    result = reconciler.reconcile(
+        ocr=OCRExtraction(raw="", fields={"full_name": "JOHN SMITH"}),
+        mrz=None,
+        barcode=BarcodeExtraction(raw="", fields={"full_name": "JANE DOE"}),
+    )
+    assert result.full_name is None
+    assert result.conflicted_fields == ("full_name",)
+
+
+def test_field_reconciler_punctuation_differences_are_not_normalized_away() -> None:
+    """The normalizer stays deliberately minimal (DP-009 §4) -- it must
+    NOT progressively become a fuzzy identity matcher. Punctuation is
+    not whitespace and is not case; "JOHN DOE" and "JOHN DOE!" must
+    disagree, not be treated as equivalent renderings of the same
+    value."""
+    reconciler = DeterministicFieldReconciler()
+    result = reconciler.reconcile(
+        ocr=OCRExtraction(raw="", fields={"full_name": "JOHN DOE"}),
+        mrz=None,
+        barcode=BarcodeExtraction(raw="", fields={"full_name": "JOHN DOE!"}),
+    )
+    assert result.full_name is None
+    assert result.conflicted_fields == ("full_name",)
+
+
+def test_field_reconciler_stores_the_normalized_representative_not_a_raw_source_value() -> None:
+    """DP-008 §3.9: the stored canonical value on agreement must be the
+    normalized representative, never one source's raw string verbatim
+    -- picking a raw source's casing would itself be an unacknowledged
+    source-authority choice. All three sources agree after
+    normalization despite three different raw renderings; none of the
+    three raw strings appears verbatim in the result."""
+    reconciler = DeterministicFieldReconciler()
+    result = reconciler.reconcile(
+        ocr=OCRExtraction(raw="", fields={"full_name": "  John   Doe "}),
+        mrz=MRZExtraction(raw="", fields={}),  # no full_name concept, doesn't interfere
+        barcode=BarcodeExtraction(raw="", fields={"full_name": "john doe"}),
+    )
+    assert result.full_name == "JOHN DOE"
+    assert result.full_name != "  John   Doe "
+    assert result.full_name != "john doe"
+    assert result.conflicted_fields == ()
+
+
+def test_field_reconciler_mrz_fail_shaped_extraction_agrees_with_another_source() -> None:
+    """DP-009 §7.1, attacked directly: a populated MRZExtraction
+    (structurally identical to what a real status=FAIL/CHECK_DIGIT_MISMATCH
+    row's data would look like once translated -- reconcile() itself has
+    no status parameter, so this IS the FAIL-shaped case, not a stand-in
+    for it) still counts as a genuine, usable observation when it agrees
+    with another source."""
+    reconciler = DeterministicFieldReconciler()
+    result = reconciler.reconcile(
+        ocr=OCRExtraction(raw="", fields={"surname": "ERIKSSON"}),
+        mrz=MRZExtraction(raw="", fields={"surname": "ERIKSSON"}),
+        barcode=None,
+    )
+    assert result.surname == "ERIKSSON"
+    assert result.conflicted_fields == ()
+
+
+def test_field_reconciler_mrz_fail_shaped_extraction_disagrees_with_another_source() -> None:
+    """The complementary case: the same FAIL-shaped MRZExtraction
+    participates in a genuine disagreement exactly like a PASS row's
+    data would -- MRZ's own (structurally absent, at this layer) status
+    neither shields it from being flagged nor gets it silently
+    excluded."""
+    reconciler = DeterministicFieldReconciler()
+    result = reconciler.reconcile(
+        ocr=OCRExtraction(raw="", fields={"surname": "ERIKSSON"}),
+        mrz=MRZExtraction(raw="", fields={"surname": "MULLER"}),
+        barcode=None,
+    )
+    assert result.surname is None
+    assert result.conflicted_fields == ("surname",)
+
+
+def test_field_reconciler_three_way_disagreement_is_still_one_conflict_entry() -> None:
+    """Multi-way disagreement (all three sources mutually different, not
+    just a pairwise conflict) must still null the field and list it
+    exactly once -- not raise, not produce multiple entries, not pick a
+    majority/plurality winner (DP-008 §3.9: no source-authority
+    selection, and no vote-counting mechanism was ever frozen either)."""
+    reconciler = DeterministicFieldReconciler()
+    result = reconciler.reconcile(
+        ocr=OCRExtraction(raw="", fields={"nationality": "USA"}),
+        mrz=MRZExtraction(raw="", fields={"nationality": "GBR"}),
+        barcode=BarcodeExtraction(raw="", fields={"nationality": "FRA"}),
+    )
+    assert result.nationality is None
+    assert result.conflicted_fields == ("nationality",)
+
+
+def test_field_reconciler_case_sensitive_key_matching_prevents_near_miss_leakage() -> None:
+    """The canonical_name -> source_key mapping is exact-string-key
+    lookup, not case-insensitive -- a source carrying "Full_Name"
+    (differently-cased from the canonical "full_name") must not be
+    picked up as an observation for the canonical field. This is the
+    same "structural impossibility, not mere convention" property
+    already proven for MRZ's full_name absence, attacked here from the
+    angle of a near-miss key rather than a wholly absent one."""
+    reconciler = DeterministicFieldReconciler()
+    result = reconciler.reconcile(
+        ocr=OCRExtraction(raw="", fields={"Full_Name": "SHOULD NOT BE PICKED UP"}),
+        mrz=None,
+        barcode=None,
+    )
+    assert result.full_name is None
+    assert result.conflicted_fields == ()  # absent, not a (fabricated) conflict either
+
+
+def test_field_reconciler_many_unmapped_fields_never_leak_into_extensions() -> None:
+    """Hostile version of the basic extensions-is-always-empty proof --
+    a large number of unmapped keys across all three sources, including
+    some that look deliberately close to canonical names, still produce
+    an empty extensions dict."""
+    reconciler = DeterministicFieldReconciler()
+    junk_fields = {f"unmapped_key_{i}": f"value_{i}" for i in range(20)}
+    result = reconciler.reconcile(
+        ocr=OCRExtraction(raw="", fields={**junk_fields, "FULL_NAME": "WRONG_CASE"}),
+        mrz=MRZExtraction(raw="", fields={**junk_fields, "Document_Number": "WRONG_CASE"}),
+        barcode=BarcodeExtraction(raw="", fields={**junk_fields, "extensions": "A LITERAL KEY"}),
+    )
+    assert result.extensions == {}
