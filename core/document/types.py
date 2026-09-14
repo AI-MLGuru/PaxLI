@@ -15,8 +15,10 @@ __all__ = [
     "BarcodeExtraction",
     "BarcodeReadOutcome",
     "BarcodeReadResult",
+    "CANONICAL_FIELD_NAMES",
     "DocumentClassification",
     "DocumentType",
+    "FieldReconciliationResult",
     "MRZExtraction",
     "MRZReadOutcome",
     "MRZReadResult",
@@ -148,3 +150,61 @@ class BarcodeReadOutcome(StrEnum):
 class BarcodeReadResult:
     outcome: BarcodeReadOutcome
     extraction: BarcodeExtraction | None  # None exactly when outcome=UNREADABLE
+
+
+CANONICAL_FIELD_NAMES = (
+    "full_name",
+    "surname",
+    "given_names",
+    "date_of_birth",
+    "sex",
+    "document_number",
+    "nationality",
+    "expiry_date",
+)
+
+
+@dataclass(frozen=True)
+class FieldReconciliationResult:
+    """Returned by DocumentFieldReconciler.reconcile() -- DP-008/DP-009
+    Phase 4. Always populated, never None: DOCUMENT_FIELD_EXTRACTION has
+    no capability-level absence state of its own (mirrors OCRReadResult's
+    non-optional contract) -- whether this stage runs at all is decided
+    entirely by DocumentProcessor's existing ambiguous-capture
+    precondition, not by anything this type represents.
+
+    `extensions` carries no Phase 4 content -- the reconciler reconciles
+    only the eight canonical fields (DP-009 §7.3); it is never populated
+    from source-specific fields outside that vocabulary.
+
+    `conflicted_fields` names exactly which canonical fields are null
+    specifically because two or more usable sources disagreed on their
+    normalized value (DP-008 §3.5/§3.7) -- never because a field was
+    merely not applicable or not established by any source. The
+    invariant is one-directional and enforced below, not left as a
+    documentation-only promise: a listed field MUST be null; null alone
+    never implies a field is listed."""
+
+    full_name: str | None
+    surname: str | None
+    given_names: str | None
+    date_of_birth: str | None
+    sex: str | None
+    document_number: str | None
+    nationality: str | None
+    expiry_date: str | None
+    extensions: dict[str, str]
+    conflicted_fields: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        unknown = set(self.conflicted_fields) - set(CANONICAL_FIELD_NAMES)
+        if unknown:
+            raise ValueError(
+                f"conflicted_fields contains non-canonical names: {sorted(unknown)}"
+            )
+        for name in self.conflicted_fields:
+            if getattr(self, name) is not None:
+                raise ValueError(
+                    f"conflicted_fields lists {name!r} but its value is not null "
+                    "(DP-008 §3.5: a listed field MUST be null)"
+                )

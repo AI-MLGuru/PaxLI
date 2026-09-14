@@ -43,3 +43,44 @@ def test_valid_ocr_extraction_payload_passes() -> None:
         EvidenceResultType.OCR_EXTRACTION,
         {"raw": "CANARY RAW TEXT", "fields": {"name": "CANARY_NAME"}},
     )
+
+
+def test_valid_document_field_extraction_payload_passes() -> None:
+    """DP-001 Decision 7, as amended by Addendum A (via DP-008/DP-009):
+    all eight canonical fields are required (though individually
+    nullable), plus extensions and conflicted_fields."""
+    validate_result_payload(
+        EvidenceResultType.DOCUMENT_FIELD_EXTRACTION,
+        {
+            "full_name": "CANARY NAME",
+            "surname": None,
+            "given_names": None,
+            "date_of_birth": None,
+            "sex": None,
+            "document_number": None,
+            "nationality": None,
+            "expiry_date": None,
+            "extensions": {},
+            "conflicted_fields": [],
+        },
+    )
+
+
+def test_document_field_extraction_payload_missing_canonical_field_is_rejected() -> None:
+    """Canonical fields are required-but-nullable, never omittable --
+    DP-001 Decision 7's own explicit "null rather than omitted" rule."""
+    with pytest.raises(InvalidEvidenceResultError):
+        validate_result_payload(
+            EvidenceResultType.DOCUMENT_FIELD_EXTRACTION,
+            {
+                "full_name": None,
+                "surname": None,
+                "given_names": None,
+                "date_of_birth": None,
+                "sex": None,
+                "document_number": None,
+                "nationality": None,
+                # expiry_date omitted
+                "extensions": {},
+            },
+        )

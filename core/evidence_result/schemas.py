@@ -51,7 +51,27 @@ class OcrExtractionResult(BaseModel):
 
 
 class DocumentFieldExtractionResult(BaseModel):
-    fields: dict[str, str]
+    """DP-001 Decision 7, as amended by Addendum A (via DP-008/DP-009).
+    Canonical fields are null when not applicable to the document type or
+    when no source could reliably establish them -- undifferentiated,
+    per Decision 7's own original text. `extensions` carries no
+    Phase 4 content (DP-009 §7.3): the deterministic reconciler always
+    produces `extensions = {}`, since only the eight canonical fields
+    are reconciled. `conflicted_fields` names exactly which canonical
+    fields are null specifically because of unresolved cross-source
+    disagreement -- a field listed here MUST be null; null alone never
+    implies a field is listed (DP-008 §3.5)."""
+
+    full_name: str | None
+    surname: str | None
+    given_names: str | None
+    date_of_birth: str | None
+    sex: str | None
+    document_number: str | None
+    nationality: str | None
+    expiry_date: str | None
+    extensions: dict[str, str]
+    conflicted_fields: tuple[str, ...] = ()
 
 
 class MrzResult(BaseModel):
