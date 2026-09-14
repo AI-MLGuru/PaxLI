@@ -1,6 +1,6 @@
 # DP-001 — Document Processing Discovery & Reconciliation
 
-**Status:** RECONCILIATION COMPLETE — all 7 decisions frozen (§16). No production code has been changed during discovery or reconciliation. Implementation is now authorized to proceed per the frozen decisions and the phase plan (§17), starting with Phase 1.
+**Status:** RECONCILIATION COMPLETE — all 7 decisions frozen (§16), Decision 7 subsequently amended (Addendum A, via `DP-008-document-processing-phase-4-discovery.md`). No production code has been changed during discovery or reconciliation. Implementation is now authorized to proceed per the frozen decisions and the phase plan (§17), starting with Phase 1.
 **Scope:** the first real document-processing pipeline (quality, classification, OCR, MRZ, barcode/QR, authenticity) as the first genuine producer of `EvidenceResult` rows.
 **Method:** full trace of `docs/specification/part-03` through `part-11` for every document-relevant requirement, plus a full repository inventory of `core/`, `infrastructure/`, `integrations/`, `apps/`, `tests/`, and prior foundation/decision records. Citations below are `file:line`.
 
@@ -14,7 +14,7 @@
 | 4 | Synchronous document processing boundary | **FROZEN** — see §16 |
 | 5 | V1 document-type catalog | **FROZEN** — see §16 |
 | 6 | Basic authenticity scope | **FROZEN** — see §16 |
-| 7 | `DOCUMENT_FIELD_EXTRACTION` schema shape (was Open Question 6) | **FROZEN** — see §16 |
+| 7 | `DOCUMENT_FIELD_EXTRACTION` schema shape (was Open Question 6) | **FROZEN, AMENDED** — see §16; amendment in Addendum A (via DP-008) |
 
 ---
 
@@ -532,7 +532,7 @@ Rejected: a coarser "one image-analysis port covering Quality+Classification+Aut
 
 **Architectural finding, not an implementation gap:** V1 does not implement document authenticity because the available V1 inputs (a 2D image, no physical sensor, two document families) do not provide a defensible authenticity signal outside the capabilities Part IX explicitly defers — not because it was overlooked. PaxLI can verify identity *evidence* (quality, classification, OCR/MRZ/barcode extraction, canonical field consistency, cross-evidence consistency, policy-driven decisioning, auditable provenance) without claiming to establish document *authenticity*; these are different capabilities, and the commercially dangerous move would be implying the former proves the latter.
 
-**Decision 7 — `DOCUMENT_FIELD_EXTRACTION` Schema Shape. FROZEN.**
+**Decision 7 — `DOCUMENT_FIELD_EXTRACTION` Schema Shape. FROZEN, AMENDED.**
 
 > `DOCUMENT_FIELD_EXTRACTION` uses a hybrid schema: controlled canonical top-level fields plus an opaque document-specific `extensions` map. Canonical fields: `full_name`, `surname`, `given_names`, `date_of_birth`, `sex`, `document_number`, `nationality`, `expiry_date`. Canonical fields not applicable to a document type, or whose decomposition cannot be reliably established from the source, are `null` rather than omitted or empty-stringed. `extensions: dict[str, str]` preserves document-specific fields outside the canonical vocabulary and is NOT directly addressable by Decision Engine policy conditions in V1 — no JSON-path-style traversal into it.
 >
@@ -545,6 +545,8 @@ Rejected: a coarser "one image-analysis port covering Quality+Classification+Aut
 > `OCR_EXTRACTION`, `MRZ`, and `BARCODE_QR` retain their source-specific, non-canonical extraction representations — this decision governs only `DOCUMENT_FIELD_EXTRACTION`'s reconciled output. The cross-source reconciliation algorithm (normalization, conflict resolution, name-component derivation) remains a separate, unresolved architectural item.
 
 Rejected: narrowing the canonical list to 4 fields (deferring `sex`/`nationality`/`expiry_date` to `extensions` until a third document type demonstrated need). "Canonical" doesn't mean "every document type must contain this field" — it means "when a supported document expresses this semantic attribute, it has a standardized place in the reconciled representation." The two already-frozen document families (Decision 5) already demonstrate the need for all eight fields; waiting for a hypothetical third type would gain nothing. Also rejected: dropping `full_name` as "redundant" with `surname`/`given_names` — that reasoning (valid for Decision 5's family/variant question) doesn't transfer here, because `full_name` is NOT always derivable from the other two: for `NIN_SLIP`, where decomposition isn't trustworthy, `full_name` is the only available canonical name representation.
+
+**Amended by `docs/decisions/DP-008-document-processing-phase-4-discovery.md` §6/§3.5 (FROZEN):** the eight canonical fields and `extensions` above are unchanged by the amendment. Phase 4 discovery identified a real contract gap between this decision's container and EVD-3.25's mandatory conflict observability (unforeseen here, since this decision predates any conflict-handling design for this evidence type), and closed it with one narrow addition: `conflicted_fields: tuple[str, ...] = ()`, naming which of the eight canonical fields above are currently `null` specifically because of unresolved cross-source disagreement, never `extensions` keys. See Addendum A at the end of this document for the full amendment text and DP-008's reasoning.
 
 ---
 
@@ -577,3 +579,68 @@ Per EVD-3.32 and CONF-8.9/8.12, and matching this project's existing test-layer 
 ## Appendix — raw discovery source
 
 The full requirement-by-requirement spec trace (every EVD-3.x/WF-4.x/DEC-5.x/SEC-7.x/CONF-8.x/DEF-9.x/REL-10.x/PRV-11.x citation with quoted text) and the full repository inventory (every enum member's reference count, full schema source, full provider-ABC source, full grep results) that this document synthesizes are available in this session's transcript and can be re-run or expanded on request — they were deliberately not reproduced in full here to keep this record navigable, per its own stated purpose as a reconciliation document rather than a raw research dump.
+
+---
+
+## Addendum A — Decision 7 Amendment (via DP-008)
+
+Adopted when `docs/decisions/DP-008-document-processing-phase-4-discovery.md`
+froze (Phase 4 discovery: `DOCUMENT_FIELD_EXTRACTION` + cross-source
+reconciliation), long after this document's own freeze and after Phase 1
+through Phase 3 implementation had already shipped against it. Recorded
+here, not silently, per this project's own constitutional rule that a
+frozen decision changes only through an intentional, recorded decision.
+
+**The gap.** Decision 7 above froze `DOCUMENT_FIELD_EXTRACTION`'s
+canonical container (eight named fields plus `extensions`) and its null
+semantics for not-applicable/undecomposable fields, but — at the time —
+neither this document nor any other had yet designed how that container
+should behave when OCR, MRZ, and Barcode/QR independently observe
+*different* values for the *same* canonical field on the *same* capture.
+DP-008 discovery found that gap real: EVD-3.25.1 ("Conflicting evidence
+MUST remain individually observable") requires exactly this be
+representable, and an undifferentiated `null` cannot satisfy it — a
+`null` caused by disagreement would be indistinguishable from a `null`
+caused by not-applicability or an unreadable source, silently discarding
+the very fact EVD-3.25.1 requires to stay observable.
+
+**The amendment.** `DocumentFieldExtractionResult` gains one field:
+
+```python
+conflicted_fields: tuple[str, ...] = ()
+```
+
+Semantics, frozen by DP-008 §3.5/§6:
+
+- contains only names drawn from the eight canonical fields above, never
+  `extensions` keys;
+- a field listed here MUST have a `null` canonical value — the converse
+  does not hold: a canonical field being `null` does **not** imply it is
+  listed (Decision 7's own not-applicable/undecomposable `null` cases
+  remain undifferentiated, exactly as originally frozen);
+- a non-empty tuple indicates unresolved source disagreement for exactly
+  those fields;
+- it is an observability signal only — it identifies neither an
+  authoritative source nor a resolution, and introduces no source-
+  authority rule;
+- ordering is deterministic;
+- empty means no currently detected canonical-field conflict.
+
+**What this amendment explicitly does NOT change**: the eight canonical
+field names, their types, or their meanings; the `extensions` mechanism
+or its non-policy-addressability; the null semantics already established
+above for not-applicable and undecomposable fields; Decision 7's
+normalization-consistency requirement for `full_name` vs.
+`surname`/`given_names`; or any other decision in this document.
+
+**Why here, not there.** This addendum states the amendment and its
+governing invariants only — the full discovery reasoning (why a dedicated
+domain reconciler owns conflict detection, why no separate `field_sources`
+provenance structure is needed, the deterministic-reconstructibility
+requirement that makes that safe, and the complete agreement/disagreement/
+absence semantics feeding into `conflicted_fields`) lives in
+`docs/decisions/DP-008-document-processing-phase-4-discovery.md` (see
+especially §3.4, §3.5, §3.7, §3.12, §6) and is not duplicated here. The
+concrete reason-code vocabulary and result-status mapping
+(`conflicted_fields != () → INCONCLUSIVE` + a new reason code) are
+implementation-plan territory, deferred to `DP-009`.
