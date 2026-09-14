@@ -279,6 +279,107 @@ async def test_supersede_creates_a_new_row_and_never_mutates_the_original(servic
 
 
 @pytest.mark.asyncio
+async def test_supersede_persists_parent_evidence_result_ids_on_the_new_row(service) -> None:
+    """DP-009 §6/§7.2: unlike source_reference, a superseding row's own
+    parent lineage is NOT reconstructable by walking supersedes_id back
+    to the original create()-produced row -- a derived stage's parent
+    set can itself change between attempts (DOCUMENT_FIELD_EXTRACTION's
+    own freshness principle, DP-008 §4). This is a direct, dedicated
+    regression guard at the infrastructure boundary, independent of and
+    prior to any DocumentProcessor-level integration test -- supersede()
+    is shared by every evidence type, and every future caller of it
+    deserves this same guarantee."""
+    svc, repo, _audit_repo = service
+    session_id = uuid4()
+
+    old_parent = await svc.create(
+        tenant_id="tenant-a",
+        session_id=session_id,
+        evidence_type=EvidenceResultType.OCR_EXTRACTION,
+        status=EvidenceResultStatus.UNAVAILABLE,
+        producer="ocr-engine",
+        producer_version="1.0.0",
+    )
+    new_parent = await svc.create(
+        tenant_id="tenant-a",
+        session_id=session_id,
+        evidence_type=EvidenceResultType.MRZ,
+        status=EvidenceResultStatus.PASS,
+        producer="mrz-parser",
+        producer_version="1.0.0",
+    )
+    original = await svc.create(
+        tenant_id="tenant-a",
+        session_id=session_id,
+        evidence_type=EvidenceResultType.DOCUMENT_FIELD_EXTRACTION,
+        status=EvidenceResultStatus.UNAVAILABLE,
+        producer="field-reconciler",
+        producer_version="1.0.0",
+        parent_evidence_result_ids=(old_parent.id,),
+    )
+
+    # The recomputed attempt is built from a DIFFERENT parent set than
+    # the original attempt -- exactly the shape a freshness-triggered
+    # recompute produces.
+    superseding = await svc.supersede(
+        evidence_result_id=original.id,
+        tenant_id="tenant-a",
+        session_id=session_id,
+        evidence_type=EvidenceResultType.DOCUMENT_FIELD_EXTRACTION,
+        status=EvidenceResultStatus.PASS,
+        producer="field-reconciler",
+        producer_version="1.0.0",
+        parent_evidence_result_ids=(new_parent.id,),
+    )
+
+    assert superseding.parent_evidence_result_ids == (new_parent.id,)
+    # The original row's own lineage is untouched -- confirms this isn't
+    # inherited/copied from the prior attempt, each attempt records its
+    # own.
+    assert repo.records[original.id].parent_evidence_result_ids == (old_parent.id,)
+
+
+@pytest.mark.asyncio
+async def test_supersede_validates_parent_evidence_result_ids_the_same_way_create_does(
+    service,
+) -> None:
+    """The provenance forgery guard (WF-HV-009 Finding B) must not be a
+    create()-only protection -- supersede() threads
+    parent_evidence_result_ids through the exact same
+    _validate_provenance() check."""
+    svc, _repo, _audit_repo = service
+    session_id = uuid4()
+    foreign_session_parent = await svc.create(
+        tenant_id="tenant-a",
+        session_id=uuid4(),  # a different session
+        evidence_type=EvidenceResultType.OCR_EXTRACTION,
+        status=EvidenceResultStatus.PASS,
+        producer="ocr-engine",
+        producer_version="1.0.0",
+    )
+    original = await svc.create(
+        tenant_id="tenant-a",
+        session_id=session_id,
+        evidence_type=EvidenceResultType.DOCUMENT_FIELD_EXTRACTION,
+        status=EvidenceResultStatus.UNAVAILABLE,
+        producer="field-reconciler",
+        producer_version="1.0.0",
+    )
+
+    with pytest.raises(InvalidProvenanceReferenceError):
+        await svc.supersede(
+            evidence_result_id=original.id,
+            tenant_id="tenant-a",
+            session_id=session_id,
+            evidence_type=EvidenceResultType.DOCUMENT_FIELD_EXTRACTION,
+            status=EvidenceResultStatus.PASS,
+            producer="field-reconciler",
+            producer_version="1.0.0",
+            parent_evidence_result_ids=(foreign_session_parent.id,),
+        )
+
+
+@pytest.mark.asyncio
 async def test_supersede_rejects_a_result_belonging_to_a_different_session(service) -> None:
     """WF-HV-009 Finding A: session B must not be able to supersede (and
     thereby silently deactivate) session A's effective evidence result

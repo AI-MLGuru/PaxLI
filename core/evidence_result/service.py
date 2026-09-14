@@ -311,6 +311,7 @@ class EvidenceResultService:
         score: float | None = None,
         quality: float | None = None,
         model_reference: ModelReference | None = None,
+        parent_evidence_result_ids: tuple[UUID, ...] = (),
         request_id: str | None = None,
         correlation_id: str | None = None,
     ) -> EvidenceResult:
@@ -326,6 +327,17 @@ class EvidenceResultService:
         ID, corrupting that other session's evidence set as seen by the
         Decision Engine.
 
+        `parent_evidence_result_ids` (DP-009 §6/§7.2): unlike
+        `source_reference`, a superseding row's own lineage is NOT
+        reconstructable by walking `supersedes_id` back to the original
+        `create()`-produced row -- a derived stage's parent set can
+        itself change between attempts (DOCUMENT_FIELD_EXTRACTION's own
+        freshness principle, DP-008 §4, is exactly this case), so each
+        supersession must be able to record its OWN current parent set,
+        not silently inherit the prior attempt's. Validated the same way
+        `create()`'s is -- see `_validate_provenance`, already generic
+        over both call sites.
+
         `mark_not_effective` on the original happens BEFORE `add()` of the
         new row, not after: PostgreSQL's partial unique index
         (ix_evidence_results_one_effective_per_type) is checked
@@ -335,6 +347,12 @@ class EvidenceResultService:
         exact ordering lesson already proven by PolicyService.mark_superseded
         preceding its own ACTIVE-row insert."""
         validate_result_payload(evidence_type, result)
+        await self._validate_provenance(
+            tenant_id=tenant_id,
+            session_id=session_id,
+            source_reference=None,
+            parent_evidence_result_ids=parent_evidence_result_ids,
+        )
 
         now = datetime.now(UTC)
         evidence_result = EvidenceResult(
@@ -350,6 +368,7 @@ class EvidenceResultService:
             producer=producer,
             producer_version=producer_version,
             model_reference=model_reference,
+            parent_evidence_result_ids=parent_evidence_result_ids,
             supersedes_id=evidence_result_id,
             produced_at=now,
             persisted_at=now,

@@ -264,6 +264,7 @@ class SqlAlchemyDocumentProcessor:
         request_id: str | None,
         correlation_id: str | None,
         source_reference: UUID | None = None,
+        parent_evidence_result_ids: tuple[UUID, ...] = (),
         result: dict[str, Any] | None = None,
         score: float | None = None,
         reason_codes: tuple[str, ...] = (),
@@ -274,7 +275,15 @@ class SqlAlchemyDocumentProcessor:
         lineage back to the capture remains reconstructable by walking
         supersedes_id to the original create()-produced row, which always
         carries it (a stage's very first attempt is always a create(),
-        since there is nothing yet to supersede)."""
+        since there is nothing yet to supersede).
+
+        `parent_evidence_result_ids` DOES need to be threaded on every
+        attempt, including supersede() (DP-009 §6) -- unlike
+        source_reference, a derived stage's parent set can itself change
+        between attempts (DOCUMENT_FIELD_EXTRACTION's own freshness
+        principle, DP-008 §4), so it is never safe to assume a
+        superseding row's lineage is reconstructable from the original
+        attempt's."""
         if existing is None:
             await service.create(
                 tenant_id=tenant_id,
@@ -287,6 +296,7 @@ class SqlAlchemyDocumentProcessor:
                 score=score,
                 reason_codes=reason_codes,
                 source_reference=source_reference,
+                parent_evidence_result_ids=parent_evidence_result_ids,
                 request_id=request_id,
                 correlation_id=correlation_id,
             )
@@ -302,6 +312,7 @@ class SqlAlchemyDocumentProcessor:
                 result=result,
                 score=score,
                 reason_codes=reason_codes,
+                parent_evidence_result_ids=parent_evidence_result_ids,
                 request_id=request_id,
                 correlation_id=correlation_id,
             )
