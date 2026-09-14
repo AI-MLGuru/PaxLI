@@ -15,6 +15,18 @@ safely serve two concurrently-open independent sessions at once
 assumed). Same dependency-inversion shape as
 infrastructure.deletion.reconciliation's reconciler classes: core/
 depends only on the narrow Protocol, never on SQLAlchemy.
+
+DP-008/DP-009 Phase 4: _run_field_extraction is a sixth stage, but
+structurally different from the five before it -- it never touches
+self._storage (its inputs are the three sibling effective results, not
+capture bytes), never calls a core.document.capabilities port (the
+reconciler lives in core.document.reconciliation instead, DP-008 §5),
+and is the first stage whose reuse eligibility depends on more than its
+own row's status: a stale reconciliation built from a since-superseded
+OCR/MRZ/Barcode parent is never silently reused (DP-008 §4's frozen
+freshness principle), operationalized via exact tuple comparison of
+the current (ocr_id, mrz_id, barcode_id) against the existing row's own
+parent_evidence_result_ids.
 """
 
 from typing import TYPE_CHECKING, Any
@@ -32,7 +44,15 @@ from core.document.capabilities import (
     QualityAssessor,
 )
 from core.document.reason_codes import DocumentReasonCode
-from core.document.types import BarcodeReadOutcome, MRZReadOutcome, OCRReadOutcome
+from core.document.reconciliation import DocumentFieldReconciler
+from core.document.types import (
+    BarcodeExtraction,
+    BarcodeReadOutcome,
+    MRZExtraction,
+    MRZReadOutcome,
+    OCRExtraction,
+    OCRReadOutcome,
+)
 from core.evidence.enums import EvidenceType
 from core.evidence_result.enums import EvidenceResultStatus, EvidenceResultType
 from core.evidence_result.models import EvidenceResult
@@ -50,6 +70,7 @@ _PRODUCER_CLASSIFIER = "document-classifier-deterministic"
 _PRODUCER_MRZ = "document-mrz-parser-deterministic"
 _PRODUCER_BARCODE = "document-barcode-decoder-deterministic"
 _PRODUCER_OCR = "document-ocr-engine-deterministic"
+_PRODUCER_FIELD_EXTRACTION = "document-field-reconciler-deterministic"
 _PRODUCER_VERSION = "1.0"
 
 # DP-003 §7's frozen MRZ/Barcode failure-mapping table, encoded directly
@@ -121,6 +142,51 @@ def _is_reusable(status: EvidenceResultStatus) -> bool:
     return status is not EvidenceResultStatus.UNAVAILABLE
 
 
+def _to_ocr_extraction(row: EvidenceResult) -> OCRExtraction | None:
+    """Translates a persisted, decrypted OCR_EXTRACTION EvidenceResult
+    back into the domain shape core.document.reconciliation's contract
+    requires. `result is None` exactly and only for OCRReadOutcome.
+    UNREADABLE (DP-005's outcome map) -- OCR's one ABSENT case (DP-008
+    §3.7); there is no PASS/FAIL distinction to worry about, since OCR
+    structurally cannot reach FAIL (DP-005 Decision 2)."""
+    if row.result is None:
+        return None
+    return OCRExtraction(raw=row.result["raw"], fields=row.result["fields"])
+
+
+def _to_mrz_extraction(row: EvidenceResult) -> MRZExtraction | None:
+    """`result is None` exactly for MRZ's three genuine ABSENT states
+    (DP-008 §3.7): NOT_SUBMITTED (no zone), UNAVAILABLE, and INCONCLUSIVE
+    via MRZReadOutcome.UNREADABLE (zone found, no usable text). This
+    does NOT special-case status=FAIL (CHECK_DIGIT_MISMATCH) -- DP-009
+    §7.1: a populated result there (raw + parsed fields) is a genuine
+    observation and participates in reconciliation exactly like a PASS
+    row's would; this function has no status parameter at all, so it
+    cannot special-case FAIL even by accident. Nor does it special-case
+    MALFORMED's populated-but-empty-fields shape -- an empty `fields`
+    dict simply yields no observation for any canonical field, which is
+    already the correct behavior with no extra logic needed."""
+    if row.result is None:
+        return None
+    return MRZExtraction(raw=row.result["raw"], fields=row.result["fields"])
+
+
+def _to_barcode_extraction(row: EvidenceResult) -> BarcodeExtraction | None:
+    """`result is None` exactly for BarcodeReadOutcome.UNREADABLE (and
+    the pipeline-level NOT_SUBMITTED/UNAVAILABLE cases) -- Barcode's
+    other non-VALID outcomes (PAYLOAD_UNRECOGNIZED, PAYLOAD_MALFORMED)
+    populate `result` with an empty `fields` dict, handled the same
+    empty-observation way MRZ's MALFORMED case is, with no special
+    casing needed here either."""
+    if row.result is None:
+        return None
+    return BarcodeExtraction(
+        raw=row.result["raw"],
+        fields=row.result["fields"],
+        symbology=row.result["symbology"],
+    )
+
+
 class SqlAlchemyDocumentProcessor:
     def __init__(
         self,
@@ -133,6 +199,7 @@ class SqlAlchemyDocumentProcessor:
         mrz_parser: MRZParser,
         barcode_decoder: BarcodeDecoder,
         ocr_engine: OCREngine,
+        field_reconciler: DocumentFieldReconciler,
     ) -> None:
         self._session_factory = session_factory
         self._key_provider = key_provider
@@ -143,6 +210,7 @@ class SqlAlchemyDocumentProcessor:
         self._mrz_parser = mrz_parser
         self._barcode_decoder = barcode_decoder
         self._ocr_engine = ocr_engine
+        self._field_reconciler = field_reconciler
 
     async def process(
         self,
@@ -235,6 +303,22 @@ class SqlAlchemyDocumentProcessor:
         # for every other stage -- that pipeline-level precondition is
         # unrelated to, and unaffected by, Decision 3.
         await self._run_ocr(
+            session_id=session_id,
+            tenant_id=tenant_id,
+            capture_id=capture_id,
+            object_key=object_key,
+            ambiguous=ambiguous,
+            request_id=request_id,
+            correlation_id=correlation_id,
+        )
+        # DP-008/DP-009 Phase 4: runs after all three field-producing
+        # stages above, unconditionally, like every stage before it --
+        # the ambiguous-capture precondition still short-circuits before
+        # any real reconciliation work, exactly as it does for every
+        # other stage. Unlike the five stages above, this one never
+        # touches self._storage -- its inputs are OCR/MRZ/Barcode's own
+        # already-persisted effective results, not the capture image.
+        await self._run_field_extraction(
             session_id=session_id,
             tenant_id=tenant_id,
             capture_id=capture_id,
@@ -757,6 +841,141 @@ class SqlAlchemyDocumentProcessor:
                 result=result_payload,
                 producer=_PRODUCER_OCR,
                 source_reference=capture_id,
+                request_id=request_id,
+                correlation_id=correlation_id,
+            )
+            await session.commit()
+
+    async def _run_field_extraction(
+        self,
+        *,
+        session_id: UUID,
+        tenant_id: str,
+        capture_id: UUID | None,
+        object_key: str | None,
+        ambiguous: bool,
+        request_id: str | None,
+        correlation_id: str | None,
+    ) -> None:
+        async with self._session_factory() as session:
+            service = self._build_evidence_result_service(session)
+
+            if ambiguous:
+                existing = await service.get_effective_for_session_by_type(
+                    session_id=session_id,
+                    tenant_id=tenant_id,
+                    evidence_type=EvidenceResultType.DOCUMENT_FIELD_EXTRACTION,
+                )
+                if existing is not None and _is_reusable(existing.status):
+                    return
+                await self._persist_stage(
+                    service,
+                    existing,
+                    session_id=session_id,
+                    tenant_id=tenant_id,
+                    evidence_type=EvidenceResultType.DOCUMENT_FIELD_EXTRACTION,
+                    status=EvidenceResultStatus.INCONCLUSIVE,
+                    reason_codes=(DocumentReasonCode.AMBIGUOUS_DOCUMENT_CAPTURE.value,),
+                    producer=_PRODUCER_FIELD_EXTRACTION,
+                    request_id=request_id,
+                    correlation_id=correlation_id,
+                )
+                await session.commit()
+                return
+
+            # The effective ROWS always exist by this point in process()
+            # -- OCR/MRZ/Barcode run strictly before this stage in the
+            # same process() call (or a prior one), unconditionally, per
+            # DP-003 Decision 7/DP-005 Decision 3. A None ROW here would
+            # mean a genuine ordering bug elsewhere in process(), not a
+            # legitimate runtime state -- asserted below, not defensively
+            # handled. This is distinct from a row's EXTRACTION being
+            # None: an existing row with status=NOT_SUBMITTED/
+            # UNAVAILABLE/UNREADABLE is entirely expected and translates
+            # to extraction=None (DP-009 §7.1) -- the assertion below
+            # only rules out the row itself being missing.
+            ocr_row = await service.get_effective_for_session_by_type(
+                session_id=session_id,
+                tenant_id=tenant_id,
+                evidence_type=EvidenceResultType.OCR_EXTRACTION,
+            )
+            mrz_row = await service.get_effective_for_session_by_type(
+                session_id=session_id,
+                tenant_id=tenant_id,
+                evidence_type=EvidenceResultType.MRZ,
+            )
+            barcode_row = await service.get_effective_for_session_by_type(
+                session_id=session_id,
+                tenant_id=tenant_id,
+                evidence_type=EvidenceResultType.BARCODE_QR,
+            )
+            assert ocr_row is not None and mrz_row is not None and barcode_row is not None
+
+            current_parent_ids = (ocr_row.id, mrz_row.id, barcode_row.id)
+
+            existing = await service.get_effective_for_session_by_type(
+                session_id=session_id,
+                tenant_id=tenant_id,
+                evidence_type=EvidenceResultType.DOCUMENT_FIELD_EXTRACTION,
+            )
+            # DP-008 §4's frozen freshness principle, operationalized:
+            # reuse requires BOTH the ordinary terminal-status check AND
+            # an unchanged parent set -- a stale reconciliation built
+            # from a superseded OCR/MRZ/Barcode row is never silently
+            # reused, even if its own status looks terminal. Tuple
+            # equality, not set equality: current_parent_ids is always
+            # constructed in this one fixed (ocr, mrz, barcode) order,
+            # by this call site alone, and the repository round-trips
+            # parent_evidence_result_ids order-preservingly (a plain
+            # JSON list column) -- so a real lineage change can never
+            # produce a spurious tuple match.
+            if (
+                existing is not None
+                and _is_reusable(existing.status)
+                and existing.parent_evidence_result_ids == current_parent_ids
+            ):
+                return
+
+            ocr_extraction = _to_ocr_extraction(ocr_row)
+            mrz_extraction = _to_mrz_extraction(mrz_row)
+            barcode_extraction = _to_barcode_extraction(barcode_row)
+
+            reconciled = self._field_reconciler.reconcile(
+                ocr=ocr_extraction, mrz=mrz_extraction, barcode=barcode_extraction
+            )
+
+            status = (
+                EvidenceResultStatus.INCONCLUSIVE
+                if reconciled.conflicted_fields
+                else EvidenceResultStatus.PASS
+            )
+            reason_codes = (
+                (DocumentReasonCode.FIELD_VALUE_CONFLICT.value,)
+                if reconciled.conflicted_fields
+                else ()
+            )
+            await self._persist_stage(
+                service,
+                existing,
+                session_id=session_id,
+                tenant_id=tenant_id,
+                evidence_type=EvidenceResultType.DOCUMENT_FIELD_EXTRACTION,
+                status=status,
+                reason_codes=reason_codes,
+                result={
+                    "full_name": reconciled.full_name,
+                    "surname": reconciled.surname,
+                    "given_names": reconciled.given_names,
+                    "date_of_birth": reconciled.date_of_birth,
+                    "sex": reconciled.sex,
+                    "document_number": reconciled.document_number,
+                    "nationality": reconciled.nationality,
+                    "expiry_date": reconciled.expiry_date,
+                    "extensions": reconciled.extensions,
+                    "conflicted_fields": list(reconciled.conflicted_fields),
+                },
+                producer=_PRODUCER_FIELD_EXTRACTION,
+                parent_evidence_result_ids=current_parent_ids,
                 request_id=request_id,
                 correlation_id=correlation_id,
             )

@@ -10,6 +10,7 @@ from core.decision.persistence import DecisionPersistenceService
 from core.document.deterministic import (
     DeterministicBarcodeDecoder,
     DeterministicDocumentClassifier,
+    DeterministicFieldReconciler,
     DeterministicMRZParser,
     DeterministicOCREngine,
     DeterministicQualityAssessor,
@@ -218,6 +219,7 @@ async def get_workflow_service(
         DeterministicMRZParser(),
         DeterministicBarcodeDecoder(),
         DeterministicOCREngine(),
+        DeterministicFieldReconciler(),
     )
     yield VerificationWorkflowService(
         session_service, orchestrator, audit_service, document_processor

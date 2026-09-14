@@ -24,6 +24,7 @@ from core.decision.persistence import DecisionPersistenceService
 from core.document.deterministic import (
     DeterministicBarcodeDecoder,
     DeterministicDocumentClassifier,
+    DeterministicFieldReconciler,
     DeterministicMRZParser,
     DeterministicOCREngine,
     DeterministicQualityAssessor,
@@ -129,6 +130,7 @@ def _services(session):
         DeterministicMRZParser(),
         DeterministicBarcodeDecoder(),
         DeterministicOCREngine(),
+        DeterministicFieldReconciler(),
     )
     workflow = VerificationWorkflowService(
         session_service, orchestrator, audit_service, document_processor
