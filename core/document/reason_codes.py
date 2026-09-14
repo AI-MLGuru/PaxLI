@@ -37,3 +37,9 @@ class DocumentReasonCode(StrEnum):
     # coinage like every MRZ/Barcode code above -- OCR's own outcome
     # space (DP-005 Decision 2) has only one failure mode to name.
     OCR_UNREADABLE = "OCR_UNREADABLE"
+    # DP-008 §3.5/§6, DP-009 §2 (Phase 4): the one outcome
+    # DOCUMENT_FIELD_EXTRACTION can report that none of OCR/MRZ/Barcode's
+    # own codes cover -- a cross-source canonical-field disagreement,
+    # never a single source's own failure to read/parse (those already
+    # have their own codes on their own EvidenceResult rows).
+    FIELD_VALUE_CONFLICT = "FIELD_VALUE_CONFLICT"

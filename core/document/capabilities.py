@@ -11,8 +11,13 @@ member for AuthenticityChecker, if that capability is ever built).
 QualityAssessor, DocumentClassifier (Phase 1), MRZParser, BarcodeDecoder
 (Phase 2, DP-003/DP-004), and OCREngine (Phase 3, DP-005/DP-006) all
 have deterministic implementations (core.document.deterministic).
-DOCUMENT_FIELD_EXTRACTION reconciliation remains out of scope pending a
-future phase (DP-005 Decision 0/11).
+DOCUMENT_FIELD_EXTRACTION reconciliation (Phase 4, DP-008/DP-009) is
+deliberately NOT a port defined here -- it does not share this module's
+`image: bytes -> domain result` contract shape (its inputs are other
+capabilities' own domain results, not image bytes) and has no plausible
+future real adapter to justify the "swappable behind a port" pattern
+this module exists for. See core.document.reconciliation.DocumentFieldReconciler
+instead.
 
 Where a capability's own return type is Optional (MRZParser, BarcodeDecoder):
 None means the capability found no applicable input/presence to
