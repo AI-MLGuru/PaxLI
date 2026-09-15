@@ -108,7 +108,7 @@ def _orchestrator(session, key_provider, key_id) -> DecisionOrchestrator:
 
 
 async def test_corrupted_evidence_ciphertext_resolves_to_inconclusive_not_a_stuck_session() -> None:
-    """The live attack: a real HIGHLY_SENSITIVE FACE_EMBEDDING result is
+    """The live attack: a real HIGHLY_SENSITIVE FACE_EMBEDDING_REFERENCE result is
     created (genuinely encrypted, real AES-GCM round trip), then its
     result_ciphertext is corrupted directly in Postgres -- the exact
     shape of bit-rot, storage corruption, or unauthorized direct-DB
@@ -151,7 +151,7 @@ async def test_corrupted_evidence_ciphertext_resolves_to_inconclusive_not_a_stuc
         victim = await evidence_result_service.create(
             tenant_id=tenant_id,
             session_id=created_session.id,
-            evidence_type=EvidenceResultType.FACE_EMBEDDING,
+            evidence_type=EvidenceResultType.FACE_EMBEDDING_REFERENCE,
             status=EvidenceResultStatus.PASS,
             producer="face-embedder",
             producer_version="1.0",

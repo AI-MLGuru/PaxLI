@@ -25,11 +25,29 @@ class EvidenceResultType(StrEnum):
     `TARGET: v1.1` status for liveness (Part III §3.33) -- declared here so
     the taxonomy is complete, but nothing is required or expected to
     produce it yet.
+
+    BD-001.4/BD-001.5 (Slice H): FACE_DETECTION/FACE_QUALITY/FACE_EMBEDDING
+    are role-qualified into REFERENCE/PROBE pairs, not left as three bare
+    members -- BiometricProcessor (Slice G.2) needs two simultaneously
+    effective embeddings per session (one reference, one probe), which
+    the database's own partial unique index
+    (ix_evidence_results_one_effective_per_type, scoped to
+    (tenant_id, session_id, evidence_type)) cannot represent under a
+    single undifferentiated FACE_EMBEDDING member. Each pair shares one
+    payload schema (FaceDetectionResult/FaceQualityResult/
+    FaceEmbeddingResult, core.evidence_result.schemas) -- only the type
+    key is role-qualified, never the payload shape. No production code
+    has ever persisted a row of any of the three original bare members
+    (confirmed before this change), so this is a pure taxonomy
+    completion, not a live data migration.
     """
 
-    FACE_DETECTION = "FACE_DETECTION"
-    FACE_QUALITY = "FACE_QUALITY"
-    FACE_EMBEDDING = "FACE_EMBEDDING"
+    FACE_DETECTION_REFERENCE = "FACE_DETECTION_REFERENCE"
+    FACE_DETECTION_PROBE = "FACE_DETECTION_PROBE"
+    FACE_QUALITY_REFERENCE = "FACE_QUALITY_REFERENCE"
+    FACE_QUALITY_PROBE = "FACE_QUALITY_PROBE"
+    FACE_EMBEDDING_REFERENCE = "FACE_EMBEDDING_REFERENCE"
+    FACE_EMBEDDING_PROBE = "FACE_EMBEDDING_PROBE"
     FACE_MATCH = "FACE_MATCH"
     DOCUMENT_QUALITY = "DOCUMENT_QUALITY"
     DOCUMENT_CLASSIFICATION = "DOCUMENT_CLASSIFICATION"

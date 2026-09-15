@@ -286,7 +286,7 @@ async def test_request_deletion_is_blocked_by_a_dependent_evidence_result() -> N
         await result_svc.create(
             tenant_id=tenant_id,
             session_id=UUID(session_id),
-            evidence_type=EvidenceResultType.FACE_QUALITY,
+            evidence_type=EvidenceResultType.FACE_QUALITY_REFERENCE,
             status=EvidenceResultStatus.PASS,
             producer="p",
             producer_version="1",
@@ -340,7 +340,7 @@ async def test_evidence_result_request_deletion_is_blocked_by_dependent_superses
         original = await svc.create(
             tenant_id=tenant_id,
             session_id=UUID(session_id),
-            evidence_type=EvidenceResultType.FACE_QUALITY,
+            evidence_type=EvidenceResultType.FACE_QUALITY_REFERENCE,
             status=EvidenceResultStatus.INCONCLUSIVE,
             producer="p",
             producer_version="1",
@@ -349,7 +349,7 @@ async def test_evidence_result_request_deletion_is_blocked_by_dependent_superses
             evidence_result_id=original.id,
             tenant_id=tenant_id,
             session_id=UUID(session_id),
-            evidence_type=EvidenceResultType.FACE_QUALITY,
+            evidence_type=EvidenceResultType.FACE_QUALITY_REFERENCE,
             status=EvidenceResultStatus.PASS,
             producer="p",
             producer_version="1",

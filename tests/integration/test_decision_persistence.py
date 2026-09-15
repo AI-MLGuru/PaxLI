@@ -207,11 +207,11 @@ async def test_decision_survives_hard_deletion_of_the_evidence_it_referenced() -
         evidence = await evidence_service.create(
             tenant_id=tenant_id,
             session_id=session_id,
-            evidence_type=EvidenceResultType.FACE_MATCH,
+            evidence_type=EvidenceResultType.DOCUMENT_QUALITY,
             status=EvidenceResultStatus.PASS,
             producer="face-provider",
             producer_version="1.0",
-            result={"similarity": 0.91},
+            result={"quality_score": 0.91},
             score=0.91,
         )
         decision_repo = SqlAlchemyDecisionRepository(session)
@@ -250,7 +250,7 @@ async def test_decision_survives_hard_deletion_of_the_evidence_it_referenced() -
         assert len(decision_row.evidence_references) == 1
         reference = decision_row.evidence_references[0]
         assert reference.evidence_result_id == evidence.id
-        assert reference.evidence_type == "FACE_MATCH"
+        assert reference.evidence_type == "DOCUMENT_QUALITY"
         assert reference.status == "PASS"
         assert reference.integrity_reference == evidence.integrity_reference
 

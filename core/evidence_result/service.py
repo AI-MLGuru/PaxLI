@@ -183,7 +183,7 @@ class EvidenceResultService:
                 )
                 return existing
 
-        validate_result_payload(evidence_type, result)
+        validate_result_payload(evidence_type, result, parent_evidence_result_ids)
         await self._validate_provenance(
             tenant_id=tenant_id,
             session_id=session_id,
@@ -346,7 +346,7 @@ class EvidenceResultService:
         violate the constraint immediately, even mid-transaction -- the
         exact ordering lesson already proven by PolicyService.mark_superseded
         preceding its own ACTIVE-row insert."""
-        validate_result_payload(evidence_type, result)
+        validate_result_payload(evidence_type, result, parent_evidence_result_ids)
         await self._validate_provenance(
             tenant_id=tenant_id,
             session_id=session_id,

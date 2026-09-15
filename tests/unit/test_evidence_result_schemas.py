@@ -1,8 +1,11 @@
+from uuid import uuid4
+
 import pytest
+from pydantic import ValidationError
 
 from core.evidence_result.enums import EvidenceResultType
 from core.evidence_result.exceptions import InvalidEvidenceResultError
-from core.evidence_result.schemas import SCHEMA_REGISTRY, validate_result_payload
+from core.evidence_result.schemas import SCHEMA_REGISTRY, FaceMatchResult, validate_result_payload
 
 
 def test_none_result_is_always_valid_regardless_of_type() -> None:
@@ -11,17 +14,109 @@ def test_none_result_is_always_valid_regardless_of_type() -> None:
 
 
 def test_valid_face_match_payload_passes() -> None:
-    validate_result_payload(EvidenceResultType.FACE_MATCH, {"similarity": 0.83})
+    reference_id = uuid4()
+    probe_id = uuid4()
+    validate_result_payload(
+        EvidenceResultType.FACE_MATCH,
+        {
+            "similarity": 0.83,
+            "reference_evidence_result_id": str(reference_id),
+            "probe_evidence_result_id": str(probe_id),
+        },
+        (reference_id, probe_id),
+    )
 
 
 def test_face_match_payload_missing_required_field_is_rejected() -> None:
+    """`similarity` specifically omitted -- the other two required
+    fields are present, isolating this as a test of the missing-field
+    case alone, not a coincidental multi-field failure."""
+    reference_id = uuid4()
+    probe_id = uuid4()
     with pytest.raises(InvalidEvidenceResultError):
-        validate_result_payload(EvidenceResultType.FACE_MATCH, {"wrong_field": 0.83})
+        validate_result_payload(
+            EvidenceResultType.FACE_MATCH,
+            {
+                "reference_evidence_result_id": str(reference_id),
+                "probe_evidence_result_id": str(probe_id),
+            },
+            (reference_id, probe_id),
+        )
 
 
 def test_face_match_payload_with_wrong_type_is_rejected() -> None:
+    """`similarity` specifically wrong-typed -- both role fields are
+    otherwise valid, isolating this as a test of the wrong-type case
+    alone."""
+    reference_id = uuid4()
+    probe_id = uuid4()
     with pytest.raises(InvalidEvidenceResultError):
-        validate_result_payload(EvidenceResultType.FACE_MATCH, {"similarity": "not-a-number"})
+        validate_result_payload(
+            EvidenceResultType.FACE_MATCH,
+            {
+                "similarity": "not-a-number",
+                "reference_evidence_result_id": str(reference_id),
+                "probe_evidence_result_id": str(probe_id),
+            },
+            (reference_id, probe_id),
+        )
+
+
+def test_face_match_reference_id_not_in_parents_is_rejected() -> None:
+    """BP-001.5 Decision 20's first membership invariant, exercised at
+    the envelope boundary validate_result_payload() owns -- the
+    reference id is absent from parent_evidence_result_ids even though
+    the probe id is present."""
+    reference_id = uuid4()
+    probe_id = uuid4()
+    other_id = uuid4()
+    with pytest.raises(InvalidEvidenceResultError):
+        validate_result_payload(
+            EvidenceResultType.FACE_MATCH,
+            {
+                "similarity": 0.83,
+                "reference_evidence_result_id": str(reference_id),
+                "probe_evidence_result_id": str(probe_id),
+            },
+            (other_id, probe_id),
+        )
+
+
+def test_face_match_probe_id_not_in_parents_is_rejected() -> None:
+    """The second membership invariant -- the probe id is absent from
+    parent_evidence_result_ids even though the reference id is
+    present."""
+    reference_id = uuid4()
+    probe_id = uuid4()
+    other_id = uuid4()
+    with pytest.raises(InvalidEvidenceResultError):
+        validate_result_payload(
+            EvidenceResultType.FACE_MATCH,
+            {
+                "similarity": 0.83,
+                "reference_evidence_result_id": str(reference_id),
+                "probe_evidence_result_id": str(probe_id),
+            },
+            (reference_id, other_id),
+        )
+
+
+def test_face_match_result_rejects_identical_reference_and_probe_ids() -> None:
+    """The payload-local invariant FaceMatchResult itself enforces --
+    distinctness, the one thing it can check without ever seeing
+    parent_evidence_result_ids."""
+    same_id = uuid4()
+    with pytest.raises(ValidationError):
+        FaceMatchResult(
+            similarity=0.83, reference_evidence_result_id=same_id, probe_evidence_result_id=same_id
+        )
+
+
+def test_face_match_result_accepts_distinct_reference_and_probe_ids() -> None:
+    result = FaceMatchResult(
+        similarity=0.83, reference_evidence_result_id=uuid4(), probe_evidence_result_id=uuid4()
+    )
+    assert result.similarity == 0.83
 
 
 def test_every_evidence_type_has_a_registered_schema() -> None:
@@ -31,9 +126,16 @@ def test_every_evidence_type_has_a_registered_schema() -> None:
         assert evidence_type in SCHEMA_REGISTRY
 
 
-def test_valid_face_embedding_payload_passes() -> None:
+@pytest.mark.parametrize(
+    "evidence_type",
+    [EvidenceResultType.FACE_EMBEDDING_REFERENCE, EvidenceResultType.FACE_EMBEDDING_PROBE],
+)
+def test_valid_face_embedding_payload_passes(evidence_type: EvidenceResultType) -> None:
+    """FaceEmbeddingResult's payload shape is shared by both role-
+    qualified types (BD-001.4 H.1) -- proven here for both, not just
+    one arbitrary variant."""
     validate_result_payload(
-        EvidenceResultType.FACE_EMBEDDING,
+        evidence_type,
         {"embedding": [0.1, 0.2, 0.3], "embedding_dimensions": 3},
     )
 

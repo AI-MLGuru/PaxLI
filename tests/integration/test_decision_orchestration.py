@@ -153,6 +153,28 @@ async def test_full_pipeline_verified_outcome_against_real_infrastructure() -> N
             AuditService(SqlAlchemyAuditEventRepository(session)),
             SqlAlchemyEvidenceRepository(session),
         )
+        # BD-001.5 H.2: FaceMatchResult now requires real reference/probe
+        # role ids, each a genuine parent -- two minimal embedding rows
+        # first, so the FACE_MATCH row below satisfies both the schema
+        # and the envelope-boundary provenance check.
+        reference_embedding = await evidence_result_service.create(
+            tenant_id=tenant_id,
+            session_id=created_session.id,
+            evidence_type=EvidenceResultType.FACE_EMBEDDING_REFERENCE,
+            status=EvidenceResultStatus.PASS,
+            producer="face-provider",
+            producer_version="1.0",
+            result={"embedding": [0.1, 0.2, 0.3], "embedding_dimensions": 3},
+        )
+        probe_embedding = await evidence_result_service.create(
+            tenant_id=tenant_id,
+            session_id=created_session.id,
+            evidence_type=EvidenceResultType.FACE_EMBEDDING_PROBE,
+            status=EvidenceResultStatus.PASS,
+            producer="face-provider",
+            producer_version="1.0",
+            result={"embedding": [0.4, 0.5, 0.6], "embedding_dimensions": 3},
+        )
         await evidence_result_service.create(
             tenant_id=tenant_id,
             session_id=created_session.id,
@@ -160,8 +182,13 @@ async def test_full_pipeline_verified_outcome_against_real_infrastructure() -> N
             status=EvidenceResultStatus.PASS,
             producer="face-provider",
             producer_version="1.0",
-            result={"similarity": 0.95},
+            result={
+                "similarity": 0.95,
+                "reference_evidence_result_id": str(reference_embedding.id),
+                "probe_evidence_result_id": str(probe_embedding.id),
+            },
             score=0.95,
+            parent_evidence_result_ids=(reference_embedding.id, probe_embedding.id),
         )
         await session.commit()
 

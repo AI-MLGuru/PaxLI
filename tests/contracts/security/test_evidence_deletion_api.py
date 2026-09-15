@@ -180,6 +180,9 @@ def test_other_authorized_basis_without_reference_is_rejected(
 async def _create_evidence_result(
     session_factory, *, tenant_id: str, session_id: UUID, source_reference: UUID | None = None
 ):
+    """DOCUMENT_QUALITY, not FACE_MATCH -- this helper exercises generic
+    evidence-deletion API behavior, no need for FACE_MATCH's own
+    role-id contract (BD-001.5 H.2)."""
     key_provider = LocalAesGcmKeyProvider({"test-evidence-key": b"0" * 32})
     async with session_factory() as session:
         service = EvidenceResultService(
@@ -190,11 +193,11 @@ async def _create_evidence_result(
         result = await service.create(
             tenant_id=tenant_id,
             session_id=session_id,
-            evidence_type=EvidenceResultType.FACE_MATCH,
+            evidence_type=EvidenceResultType.DOCUMENT_QUALITY,
             status=EvidenceResultStatus.PASS,
             producer="test-producer",
             producer_version="1.0",
-            result={"similarity": 0.9},
+            result={"quality_score": 0.9},
             source_reference=source_reference,
         )
         await session.commit()

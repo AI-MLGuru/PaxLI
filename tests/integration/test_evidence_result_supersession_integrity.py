@@ -172,7 +172,7 @@ async def test_supersede_against_real_postgres_rejects_wrong_evidence_type() -> 
                 evidence_result_id=original.id,
                 tenant_id=tenant_id,
                 session_id=UUID(session_id),
-                evidence_type=EvidenceResultType.FACE_QUALITY,
+                evidence_type=EvidenceResultType.FACE_QUALITY_REFERENCE,
                 status=EvidenceResultStatus.PASS,
                 producer="face-provider",
                 producer_version="1.1",
@@ -185,3 +185,69 @@ async def test_supersede_against_real_postgres_rejects_wrong_evidence_type() -> 
             session_id=UUID(session_id), tenant_id=tenant_id
         )
         assert [r.id for r in effective] == [original.id]
+
+
+async def test_supersede_is_role_local_reference_retry_never_touches_probe() -> None:
+    """BD-001.4/BD-001.5 (Slice H): the literal demonstration of "role is
+    part of evidence identity; retry is versioning within that role."
+    Superseding FACE_EMBEDDING_REFERENCE must not affect a
+    simultaneously-effective FACE_EMBEDDING_PROBE row for the same
+    session -- they are different evidence_type values, not two
+    versions of the same one."""
+    tenant_id = f"tenant-h1-role-local-supersession-{uuid4()}"
+
+    async with session_factory() as session:
+        session_id = await _create_session(session, tenant_id)
+        svc = _service(session)
+
+        reference_v1 = await svc.create(
+            tenant_id=tenant_id,
+            session_id=UUID(session_id),
+            evidence_type=EvidenceResultType.FACE_EMBEDDING_REFERENCE,
+            status=EvidenceResultStatus.PASS,
+            producer="face-provider",
+            producer_version="1.0",
+            result={"embedding": [0.1, 0.2, 0.3], "embedding_dimensions": 3},
+        )
+        probe = await svc.create(
+            tenant_id=tenant_id,
+            session_id=UUID(session_id),
+            evidence_type=EvidenceResultType.FACE_EMBEDDING_PROBE,
+            status=EvidenceResultStatus.PASS,
+            producer="face-provider",
+            producer_version="1.0",
+            result={"embedding": [0.4, 0.5, 0.6], "embedding_dimensions": 3},
+        )
+        await session.commit()
+
+    async with session_factory() as session:
+        svc = _service(session)
+        reference_v2 = await svc.supersede(
+            evidence_result_id=reference_v1.id,
+            tenant_id=tenant_id,
+            session_id=UUID(session_id),
+            evidence_type=EvidenceResultType.FACE_EMBEDDING_REFERENCE,
+            status=EvidenceResultStatus.PASS,
+            producer="face-provider",
+            producer_version="1.1",
+            result={"embedding": [0.7, 0.8, 0.9], "embedding_dimensions": 3},
+        )
+        await session.commit()
+
+    async with session_factory() as session:
+        svc = _service(session)
+        effective = await svc.list_effective_for_session(
+            session_id=UUID(session_id), tenant_id=tenant_id
+        )
+        effective_by_type = {r.evidence_type: r for r in effective}
+        # Exactly two effective rows -- reference's replacement and the
+        # untouched probe -- never three, never one.
+        assert len(effective) == 2
+        assert (
+            effective_by_type[EvidenceResultType.FACE_EMBEDDING_REFERENCE].id == reference_v2.id
+        )
+        assert effective_by_type[EvidenceResultType.FACE_EMBEDDING_PROBE].id == probe.id
+        assert (
+            effective_by_type[EvidenceResultType.FACE_EMBEDDING_PROBE].result
+            == {"embedding": [0.4, 0.5, 0.6], "embedding_dimensions": 3}
+        )

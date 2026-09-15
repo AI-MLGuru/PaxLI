@@ -12,8 +12,8 @@ MRZ, BARCODE_QR, and DOCUMENT_FIELD_EXTRACTION carry raw or reconciled
 identity-field VALUES and are HIGHLY_SENSITIVE; DOCUMENT_QUALITY,
 DOCUMENT_CLASSIFICATION, and DOCUMENT_AUTHENTICITY carry only a
 score/label/signal-name and stay SENSITIVE -- the same principle already
-applied to biometrics (FACE_EMBEDDING HIGHLY_SENSITIVE vs.
-FACE_QUALITY/FACE_MATCH/FACE_DETECTION SENSITIVE). EXTERNAL_IDENTITY_PROVIDER
+applied to biometrics (FACE_EMBEDDING_REFERENCE/FACE_EMBEDDING_PROBE HIGHLY_SENSITIVE vs.
+FACE_QUALITY_*/FACE_MATCH/FACE_DETECTION_* SENSITIVE). EXTERNAL_IDENTITY_PROVIDER
 is provisionally SENSITIVE and MUST be reassessed against this same
 payload-content test once a real adapter's response shape is known. The
 remaining entries are an initial, defensible mapping, not a final
@@ -24,9 +24,12 @@ from core.evidence_result.enums import EvidenceResultType
 from core.security.classification import DataClassification
 
 EVIDENCE_RESULT_CLASSIFICATION: dict[EvidenceResultType, DataClassification] = {
-    EvidenceResultType.FACE_DETECTION: DataClassification.SENSITIVE,
-    EvidenceResultType.FACE_QUALITY: DataClassification.SENSITIVE,
-    EvidenceResultType.FACE_EMBEDDING: DataClassification.HIGHLY_SENSITIVE,
+    EvidenceResultType.FACE_DETECTION_REFERENCE: DataClassification.SENSITIVE,
+    EvidenceResultType.FACE_DETECTION_PROBE: DataClassification.SENSITIVE,
+    EvidenceResultType.FACE_QUALITY_REFERENCE: DataClassification.SENSITIVE,
+    EvidenceResultType.FACE_QUALITY_PROBE: DataClassification.SENSITIVE,
+    EvidenceResultType.FACE_EMBEDDING_REFERENCE: DataClassification.HIGHLY_SENSITIVE,
+    EvidenceResultType.FACE_EMBEDDING_PROBE: DataClassification.HIGHLY_SENSITIVE,
     EvidenceResultType.FACE_MATCH: DataClassification.SENSITIVE,
     EvidenceResultType.DOCUMENT_QUALITY: DataClassification.SENSITIVE,
     EvidenceResultType.DOCUMENT_CLASSIFICATION: DataClassification.SENSITIVE,

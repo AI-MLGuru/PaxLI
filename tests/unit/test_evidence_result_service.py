@@ -169,17 +169,20 @@ def service() -> tuple[EvidenceResultService, FakeEvidenceResultRepository, Fake
 
 @pytest.mark.asyncio
 async def test_create_persists_and_audits(service) -> None:
+    """DOCUMENT_QUALITY, not FACE_MATCH -- this test exercises generic
+    create()/audit behavior and has no need for FACE_MATCH's own
+    reference/probe role-id contract (BD-001.5 H.2)."""
     svc, repo, audit_repo = service
     session_id = uuid4()
 
     result = await svc.create(
         tenant_id="tenant-a",
         session_id=session_id,
-        evidence_type=EvidenceResultType.FACE_MATCH,
+        evidence_type=EvidenceResultType.DOCUMENT_QUALITY,
         status=EvidenceResultStatus.PASS,
         producer="face-provider",
         producer_version="1.0.0",
-        result={"similarity": 0.91},
+        result={"quality_score": 0.91},
         score=0.91,
     )
 
@@ -195,29 +198,31 @@ async def test_repeated_idempotency_key_resolves_to_the_same_result_not_a_new_on
     service,
 ) -> None:
     """Invariant-12 remediation: a retried submission must not silently
-    create a duplicate evidence result."""
+    create a duplicate evidence result. DOCUMENT_QUALITY, not
+    FACE_MATCH -- generic idempotency behavior, no need for FACE_MATCH's
+    own role-id contract (BD-001.5 H.2)."""
     svc, repo, _ = service
     session_id = uuid4()
 
     first = await svc.create(
         tenant_id="tenant-a",
         session_id=session_id,
-        evidence_type=EvidenceResultType.FACE_MATCH,
+        evidence_type=EvidenceResultType.DOCUMENT_QUALITY,
         status=EvidenceResultStatus.PASS,
         producer="face-provider",
         producer_version="1.0.0",
-        result={"similarity": 0.91},
+        result={"quality_score": 0.91},
         score=0.91,
         idempotency_key="req-abc",
     )
     second = await svc.create(
         tenant_id="tenant-a",
         session_id=session_id,
-        evidence_type=EvidenceResultType.FACE_MATCH,
+        evidence_type=EvidenceResultType.DOCUMENT_QUALITY,
         status=EvidenceResultStatus.PASS,
         producer="face-provider",
         producer_version="1.0.0",
-        result={"similarity": 0.91},
+        result={"quality_score": 0.91},
         score=0.91,
         idempotency_key="req-abc",
     )
@@ -247,13 +252,15 @@ async def test_invalid_result_payload_persists_nothing_and_audits_nothing(servic
 
 @pytest.mark.asyncio
 async def test_supersede_creates_a_new_row_and_never_mutates_the_original(service) -> None:
+    """DOCUMENT_QUALITY, not FACE_MATCH -- generic supersession behavior,
+    no need for FACE_MATCH's own role-id contract (BD-001.5 H.2)."""
     svc, repo, _audit_repo = service
     session_id = uuid4()
 
     original = await svc.create(
         tenant_id="tenant-a",
         session_id=session_id,
-        evidence_type=EvidenceResultType.FACE_MATCH,
+        evidence_type=EvidenceResultType.DOCUMENT_QUALITY,
         status=EvidenceResultStatus.INCONCLUSIVE,
         producer="face-provider",
         producer_version="1.0.0",
@@ -262,11 +269,11 @@ async def test_supersede_creates_a_new_row_and_never_mutates_the_original(servic
         evidence_result_id=original.id,
         tenant_id="tenant-a",
         session_id=session_id,
-        evidence_type=EvidenceResultType.FACE_MATCH,
+        evidence_type=EvidenceResultType.DOCUMENT_QUALITY,
         status=EvidenceResultStatus.PASS,
         producer="face-provider",
         producer_version="1.0.1",
-        result={"similarity": 0.95},
+        result={"quality_score": 0.95},
         score=0.95,
     )
 
@@ -440,7 +447,7 @@ async def test_supersede_rejects_a_result_of_a_different_evidence_type(service) 
             evidence_result_id=original.id,
             tenant_id="tenant-a",
             session_id=session_id,
-            evidence_type=EvidenceResultType.FACE_QUALITY,
+            evidence_type=EvidenceResultType.FACE_QUALITY_REFERENCE,
             status=EvidenceResultStatus.PASS,
             producer="face-provider",
             producer_version="1.0.1",
@@ -582,26 +589,29 @@ async def test_create_rejects_a_parent_evidence_result_from_a_different_session(
 
 @pytest.mark.asyncio
 async def test_integrity_reference_is_server_computed_and_deterministic(service) -> None:
+    """DOCUMENT_QUALITY, not FACE_MATCH -- generic integrity-reference
+    determinism, no need for FACE_MATCH's own role-id contract
+    (BD-001.5 H.2)."""
     svc, _repo, _audit_repo = service
     session_id = uuid4()
 
     first = await svc.create(
         tenant_id="tenant-a",
         session_id=session_id,
-        evidence_type=EvidenceResultType.FACE_MATCH,
+        evidence_type=EvidenceResultType.DOCUMENT_QUALITY,
         status=EvidenceResultStatus.PASS,
         producer="face-provider",
         producer_version="1.0.0",
-        result={"similarity": 0.5},
+        result={"quality_score": 0.5},
     )
     second = await svc.create(
         tenant_id="tenant-a",
         session_id=session_id,
-        evidence_type=EvidenceResultType.FACE_MATCH,
+        evidence_type=EvidenceResultType.DOCUMENT_QUALITY,
         status=EvidenceResultStatus.PASS,
         producer="face-provider",
         producer_version="1.0.0",
-        result={"similarity": 0.5},
+        result={"quality_score": 0.5},
     )
     # same logical content -> same integrity reference, despite different IDs
     assert first.integrity_reference == second.integrity_reference
@@ -652,7 +662,7 @@ async def test_integrity_reference_changes_with_quality(service) -> None:
     lower = await svc.create(
         tenant_id="tenant-a",
         session_id=session_id,
-        evidence_type=EvidenceResultType.FACE_QUALITY,
+        evidence_type=EvidenceResultType.FACE_QUALITY_REFERENCE,
         status=EvidenceResultStatus.PASS,
         producer="face-provider",
         producer_version="1.0.0",
@@ -661,7 +671,7 @@ async def test_integrity_reference_changes_with_quality(service) -> None:
     higher = await svc.create(
         tenant_id="tenant-a",
         session_id=session_id,
-        evidence_type=EvidenceResultType.FACE_QUALITY,
+        evidence_type=EvidenceResultType.FACE_QUALITY_REFERENCE,
         status=EvidenceResultStatus.PASS,
         producer="face-provider",
         producer_version="1.0.0",

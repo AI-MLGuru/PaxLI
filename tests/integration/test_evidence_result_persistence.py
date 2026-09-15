@@ -15,6 +15,7 @@ from apps.api.paxli_api.config import get_settings
 from core.audit.service import AuditService
 from core.evidence_result.classification import DataClassification, classify
 from core.evidence_result.enums import EvidenceResultStatus, EvidenceResultType
+from core.evidence_result.exceptions import InvalidEvidenceResultError
 from core.evidence_result.service import EvidenceResultService
 from infrastructure.database.models.evidence_result import EvidenceResultRecord
 from infrastructure.database.models.verification_session import VerificationSessionRecord
@@ -94,6 +95,10 @@ async def test_check_constraint_rejects_both_representations_populated() -> None
 
 
 async def test_sensitive_result_round_trips_as_plain_json_in_db() -> None:
+    """DOCUMENT_QUALITY, not FACE_MATCH -- this proves the plain-JSON
+    round trip for a SENSITIVE (not HIGHLY_SENSITIVE) type generically;
+    DOCUMENT_QUALITY shares that same tier without needing FACE_MATCH's
+    own role-id contract (BD-001.5 H.2)."""
     async with session_factory() as session:
         session_id = await _create_session(session, "tenant-persist-plain")
         key_provider = LocalAesGcmKeyProvider({"test-evidence-result-key": b"0" * 32})
@@ -107,23 +112,23 @@ async def test_sensitive_result_round_trips_as_plain_json_in_db() -> None:
         saved = await svc.create(
             tenant_id="tenant-persist-plain",
             session_id=UUID(session_id),
-            evidence_type=EvidenceResultType.FACE_MATCH,
+            evidence_type=EvidenceResultType.DOCUMENT_QUALITY,
             status=EvidenceResultStatus.PASS,
             producer="face-provider",
             producer_version="1.0",
-            result={"similarity": 0.77},
+            result={"quality_score": 0.77},
             score=0.77,
         )
         await session.commit()
 
         record = await session.get(EvidenceResultRecord, str(saved.id))
         assert record is not None
-        assert record.result_json == {"similarity": 0.77}
+        assert record.result_json == {"quality_score": 0.77}
         assert record.result_ciphertext is None
 
         fetched = await repo.get(saved.id, "tenant-persist-plain")
         assert fetched is not None
-        assert fetched.result == {"similarity": 0.77}
+        assert fetched.result == {"quality_score": 0.77}
 
 
 async def test_highly_sensitive_result_is_encrypted_at_rest_and_round_trips() -> None:
@@ -141,7 +146,7 @@ async def test_highly_sensitive_result_is_encrypted_at_rest_and_round_trips() ->
         saved = await svc.create(
             tenant_id="tenant-persist-encrypted",
             session_id=UUID(session_id),
-            evidence_type=EvidenceResultType.FACE_EMBEDDING,
+            evidence_type=EvidenceResultType.FACE_EMBEDDING_REFERENCE,
             status=EvidenceResultStatus.PASS,
             producer="face-provider",
             producer_version="1.0",
@@ -184,7 +189,7 @@ async def test_document_extraction_types_are_highly_sensitive_and_encrypted_at_r
     them -- confirmed directly here rather than assumed from the
     classification map alone, the same way test_highly_sensitive_result_
     is_encrypted_at_rest_and_round_trips already confirms it for
-    FACE_EMBEDDING."""
+    FACE_EMBEDDING_REFERENCE."""
     assert classify(evidence_type) == DataClassification.HIGHLY_SENSITIVE
 
     canary_value = f"CANARY-IDENTITY-VALUE-{uuid4()}"
@@ -321,6 +326,9 @@ async def test_required_audit_failure_leaves_no_evidence_result_row() -> None:
 
 
 async def test_supersede_against_real_postgres_creates_new_row_original_untouched() -> None:
+    """DOCUMENT_QUALITY, not FACE_MATCH -- generic real-Postgres
+    supersession behavior, no need for FACE_MATCH's own role-id
+    contract (BD-001.5 H.2)."""
     async with session_factory() as session:
         session_id = await _create_session(session, "tenant-supersede")
         key_provider = LocalAesGcmKeyProvider({"test-evidence-result-key": b"0" * 32})
@@ -334,7 +342,7 @@ async def test_supersede_against_real_postgres_creates_new_row_original_untouche
         original = await svc.create(
             tenant_id="tenant-supersede",
             session_id=UUID(session_id),
-            evidence_type=EvidenceResultType.FACE_MATCH,
+            evidence_type=EvidenceResultType.DOCUMENT_QUALITY,
             status=EvidenceResultStatus.INCONCLUSIVE,
             producer="p",
             producer_version="1",
@@ -345,11 +353,11 @@ async def test_supersede_against_real_postgres_creates_new_row_original_untouche
             evidence_result_id=original.id,
             tenant_id="tenant-supersede",
             session_id=UUID(session_id),
-            evidence_type=EvidenceResultType.FACE_MATCH,
+            evidence_type=EvidenceResultType.DOCUMENT_QUALITY,
             status=EvidenceResultStatus.PASS,
             producer="p",
             producer_version="2",
-            result={"similarity": 0.9},
+            result={"quality_score": 0.9},
             score=0.9,
         )
         await session.commit()
@@ -418,3 +426,113 @@ async def test_one_effective_per_type_index_rejects_two_effective_rows_direct_in
         with pytest.raises(IntegrityError):
             await session.flush()
         await session.rollback()
+
+
+async def test_reference_and_probe_biometric_stages_are_simultaneously_effective() -> None:
+    """BD-001.4/BD-001.5 (Slice H): the concrete proof the taxonomy split
+    exists for -- a single session holds all six role-qualified
+    FACE_DETECTION/FACE_QUALITY/FACE_EMBEDDING types as simultaneously
+    effective rows, something a single undifferentiated FACE_EMBEDDING
+    (etc.) member could never represent under
+    ix_evidence_results_one_effective_per_type's own
+    (tenant_id, session_id, evidence_type) scope."""
+    tenant_id = "tenant-h1-simultaneous-effectiveness"
+    async with session_factory() as session:
+        session_id = await _create_session(session, tenant_id)
+        key_provider = LocalAesGcmKeyProvider({"test-evidence-result-key": b"0" * 32})
+        repo = SqlAlchemyEvidenceResultRepository(session, key_provider, "test-evidence-result-key")
+        svc = EvidenceResultService(
+            repo,
+            AuditService(SqlAlchemyAuditEventRepository(session)),
+            SqlAlchemyEvidenceRepository(session),
+        )
+
+        payload_by_type = {
+            EvidenceResultType.FACE_DETECTION_REFERENCE: {"detected": True, "face_count": 1},
+            EvidenceResultType.FACE_DETECTION_PROBE: {"detected": True, "face_count": 1},
+            EvidenceResultType.FACE_QUALITY_REFERENCE: {"quality_score": 0.8},
+            EvidenceResultType.FACE_QUALITY_PROBE: {"quality_score": 0.9},
+            EvidenceResultType.FACE_EMBEDDING_REFERENCE: {
+                "embedding": [0.1, 0.2, 0.3],
+                "embedding_dimensions": 3,
+            },
+            EvidenceResultType.FACE_EMBEDDING_PROBE: {
+                "embedding": [0.4, 0.5, 0.6],
+                "embedding_dimensions": 3,
+            },
+        }
+        for evidence_type, payload in payload_by_type.items():
+            await svc.create(
+                tenant_id=tenant_id,
+                session_id=UUID(session_id),
+                evidence_type=evidence_type,
+                status=EvidenceResultStatus.PASS,
+                producer="face-provider",
+                producer_version="1.0",
+                result=payload,
+            )
+        await session.commit()
+
+        effective = await repo.list_effective_for_session(UUID(session_id), tenant_id)
+        assert {r.evidence_type for r in effective} == set(payload_by_type)
+
+
+async def test_face_match_reference_id_not_in_parents_is_rejected_before_any_write() -> None:
+    """BD-001.5 H.2, end-to-end: EvidenceResultService.create() itself
+    rejects an invalid FACE_MATCH construction (reference id not among
+    the supplied parents) before anything is persisted -- proving the
+    boundary is real at the actual call site BiometricProcessor will
+    use, not only at the unit level (tests/unit/test_evidence_result_schemas.py)."""
+    tenant_id = "tenant-h2-provenance-rejection"
+    async with session_factory() as session:
+        session_id = await _create_session(session, tenant_id)
+        key_provider = LocalAesGcmKeyProvider({"test-evidence-result-key": b"0" * 32})
+        repo = SqlAlchemyEvidenceResultRepository(session, key_provider, "test-evidence-result-key")
+        svc = EvidenceResultService(
+            repo,
+            AuditService(SqlAlchemyAuditEventRepository(session)),
+            SqlAlchemyEvidenceRepository(session),
+        )
+
+        reference_embedding = await svc.create(
+            tenant_id=tenant_id,
+            session_id=UUID(session_id),
+            evidence_type=EvidenceResultType.FACE_EMBEDDING_REFERENCE,
+            status=EvidenceResultStatus.PASS,
+            producer="face-provider",
+            producer_version="1.0",
+            result={"embedding": [0.1, 0.2, 0.3], "embedding_dimensions": 3},
+        )
+        probe_embedding = await svc.create(
+            tenant_id=tenant_id,
+            session_id=UUID(session_id),
+            evidence_type=EvidenceResultType.FACE_EMBEDDING_PROBE,
+            status=EvidenceResultStatus.PASS,
+            producer="face-provider",
+            producer_version="1.0",
+            result={"embedding": [0.4, 0.5, 0.6], "embedding_dimensions": 3},
+        )
+        await session.commit()
+
+        with pytest.raises(InvalidEvidenceResultError):
+            await svc.create(
+                tenant_id=tenant_id,
+                session_id=UUID(session_id),
+                evidence_type=EvidenceResultType.FACE_MATCH,
+                status=EvidenceResultStatus.PASS,
+                producer="face-provider",
+                producer_version="1.0",
+                result={
+                    "similarity": 0.83,
+                    # a real UUID, but NOT one of the two parents below --
+                    # the reference id must be a genuine forgery attempt,
+                    # not merely absent, to prove membership is checked
+                    # against the real parent set, not merely non-empty
+                    "reference_evidence_result_id": str(uuid4()),
+                    "probe_evidence_result_id": str(probe_embedding.id),
+                },
+                parent_evidence_result_ids=(reference_embedding.id, probe_embedding.id),
+            )
+
+        effective = await repo.list_effective_for_session(UUID(session_id), tenant_id)
+        assert EvidenceResultType.FACE_MATCH not in {r.evidence_type for r in effective}
