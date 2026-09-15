@@ -18,7 +18,12 @@ exception type would be a cross-domain leak, not a reuse.
 
 from abc import ABC, abstractmethod
 
-from core.face.types import FaceDetection, FaceEmbedding, FaceQuality
+from core.face.types import (
+    DocumentFaceExtractionResult,
+    FaceDetection,
+    FaceEmbedding,
+    FaceQuality,
+)
 
 
 class CapabilityUnavailableError(Exception):
@@ -127,4 +132,38 @@ class FaceEmbedder(ABC):
         norm that isn't sufficiently close to unit length) -- the
         implementation MUST validate the vendor's own output rather than
         trusting it or silently repairing it (no re-normalization)."""
+        raise NotImplementedError
+
+
+class DocumentFaceExtractor(ABC):
+    """BD-001.2 D-1: deliberately independent of `FaceDetector` at the
+    port level -- `FaceDetector`'s frozen contract (BD-001.1 G-1) never
+    exposes bounding-box geometry, and this capability needs exactly
+    that to crop a document-bound reference artifact. Any real
+    adapter's underlying vendor call may share the same technology
+    `InsightFaceDetector` uses without sharing a domain-port dependency
+    (BD-001.1 G-2) -- the same infrastructure-layer-optimization-only
+    sharing discipline `FaceQualityAssessor`/`FaceEmbedder` already
+    establish above, applied to a fourth, independently-motivated
+    caller."""
+
+    @abstractmethod
+    async def extract_candidate(self, image: bytes) -> DocumentFaceExtractionResult:
+        """Always returns a populated DocumentFaceExtractionResult --
+        never None. MUST NOT select a face among several candidates:
+        `face_count == 1` is a structural precondition for producing a
+        crop at all (outcome=VALID); 0 or 2+ both mean no crop is
+        produced (NO_FACE / AMBIGUOUS) -- structural facts, the same
+        BP Decision B-2 boundary every other face capability enforces.
+        This method carries no opinion about whether the resulting
+        artifact is "good enough" to embed or match -- exclusively a
+        future BiometricProcessor's/FaceEmbedder's/FaceMatcher's
+        concern.
+
+        May raise `CapabilityUnavailableError` for a genuine
+        InsightFace/ONNX Runtime failure -- never for undecodable image
+        bytes (that is `DocumentFaceExtractionOutcome.UNREADABLE`, a
+        legitimate domain result, not a capability/infrastructure
+        failure -- BD-001.1 G-3's frozen boundary: bad input is never
+        represented as provider unavailability)."""
         raise NotImplementedError

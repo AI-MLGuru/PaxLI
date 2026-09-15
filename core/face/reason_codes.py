@@ -72,3 +72,24 @@ class FaceReasonCode(StrEnum):
     # (INCONCLUSIVE, per BP-001.5 Decision 21 -- not decided here, that
     # mapping happens outside FaceMatcher's own scope).
     REPRESENTATION_INCOMPATIBLE = "REPRESENTATION_INCOMPATIBLE"
+
+    # BD-001 Slice G (BD-001.2 D-1/D-2): DocumentFaceExtractionOutcome's
+    # three non-VALID outcomes, mirroring Slice C/D's own
+    # distinguishable-facts discipline exactly. Pre-declared here for a
+    # future BiometricProcessor (Slice G.2) to consume -- Slice G's own
+    # DocumentBoundReferenceResolver never persists an evidence row and
+    # so never actually attaches these to anything yet, the same
+    # "declared ahead of its real consumer" pattern DETECTION_UNREADABLE
+    # itself followed in Slice B.
+    EXTRACTION_UNREADABLE = "EXTRACTION_UNREADABLE"
+    EXTRACTION_NO_FACE = "EXTRACTION_NO_FACE"
+    EXTRACTION_AMBIGUOUS = "EXTRACTION_AMBIGUOUS"
+
+    # BD-001 Slice G: a face WAS reported by DocumentFaceExtractor's own
+    # internal detection call, but its bbox clips to zero/negative width
+    # or height against the image -- the same genuine capability-level
+    # anomaly category as QUALITY_DEGENERATE_CROP, given its own code
+    # rather than reused, per this module's own sub-capability-prefixed
+    # discipline. Used with CapabilityUnavailableError, never returned
+    # as a DocumentFaceExtractionOutcome.
+    EXTRACTION_DEGENERATE_CROP = "EXTRACTION_DEGENERATE_CROP"

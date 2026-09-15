@@ -19,6 +19,8 @@ from enum import StrEnum
 from core.evidence_result.models import ModelReference
 
 __all__ = [
+    "DocumentFaceExtractionOutcome",
+    "DocumentFaceExtractionResult",
     "FaceDetection",
     "FaceDetectionOutcome",
     "FaceEmbedding",
@@ -158,3 +160,42 @@ class FaceEmbedding:
     embedding: tuple[float, ...] | None
     embedding_dimensions: int | None
     model_reference: ModelReference | None
+
+
+class DocumentFaceExtractionOutcome(StrEnum):
+    """BD-001.2 D-2: named to match its three siblings above
+    (FaceDetectionOutcome/FaceQualityOutcome/FaceEmbeddingOutcome)
+    exactly -- UNREADABLE/NO_FACE/AMBIGUOUS/VALID, the same
+    "couldn't read the bytes / no subject / no single subject / a
+    validated result exists" vocabulary this file already uses three
+    times. Deliberately NOT named RESOLVED for the positive member --
+    that is `core.face.reference.ReferenceAcquisitionOutcome`'s own
+    vocabulary one layer up; `DocumentBoundReferenceResolver`'s
+    translation table is exactly where that vocabulary shift belongs,
+    not this type.
+
+    No selection among 2+ candidates, ever, the same BP Decision B-2
+    boundary already enforced by every other face domain type: 2, 3,
+    or 10 detected faces in a document image all mean AMBIGUOUS."""
+
+    UNREADABLE = "UNREADABLE"  # image bytes could not be decoded
+    NO_FACE = "NO_FACE"  # decoded; zero faces -- nothing to extract
+    AMBIGUOUS = "AMBIGUOUS"  # decoded; 2+ faces -- no selection, ever
+    VALID = "VALID"  # exactly one face; cropped
+
+
+@dataclass(frozen=True)
+class DocumentFaceExtractionResult:
+    """Returned by DocumentFaceExtractor.extract_candidate() -- always
+    populated, never None, mirroring every other face domain type's
+    non-optional contract. `image` is populated iff outcome=VALID, None
+    otherwise -- the same "populated iff not the negative outcome"
+    discipline this file uses throughout.
+
+    `image` is the cropped face region only, re-encoded bytes -- never
+    the original document image, and never a bounding box/geometry
+    (BD-001.1 G-3: nothing outside DocumentFaceExtractor's own adapter
+    implementation ever needs the crop coordinates themselves)."""
+
+    outcome: DocumentFaceExtractionOutcome
+    image: bytes | None
