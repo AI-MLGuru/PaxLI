@@ -41,3 +41,18 @@ class FaceReasonCode(StrEnum):
     # in the detector's own output. Used with CapabilityUnavailableError,
     # never returned as a FaceQuality outcome.
     QUALITY_DEGENERATE_CROP = "QUALITY_DEGENERATE_CROP"
+
+    # BD-001 Slice D: FaceEmbeddingOutcome's three non-VALID outcomes,
+    # mirroring Slice C's own distinguishable-facts discipline exactly.
+    EMBEDDING_UNREADABLE = "EMBEDDING_UNREADABLE"
+    EMBEDDING_NO_FACE = "EMBEDDING_NO_FACE"
+    EMBEDDING_AMBIGUOUS = "EMBEDDING_AMBIGUOUS"
+
+    # BD-001 Slice D (D-4): the vendor's own reported "normalized"
+    # embedding failed validation (wrong dimensionality, non-finite
+    # values, or a norm not sufficiently close to unit length) -- a
+    # genuine capability-level anomaly, the same category as
+    # QUALITY_DEGENERATE_CROP. Used with CapabilityUnavailableError,
+    # never returned as a FaceEmbedding outcome. Explicitly never
+    # silently repaired (no re-normalization) -- validated, or rejected.
+    EMBEDDING_INVALID_REPRESENTATION = "EMBEDDING_INVALID_REPRESENTATION"

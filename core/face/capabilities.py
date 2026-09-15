@@ -18,7 +18,7 @@ exception type would be a cross-domain leak, not a reuse.
 
 from abc import ABC, abstractmethod
 
-from core.face.types import FaceDetection, FaceQuality
+from core.face.types import FaceDetection, FaceEmbedding, FaceQuality
 
 
 class CapabilityUnavailableError(Exception):
@@ -95,4 +95,36 @@ class FaceQualityAssessor(ABC):
         image itself decoded fine, so it isn't UNREADABLE. Never
         silently returns a fabricated or NaN-derived `quality_score` for
         this case."""
+        raise NotImplementedError
+
+
+class FaceEmbedder(ABC):
+    """Deliberately independent of `FaceDetector`/`FaceQualityAssessor` at
+    the port level -- same DP-001 Decision 3 boundary applied a third
+    time. Any sharing of underlying detection/recognition work across
+    implementations of these three capabilities is strictly an
+    infrastructure-layer optimization, never a port-level coupling."""
+
+    @abstractmethod
+    async def embed(self, image: bytes) -> FaceEmbedding:
+        """Always returns a populated FaceEmbedding -- never None,
+        mirroring the other two face capabilities' non-optional contract.
+        MUST NOT select a face among several candidates: `face_count == 1`
+        is a structural precondition for producing an embedding at all
+        (outcome=VALID); 0 or 2+ both mean no embedding is produced
+        (NO_FACE / AMBIGUOUS) -- structural facts, not policy judgments.
+        This method carries no opinion about whether NO_FACE/AMBIGUOUS
+        should block verification, whether the embedding is "good enough"
+        to match against, or which reference/probe pairing is being
+        formed -- all exclusively a future BiometricProcessor's/
+        FaceMatcher's concern.
+
+        `outcome=VALID` is returned only once the embedding representation
+        AND its model reference are both successfully established --
+        never a partially-populated result. May raise
+        `CapabilityUnavailableError` if the underlying representation
+        fails validation (wrong dimensionality, non-finite values, a
+        norm that isn't sufficiently close to unit length) -- the
+        implementation MUST validate the vendor's own output rather than
+        trusting it or silently repairing it (no re-normalization)."""
         raise NotImplementedError

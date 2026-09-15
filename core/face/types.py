@@ -16,9 +16,13 @@ class names, in different modules, to avoid exactly this ambiguity.
 from dataclasses import dataclass
 from enum import StrEnum
 
+from core.evidence_result.models import ModelReference
+
 __all__ = [
     "FaceDetection",
     "FaceDetectionOutcome",
+    "FaceEmbedding",
+    "FaceEmbeddingOutcome",
     "FaceQuality",
     "FaceQualityOutcome",
 ]
@@ -108,3 +112,49 @@ class FaceQuality:
 
     outcome: FaceQualityOutcome
     quality_score: float | None
+
+
+class FaceEmbeddingOutcome(StrEnum):
+    """Slice D's outcome vocabulary -- the same cardinality question
+    recurs a third time, for the same reason: `FaceEmbedder` is
+    independently callable on raw bytes (DP-001 Decision 3), so it must
+    establish for itself whether exactly one quality-assessable subject
+    exists. `FaceEmbedder` never selects among multiple detected faces,
+    the same BP Decision B-2 boundary already enforced in
+    `FaceDetectionOutcome`/`FaceQualityOutcome`."""
+
+    UNREADABLE = "UNREADABLE"  # image bytes could not be decoded
+    NO_FACE = "NO_FACE"  # decoded; zero faces -- no subject to embed
+    AMBIGUOUS = "AMBIGUOUS"  # decoded; 2+ faces -- no selection, ever
+    VALID = "VALID"  # exactly one face; a validated embedding exists
+
+
+@dataclass(frozen=True)
+class FaceEmbedding:
+    """Returned by FaceEmbedder.embed() -- always populated, never None,
+    mirroring FaceDetection/FaceQuality's own non-optional contract.
+    `embedding`/`embedding_dimensions`/`model_reference` are populated
+    together iff outcome=VALID, None otherwise -- BD-001 Slice D's own
+    explicit requirement: never construct a partially-valid biometric
+    representation and leave downstream code to figure out whether it's
+    trustworthy. All three fields (or none) -- there is no state where
+    only some are set.
+
+    `model_reference` is `core.evidence_result.models.ModelReference`,
+    reused directly rather than duplicated -- BD-001 Slice D's own
+    reconciliation, grounded in an existing precedent
+    (`core.decision.evaluator`/`core.decision.models` already import
+    this exact type from `core.evidence_result.models`, so it already
+    functions as shared cross-domain identity vocabulary, not a
+    persistence-only concept). Carrying the FULL `ModelReference` (all
+    five fields), not just `model_id`/`model_version`, is deliberate:
+    BP-001.5 Decision 19's compatibility check is
+    `reference.model_reference == probe.model_reference` in full --
+    duplicating only two fields would let two embeddings from
+    genuinely different runtimes/configurations pass as "compatible"
+    on a coincidental model_id/model_version match."""
+
+    outcome: FaceEmbeddingOutcome
+    embedding: tuple[float, ...] | None
+    embedding_dimensions: int | None
+    model_reference: ModelReference | None

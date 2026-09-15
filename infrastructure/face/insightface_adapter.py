@@ -1,19 +1,19 @@
-"""BD-001 Slices B and C: the first real (non-stand-in)
+"""BD-001 Slices B, C, and D: the first real (non-stand-in)
 `core.face.capabilities` implementations. TD-001's frozen technology
-choice (InsightFace `buffalo_l`, ONNX Runtime CPU) applied to detection
-and quality assessment -- recognition (embedding) is Slice D's own
-future adapter, not built here.
+choice (InsightFace `buffalo_l`, ONNX Runtime CPU) applied to detection,
+quality assessment, and (Slice D) recognition/embedding.
 
 Nothing about InsightFace's own `Face` object (bbox, det_score, kps,
 embedding) is ever visible past this module -- `InsightFaceDetector`
 reports only `detected`/`face_count`, `InsightFaceQualityAssessor`
-reports only a bounded `quality_score`, exactly their frozen
-`FaceDetection`/`FaceQuality` contracts, the same "don't let the vendor
-SDK's shape leak into core/" discipline `PaddleOCREngine` already
-established for OCR.
+reports only a bounded `quality_score`, `InsightFaceEmbedder` reports
+only a validated `embedding`/`embedding_dimensions`/`model_reference`,
+exactly their frozen `FaceDetection`/`FaceQuality`/`FaceEmbedding`
+contracts, the same "don't let the vendor SDK's shape leak into core/"
+discipline `PaddleOCREngine` already established for OCR.
 
-The two adapters are independent at the capability-port level (neither
-imports or references the other, per BD-001 Slice C's own frozen
+The three adapters are independent at the capability-port level (none
+imports or references another, per BD-001 Slices C/D's own frozen
 reconciliation) even though they live in one file and may each run
 their own internal InsightFace detection -- file co-location is not
 port-level coupling.
@@ -23,11 +23,25 @@ import asyncio
 
 import cv2
 import numpy as np
+import onnxruntime
 from insightface.app import FaceAnalysis
 
-from core.face.capabilities import CapabilityUnavailableError, FaceDetector, FaceQualityAssessor
+from core.evidence_result.models import ModelReference
+from core.face.capabilities import (
+    CapabilityUnavailableError,
+    FaceDetector,
+    FaceEmbedder,
+    FaceQualityAssessor,
+)
 from core.face.reason_codes import FaceReasonCode
-from core.face.types import FaceDetection, FaceDetectionOutcome, FaceQuality, FaceQualityOutcome
+from core.face.types import (
+    FaceDetection,
+    FaceDetectionOutcome,
+    FaceEmbedding,
+    FaceEmbeddingOutcome,
+    FaceQuality,
+    FaceQualityOutcome,
+)
 
 
 class InsightFaceDetector(FaceDetector):
@@ -224,3 +238,125 @@ class InsightFaceQualityAssessor(FaceQualityAssessor):
         quality_score = (blur_score + brightness_score + det_score) / 3.0
 
         return FaceQuality(outcome=FaceQualityOutcome.VALID, quality_score=quality_score)
+
+
+# --- Embedding representation validation (D-4) ------------------------
+#
+# TD-001's frozen contract: 512-dimensional, L2-normalized. The adapter is
+# responsible for enforcing this at the vendor boundary -- validated, never
+# silently repaired (BD-001 Slice D's own explicit instruction: no
+# re-normalization). The norm tolerance is an explicit, named constant,
+# stated and tested at its boundary rather than an unstated magic number.
+
+_EXPECTED_EMBEDDING_DIMENSIONS = 512
+
+# Genuine float32 L2-normalization noise over a 512-dimension vector is
+# many orders of magnitude smaller than this -- 1e-3 is generous enough to
+# never false-positive on ordinary numerical rounding, while still easily
+# catching a genuinely wrong representation (the raw, non-normalized
+# `.embedding` attribute has norm ~19, three orders of magnitude outside
+# this tolerance -- confirmed via this project's own TD-001 benchmark).
+_NORM_TOLERANCE = 1e-3
+
+
+class InsightFaceEmbedder(FaceEmbedder):
+    """Wraps a single, long-lived `FaceAnalysis` instance with
+    `allowed_modules=["detection", "recognition"]` -- unlike
+    `InsightFaceDetector`/`InsightFaceQualityAssessor`, this adapter needs
+    the recognition module. Does no manual cropping/alignment of its own
+    (BD-001 Slice D, D-2): InsightFace's own `.get()` call performs
+    detection, landmarking, alignment, and recognition together, and
+    `face.normed_embedding` is that fully-computed result -- there is no
+    project-owned bbox-slicing step here the way `InsightFaceQualityAssessor`
+    has, so that adapter's empty-crop failure mode structurally cannot
+    occur in this one."""
+
+    def __init__(
+        self,
+        *,
+        det_size: tuple[int, int] = (640, 640),
+        app: FaceAnalysis | None = None,
+        model_id: str = "insightface/buffalo_l/w600k_r50",
+        model_version: str = "buffalo_l",
+    ) -> None:
+        """`app`, if supplied, is used directly -- the same injection seam
+        every adapter in this module establishes, for hermetic unit tests
+        and a future DI-wiring decision about instance sharing."""
+        if app is not None:
+            self._app = app
+        else:
+            self._app = FaceAnalysis(
+                name="buffalo_l",
+                providers=["CPUExecutionProvider"],
+                allowed_modules=["detection", "recognition"],
+            )
+            self._app.prepare(ctx_id=-1, det_size=det_size)
+        # Captured once at construction, not per-call -- model identity is
+        # a property of this adapter instance, not of any individual
+        # image. BD-001's own frozen spec: model_version is buffalo_l's
+        # own coarse pack version ("exact per-file hash/version pinning is
+        # implementation detail, not frozen here"); runtime_version is
+        # read live from onnxruntime itself, never hardcoded.
+        self._model_reference = ModelReference(
+            model_id=model_id,
+            model_version=model_version,
+            runtime="onnxruntime",
+            runtime_version=onnxruntime.__version__,
+        )
+
+    async def embed(self, image: bytes) -> FaceEmbedding:
+        image_array = cv2.imdecode(np.frombuffer(image, dtype=np.uint8), cv2.IMREAD_COLOR)
+        if image_array is None:
+            return FaceEmbedding(
+                outcome=FaceEmbeddingOutcome.UNREADABLE,
+                embedding=None,
+                embedding_dimensions=None,
+                model_reference=None,
+            )
+
+        faces = await asyncio.to_thread(self._app.get, image_array)
+        if len(faces) == 0:
+            return FaceEmbedding(
+                outcome=FaceEmbeddingOutcome.NO_FACE,
+                embedding=None,
+                embedding_dimensions=None,
+                model_reference=None,
+            )
+        if len(faces) > 1:
+            # No selection, ever -- BP Decision B-2's own boundary,
+            # applied identically here.
+            return FaceEmbedding(
+                outcome=FaceEmbeddingOutcome.AMBIGUOUS,
+                embedding=None,
+                embedding_dimensions=None,
+                model_reference=None,
+            )
+
+        # D-3: normed_embedding, never the raw embedding attribute.
+        embedding = faces[0].normed_embedding
+
+        # D-4: validate the vendor's own output before trusting it --
+        # dimensionality, finiteness, then norm, in that order (a
+        # dimension check must precede a norm check that assumes a
+        # 512-length vector).
+        if embedding.shape[0] != _EXPECTED_EMBEDDING_DIMENSIONS:
+            raise CapabilityUnavailableError(FaceReasonCode.EMBEDDING_INVALID_REPRESENTATION.value)
+        if not np.all(np.isfinite(embedding)):
+            raise CapabilityUnavailableError(FaceReasonCode.EMBEDDING_INVALID_REPRESENTATION.value)
+        norm = float(np.linalg.norm(embedding))
+        if not np.isfinite(norm) or norm <= 0.0:
+            raise CapabilityUnavailableError(FaceReasonCode.EMBEDDING_INVALID_REPRESENTATION.value)
+        if abs(norm - 1.0) > _NORM_TOLERANCE:
+            # Never re-normalize to make this pass -- a vendor-claimed
+            # "normalized" embedding that isn't actually normalized is a
+            # genuine anomaly to surface, not silently correct.
+            raise CapabilityUnavailableError(FaceReasonCode.EMBEDDING_INVALID_REPRESENTATION.value)
+
+        # VALID only once the representation AND its model reference are
+        # both established -- constructed in one return, never partially.
+        return FaceEmbedding(
+            outcome=FaceEmbeddingOutcome.VALID,
+            embedding=tuple(float(x) for x in embedding),
+            embedding_dimensions=int(embedding.shape[0]),
+            model_reference=self._model_reference,
+        )
