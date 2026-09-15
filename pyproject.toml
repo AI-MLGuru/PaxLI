@@ -24,6 +24,8 @@ dependencies = [
   "alembic>=1.13,<2.0",
   "paddleocr>=3.7,<4.0",
   "paddlepaddle>=3.3,<4.0",
+  "insightface>=2.0,<3.0",
+  "onnxruntime>=1.30,<2.0",
 ]
 
 [project.optional-dependencies]
