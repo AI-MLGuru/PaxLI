@@ -56,3 +56,19 @@ class FaceReasonCode(StrEnum):
     # never returned as a FaceEmbedding outcome. Explicitly never
     # silently repaired (no re-normalization) -- validated, or rejected.
     EMBEDDING_INVALID_REPRESENTATION = "EMBEDDING_INVALID_REPRESENTATION"
+
+    # BD-001 Slice E: FaceMatchOutcome.compatible=False's reason code --
+    # both embeddings are individually VALID (unlike every *_UNREADABLE/
+    # *_NO_FACE/*_AMBIGUOUS code above), but their model_reference differs,
+    # so no similarity can be safely computed. Means "the representations
+    # cannot safely be compared," never "the representations are
+    # themselves invalid" (that's EMBEDDING_INVALID_REPRESENTATION) and
+    # never "these faces don't match" (compare() makes no such claim --
+    # FaceMatcher never returns FAIL). Not used with
+    # CapabilityUnavailableError -- FaceMatcher has no such exception at
+    # all (pure computation, no vendor/infrastructure dependency); this
+    # is a legitimate FaceMatchOutcome value, consumed later by a future
+    # BiometricProcessor deciding the persisted EvidenceResultStatus
+    # (INCONCLUSIVE, per BP-001.5 Decision 21 -- not decided here, that
+    # mapping happens outside FaceMatcher's own scope).
+    REPRESENTATION_INCOMPATIBLE = "REPRESENTATION_INCOMPATIBLE"
