@@ -93,3 +93,48 @@ class FaceReasonCode(StrEnum):
     # discipline. Used with CapabilityUnavailableError, never returned
     # as a DocumentFaceExtractionOutcome.
     EXTRACTION_DEGENERATE_CROP = "EXTRACTION_DEGENERATE_CROP"
+
+    # BD-001 Slice G.2 (BD-001.8 §3): pipeline-level FACE_DETECTION_
+    # REFERENCE/PROBE outcomes -- distinct from FaceDetectionOutcome's
+    # own two-member vocabulary (UNREADABLE/VALID). face_count==0/2+
+    # under VALID are diagnosable pipeline facts with no corresponding
+    # capability-level outcome member (BD-001.1 G-1: FaceDetection
+    # reports cardinality as observed, carries no verdict) -- these two
+    # codes exist at the persistence-mapping layer only, mirroring
+    # QUALITY_NO_FACE/QUALITY_AMBIGUOUS's own naming, filling the
+    # previously-unused DETECTION_ prefix slot Slice B never needed.
+    DETECTION_NO_FACE = "DETECTION_NO_FACE"
+    DETECTION_AMBIGUOUS = "DETECTION_AMBIGUOUS"
+
+    # BD-001 Slice G.2 (BD-001.7 G.2-S1): bare, mirroring
+    # core.document.reason_codes.DocumentReasonCode's own
+    # AMBIGUOUS_DOCUMENT_CAPTURE convention -- applied uniformly across
+    # all three probe stages (FACE_DETECTION_PROBE/FACE_QUALITY_PROBE/
+    # FACE_EMBEDDING_PROBE), never a per-stage code, since 2+ SELFIE
+    # captures is a single precondition failure shared by all three.
+    AMBIGUOUS_SELFIE_CAPTURE = "AMBIGUOUS_SELFIE_CAPTURE"
+
+    # BD-001 Slice G.2 (BD-001.7 G.2-S11): reference-ACQUISITION failure
+    # reason codes, persisted on FACE_DETECTION_REFERENCE only --
+    # explicitly NOT claims that FaceDetector.detect() was ever invoked
+    # or returned a corresponding FaceDetectionOutcome. They describe
+    # DocumentFaceExtractor's own extraction outcome (surfaced through
+    # ReferenceSourceResolver.resolve()), one layer upstream of the
+    # generic detection capability -- the same deliberate divergence
+    # between capability vocabulary and pipeline-boundary evidence
+    # vocabulary already established for EXTRACTION_*/DETECTION_NO_FACE
+    # above, restated explicitly here because the stakes (a future
+    # implementer adding a synthetic FaceDetector.detect() call merely
+    # to make this evidence type "purely" capability-derived) are real.
+    REFERENCE_NO_FACE_FOUND = "REFERENCE_NO_FACE_FOUND"
+    REFERENCE_AMBIGUOUS = "REFERENCE_AMBIGUOUS"
+
+    # BD-001 Slice G.2 (BD-001.7 G.2-7/G.2-9): FACE_MATCH invalidation --
+    # an existing effective match whose current parent(s) are no longer
+    # usable for comparison (BD-001.8 §8's lineage-consistency check
+    # found either side stale, missing, or non-PASS). Bare, not
+    # sub-capability-prefixed: FaceMatcher itself has no
+    # CapabilityUnavailableError-shaped failure at all (pure
+    # computation), so this is purely a BiometricProcessor-level
+    # pipeline fact, the same category as AMBIGUOUS_SELFIE_CAPTURE.
+    PARENT_EVIDENCE_NOT_USABLE = "PARENT_EVIDENCE_NOT_USABLE"
