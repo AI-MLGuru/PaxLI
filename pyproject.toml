@@ -22,6 +22,8 @@ dependencies = [
   "python-multipart>=0.0.20,<1.0",
   "cryptography>=43,<44",
   "alembic>=1.13,<2.0",
+  "paddleocr>=3.7,<4.0",
+  "paddlepaddle>=3.3,<4.0",
 ]
 
 [project.optional-dependencies]

@@ -12,7 +12,6 @@ from core.document.deterministic import (
     DeterministicDocumentClassifier,
     DeterministicFieldReconciler,
     DeterministicMRZParser,
-    DeterministicOCREngine,
     DeterministicQualityAssessor,
 )
 from core.evidence.service import EvidenceService
@@ -46,6 +45,7 @@ from infrastructure.deletion.reconciliation import (
     SqlAlchemyEvidenceDeletionReconciler,
     SqlAlchemyEvidenceResultDeletionReconciler,
 )
+from infrastructure.document.paddle_ocr_engine import PaddleOCREngine
 from infrastructure.document.processor import SqlAlchemyDocumentProcessor
 from infrastructure.rate_limit.network_source import (
     get_network_source_hmac_key,
@@ -65,6 +65,21 @@ from infrastructure.storage.minio import MinioObjectStorage
 # instances in main.py).
 _RATE_LIMITER = PostgresRateLimiter(session_factory)
 RATE_LIMIT_METRICS = RateLimitMetrics()
+
+_paddle_ocr_engine: PaddleOCREngine | None = None
+
+
+def _get_paddle_ocr_engine() -> PaddleOCREngine:
+    """Lazy module-level singleton, same shape as apps.api.paxli_api.main.
+    _get_health_minio_client(): PaddleOCREngine's underlying model load is
+    expensive (a multi-second cold start, BD-001 Slice A) and MUST NOT
+    happen per request. Lazy rather than constructed at import time so
+    merely importing this module -- including from tests that never
+    exercise document processing -- doesn't pay that cost."""
+    global _paddle_ocr_engine
+    if _paddle_ocr_engine is None:
+        _paddle_ocr_engine = PaddleOCREngine()
+    return _paddle_ocr_engine
 
 
 async def get_session_service(
@@ -218,7 +233,7 @@ async def get_workflow_service(
         DeterministicDocumentClassifier(),
         DeterministicMRZParser(),
         DeterministicBarcodeDecoder(),
-        DeterministicOCREngine(),
+        _get_paddle_ocr_engine(),
         DeterministicFieldReconciler(),
     )
     yield VerificationWorkflowService(
