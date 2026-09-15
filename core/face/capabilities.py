@@ -18,7 +18,7 @@ exception type would be a cross-domain leak, not a reuse.
 
 from abc import ABC, abstractmethod
 
-from core.face.types import FaceDetection
+from core.face.types import FaceDetection, FaceQuality
 
 
 class CapabilityUnavailableError(Exception):
@@ -55,4 +55,44 @@ class FaceDetector(ABC):
         concern (BD-001 Slice G.2, not yet built). In particular, this
         method never selects "the" face among several detected --
         it reports how many there are and nothing more."""
+        raise NotImplementedError
+
+
+class FaceQualityAssessor(ABC):
+    """Deliberately has NO dependency on `FaceDetector` -- no import, no
+    constructor parameter, nothing (DP-001 Decision 3's "independently
+    addressable capability operations" principle, applied literally, the
+    same as `QualityAssessor` never referencing `DocumentClassifier` on
+    the document side). `FaceDetector.detect()`'s own return type
+    (`FaceDetection`) couldn't serve this capability's needs anyway --
+    it deliberately never exposes bbox/det_score, so depending on it
+    wouldn't even work without leaking vendor shape into `core/`, the
+    exact thing that boundary exists to prevent. Any sharing of
+    underlying detection work between a `FaceDetector` and a
+    `FaceQualityAssessor` implementation is strictly an
+    infrastructure-layer optimization, decided at DI-wiring time
+    (BD-001 Slice G), never a port-level coupling."""
+
+    @abstractmethod
+    async def assess(self, image: bytes) -> FaceQuality:
+        """Always returns a populated FaceQuality -- never None, mirroring
+        FaceDetector.detect()'s own non-optional contract. MUST NOT select
+        a face among several candidates: `face_count == 1` is a structural
+        precondition for producing a score at all (outcome=VALID);
+        `face_count == 0` or `>= 2` both mean no score is produced
+        (NO_FACE / AMBIGUOUS respectively) -- neither is a "poor quality"
+        judgment, both are "no single quality-assessable subject exists."
+        This method carries no opinion about whether NO_FACE/AMBIGUOUS
+        should block verification -- that is exclusively a future
+        BiometricProcessor's concern.
+
+        May raise `CapabilityUnavailableError` for a detected face whose
+        own reported region is unusable (e.g. a bounding box that clips
+        to zero/negative width or height against the image) -- a genuine
+        capability-level anomaly in the detector's own output, distinct
+        from every `FaceQualityOutcome` member: a face WAS reported, so
+        it isn't NO_FACE; there's exactly one, so it isn't AMBIGUOUS; the
+        image itself decoded fine, so it isn't UNREADABLE. Never
+        silently returns a fabricated or NaN-derived `quality_score` for
+        this case."""
         raise NotImplementedError

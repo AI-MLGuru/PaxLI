@@ -23,3 +23,21 @@ class FaceReasonCode(StrEnum):
     # successfully-decoded image with zero faces present (which carries
     # no reason code at all; it is a legitimate PASS with face_count=0).
     DETECTION_UNREADABLE = "DETECTION_UNREADABLE"
+
+    # BD-001 Slice C: FaceQualityOutcome's three non-VALID outcomes, kept
+    # distinguishable rather than collapsed -- "couldn't read the bytes,"
+    # "no subject present," and "no single subject to assess" are
+    # structurally different facts (the same "couldn't see it / couldn't
+    # parse it / parsed it but it's wrong" discipline DP-003 Decision 3
+    # already established for MRZ/Barcode).
+    QUALITY_UNREADABLE = "QUALITY_UNREADABLE"
+    QUALITY_NO_FACE = "QUALITY_NO_FACE"
+    QUALITY_AMBIGUOUS = "QUALITY_AMBIGUOUS"
+
+    # BD-001 Slice C reconciliation: a face WAS reported, but its bbox
+    # clips to zero/negative width or height against the image bounds --
+    # not a normal FaceQualityOutcome (no face / ambiguous / unreadable
+    # bytes all mean something else), a genuine capability-level anomaly
+    # in the detector's own output. Used with CapabilityUnavailableError,
+    # never returned as a FaceQuality outcome.
+    QUALITY_DEGENERATE_CROP = "QUALITY_DEGENERATE_CROP"

@@ -1,13 +1,22 @@
-"""BD-001 Slice B: the first real (non-stand-in) `core.face.capabilities`
-implementation. TD-001's frozen technology choice (InsightFace
-`buffalo_l`, ONNX Runtime CPU) applied to detection only -- recognition
-(embedding) is Slice D's own future adapter, not built here.
+"""BD-001 Slices B and C: the first real (non-stand-in)
+`core.face.capabilities` implementations. TD-001's frozen technology
+choice (InsightFace `buffalo_l`, ONNX Runtime CPU) applied to detection
+and quality assessment -- recognition (embedding) is Slice D's own
+future adapter, not built here.
 
 Nothing about InsightFace's own `Face` object (bbox, det_score, kps,
-embedding) is ever visible past this module -- this adapter reports
-only `detected`/`face_count`, exactly the frozen `FaceDetection`
-contract, the same "don't let the vendor SDK's shape leak into core/"
-discipline `PaddleOCREngine` already established for OCR.
+embedding) is ever visible past this module -- `InsightFaceDetector`
+reports only `detected`/`face_count`, `InsightFaceQualityAssessor`
+reports only a bounded `quality_score`, exactly their frozen
+`FaceDetection`/`FaceQuality` contracts, the same "don't let the vendor
+SDK's shape leak into core/" discipline `PaddleOCREngine` already
+established for OCR.
+
+The two adapters are independent at the capability-port level (neither
+imports or references the other, per BD-001 Slice C's own frozen
+reconciliation) even though they live in one file and may each run
+their own internal InsightFace detection -- file co-location is not
+port-level coupling.
 """
 
 import asyncio
@@ -16,8 +25,9 @@ import cv2
 import numpy as np
 from insightface.app import FaceAnalysis
 
-from core.face.capabilities import FaceDetector
-from core.face.types import FaceDetection, FaceDetectionOutcome
+from core.face.capabilities import CapabilityUnavailableError, FaceDetector, FaceQualityAssessor
+from core.face.reason_codes import FaceReasonCode
+from core.face.types import FaceDetection, FaceDetectionOutcome, FaceQuality, FaceQualityOutcome
 
 
 class InsightFaceDetector(FaceDetector):
@@ -81,3 +91,136 @@ class InsightFaceDetector(FaceDetector):
             detected=len(faces) > 0,
             face_count=len(faces),
         )
+
+
+# --- Quality signal normalization -----------------------------------------
+#
+# Every constant below is an explicit, named DEMO CALIBRATION CONSTANT, not
+# a scientifically derived threshold -- `quality_score` is a bounded
+# heuristic score, never a calibrated probability of image quality. Each
+# signal is normalized independently, on its own documented reasoning,
+# before being combined -- never a bare "divide by a number and clip" with
+# no stated rationale.
+
+# Laplacian variance has no natural upper bound and scales with image
+# content/resolution -- there is no universal "sharp" value. This constant
+# is a commonly-cited ad-hoc threshold from OpenCV blur-detection
+# tutorials/community practice (variance below ~100 is conventionally
+# "blurry" for a modest-resolution crop), chosen as a starting point for a
+# demo, not derived from this project's own data. Revisit with real
+# calibration data before any production use -- explicitly flagged, not
+# silently assumed to be correct.
+_BLUR_VARIANCE_CALIBRATION = 100.0
+
+# Mid-range brightness (128 of 0-255) is treated as ideal; deviation in
+# either direction (too dark or too bright/overexposed) reduces the score
+# linearly, symmetric around the midpoint. Also a demo heuristic, not a
+# photometric standard.
+_IDEAL_BRIGHTNESS = 128.0
+
+
+def _normalize_blur(face_region_gray: np.ndarray) -> float:
+    """Higher Laplacian variance = sharper. Bounded to [0.0, 1.0] via the
+    named calibration constant above -- never left as a raw, unbounded
+    variance value."""
+    variance = float(cv2.Laplacian(face_region_gray, cv2.CV_64F).var())
+    return min(variance / _BLUR_VARIANCE_CALIBRATION, 1.0)
+
+
+def _normalize_brightness(face_region_gray: np.ndarray) -> float:
+    """1.0 at the ideal midpoint, decreasing linearly toward 0.0 at either
+    extreme (fully black or fully white). Explicitly clamped to [0.0, 1.0]
+    at both ends -- mathematically redundant given a uint8 input's
+    guaranteed [0, 255] range, but made explicit rather than relying on
+    the reader to trust that unstated guarantee, the same defensive
+    posture applied to `det_score` below."""
+    mean_intensity = float(np.mean(face_region_gray))
+    return max(0.0, min(1.0, 1.0 - abs(mean_intensity - _IDEAL_BRIGHTNESS) / _IDEAL_BRIGHTNESS))
+
+
+class InsightFaceQualityAssessor(FaceQualityAssessor):
+    """Deliberately independent of `InsightFaceDetector` at the capability
+    level (core.face.capabilities.FaceQualityAssessor's own contract) --
+    runs its own detection internally to establish cardinality and obtain
+    the bbox/det_score it needs, exactly like `InsightFaceDetector` does.
+    Any future sharing of the underlying `FaceAnalysis` instance between
+    the two adapters is an infrastructure-only optimization, wired later
+    (BD-001 Slice G), never a port-level coupling -- this class doesn't
+    import or reference `InsightFaceDetector` at all."""
+
+    def __init__(
+        self,
+        *,
+        det_size: tuple[int, int] = (640, 640),
+        app: FaceAnalysis | None = None,
+    ) -> None:
+        """`app`, if supplied, is used directly -- the same injection seam
+        `InsightFaceDetector`/`PaddleOCREngine` already establish, for
+        hermetic unit tests and for a future DI-wiring decision to share
+        one `FaceAnalysis` instance across both adapters."""
+        if app is not None:
+            self._app = app
+        else:
+            self._app = FaceAnalysis(
+                name="buffalo_l",
+                providers=["CPUExecutionProvider"],
+                allowed_modules=["detection"],
+            )
+            self._app.prepare(ctx_id=-1, det_size=det_size)
+
+    async def assess(self, image: bytes) -> FaceQuality:
+        image_array = cv2.imdecode(np.frombuffer(image, dtype=np.uint8), cv2.IMREAD_COLOR)
+        if image_array is None:
+            return FaceQuality(outcome=FaceQualityOutcome.UNREADABLE, quality_score=None)
+
+        faces = await asyncio.to_thread(self._app.get, image_array)
+        if len(faces) == 0:
+            return FaceQuality(outcome=FaceQualityOutcome.NO_FACE, quality_score=None)
+        if len(faces) > 1:
+            # No selection, ever -- BP Decision B-2's own boundary, applied
+            # identically here rather than picking "the primary face."
+            return FaceQuality(outcome=FaceQualityOutcome.AMBIGUOUS, quality_score=None)
+
+        face = faces[0]
+        height, width = image_array.shape[:2]
+        x1, y1, x2, y2 = face.bbox
+        # Clip to image bounds -- detector bboxes can extend slightly past
+        # the frame edge in practice; cropping with an out-of-bounds index
+        # would silently misbehave rather than raise.
+        x1, y1 = max(0, int(x1)), max(0, int(y1))
+        x2, y2 = min(width, int(x2)), min(height, int(y2))
+        if x2 <= x1 or y2 <= y1:
+            # A bbox that clips to zero or negative width/height -- e.g.
+            # one that landed entirely outside the frame. Not a normal
+            # "zero faces"/"multiple faces" outcome (a face WAS reported);
+            # not an input-decodability problem either (the image itself
+            # decoded fine) -- this is the detector's own output being
+            # unusable for this computation, a genuine capability-level
+            # anomaly. Raising rather than silently proceeding:
+            # image_array[y1:y2, x1:x2] on a degenerate range produces an
+            # EMPTY ndarray, not an error -- np.mean/cv2.Laplacian on that
+            # would silently produce NaN, corrupting quality_score past
+            # its frozen [0.0, 1.0] contract. Never let that happen quietly.
+            raise CapabilityUnavailableError(FaceReasonCode.QUALITY_DEGENERATE_CROP.value)
+        face_region = cv2.cvtColor(image_array[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY)
+
+        blur_score = _normalize_blur(face_region)
+        brightness_score = _normalize_brightness(face_region)
+        # Defensively clamped even though InsightFace currently always
+        # reports det_score in [0, 1] -- cheap protection at the vendor
+        # boundary against a future model version or numerical edge case
+        # silently breaking quality_score's own frozen output contract.
+        # det_score is a detector CONFIDENCE-like signal, one input among
+        # three -- never itself the "quality heuristic"; that term names
+        # only the combined quality_score below.
+        det_score = max(0.0, min(1.0, float(face.det_score)))
+        # Unweighted mean of three independently-normalized [0.0, 1.0]
+        # signals -- an explicit, simple combination choice, not a
+        # calibrated model. Equal weighting is itself a demo-only
+        # assumption, not evidence that these three signals matter equally
+        # to real face-match accuracy. Bounded to [0.0, 1.0] by
+        # construction: the mean of three values each already clamped to
+        # that range cannot fall outside it.
+        quality_score = (blur_score + brightness_score + det_score) / 3.0
+
+        return FaceQuality(outcome=FaceQualityOutcome.VALID, quality_score=quality_score)
