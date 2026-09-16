@@ -31,6 +31,13 @@ build/
 dist/
 *.egg-info/
 
+# Dashboard generated files
+apps/dashboard/node_modules/
+apps/dashboard/dist/
+apps/dashboard/*.tsbuildinfo
+apps/dashboard/vite.config.js
+apps/dashboard/vite.config.d.ts
+
 # Research / generated artifacts
 research/**/outputs/
 research/**/artifacts/
@@ -55,4 +62,5 @@ models/registry/*.local.*
 *.key
 *.crt
 
-tatus --short
+# Claude specific
+.claude/
