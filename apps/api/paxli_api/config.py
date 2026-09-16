@@ -1,5 +1,6 @@
 from functools import lru_cache
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -20,6 +21,7 @@ class Settings(BaseSettings):
     storage_secure: bool = False
     internal_transport_trusted: bool = False
     evidence_max_bytes: int = 10 * 1024 * 1024
+    liveness_max_frames: int = 5
     evidence_encryption_key_id: str = "evidence-v1"
     evidence_encryption_key: str | None = None
 
@@ -43,6 +45,13 @@ class Settings(BaseSettings):
     # review guardrail #4).
     rate_limit_network_source_hmac_key_id: str = "rate-limit-source-v1"
     rate_limit_network_source_hmac_key: str | None = None
+
+    @field_validator("liveness_max_frames")
+    @classmethod
+    def validate_liveness_max_frames(cls, value: int) -> int:
+        if not 1 <= value <= 5:
+            raise ValueError("liveness_max_frames must be between 1 and 5")
+        return value
 
 
 @lru_cache

@@ -60,6 +60,7 @@ async def store_upload(
     idempotency_key: str | None,
     audit_service: AuditService,
     limiter: RateLimiterProtocol,
+    rate_limit_checked: bool = False,
 ) -> EvidenceResponse:
     require_permission(principal, Permission.EVIDENCE_SUBMIT, session_id=str(session_id))
     tenant_id = principal.tenant_id
@@ -67,14 +68,15 @@ async def store_upload(
     # Operational endpoint class -> fail_mode="open" (Foundation-010 review
     # guardrail #2: bypasses the limiter only, never authentication/
     # authorization, which already ran above).
-    await enforce_rate_limit(
-        principal,
-        operation="evidence_submit",
-        limit=settings.rate_limit_evidence_submit_per_window,
-        window_seconds=settings.rate_limit_evidence_submit_window_seconds,
-        fail_mode="open",
-        limiter=limiter,
-    )
+    if not rate_limit_checked:
+        await enforce_rate_limit(
+            principal,
+            operation="evidence_submit",
+            limit=settings.rate_limit_evidence_submit_per_window,
+            window_seconds=settings.rate_limit_evidence_submit_window_seconds,
+            fail_mode="open",
+            limiter=limiter,
+        )
     content = await file.read(settings.evidence_max_bytes + 1)
     if len(content) > settings.evidence_max_bytes:
         raise HTTPException(status_code=413, detail="Evidence file is too large")
@@ -189,24 +191,45 @@ async def upload_document(
 async def upload_liveness(
     session_id: UUID,
     request: Request,
-    file: Annotated[UploadFile, File(...)],
+    frames: Annotated[list[UploadFile], File(...)],
     service: EvidenceService = Depends(get_evidence_service),  # noqa: B008
     principal: AuthenticatedPrincipal = Depends(get_principal),  # noqa: B008
     audit_service: AuditService = Depends(get_audit_service),  # noqa: B008
     limiter: RateLimiterProtocol = Depends(get_rate_limiter),  # noqa: B008
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> EvidenceResponse:
-    return await store_upload(
-        session_id=session_id,
-        evidence_type=EvidenceType.LIVENESS,
-        request=request,
-        file=file,
-        service=service,
-        principal=principal,
-        idempotency_key=idempotency_key,
-        audit_service=audit_service,
+    require_permission(principal, Permission.EVIDENCE_SUBMIT, session_id=str(session_id))
+    settings = request.app.state.settings
+    await enforce_rate_limit(
+        principal,
+        operation="evidence_submit",
+        limit=settings.rate_limit_evidence_submit_per_window,
+        window_seconds=settings.rate_limit_evidence_submit_window_seconds,
+        fail_mode="open",
         limiter=limiter,
     )
+    if not frames or len(frames) > settings.liveness_max_frames:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Temporal Liveness Demo requires 1 to {settings.liveness_max_frames} frames",
+        )
+    uploaded: EvidenceResponse | None = None
+    for index, frame in enumerate(frames):
+        frame_key = f"{idempotency_key}:frame:{index}" if idempotency_key else None
+        uploaded = await store_upload(
+            session_id=session_id,
+            evidence_type=EvidenceType.LIVENESS,
+            request=request,
+            file=frame,
+            service=service,
+            principal=principal,
+            idempotency_key=frame_key,
+            audit_service=audit_service,
+            limiter=limiter,
+            rate_limit_checked=True,
+        )
+    assert uploaded is not None
+    return uploaded
 
 
 @router.get("/{session_id}/evidence", response_model=EvidenceListEnvelope)
