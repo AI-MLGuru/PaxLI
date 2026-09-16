@@ -423,6 +423,63 @@ async def test_reference_resolved_runs_full_chain() -> None:
         assert embedding_row.parent_evidence_result_ids == (quality_row.id,)
 
 
+async def test_low_quality_score_does_not_prevent_embedding() -> None:
+    """BD-001 Slice C's frozen 'no gating' decision, proven end to end
+    against real persistence, not merely by code inspection: a low
+    FaceQuality score is still outcome=VALID (the capability
+    successfully assessed a face, it just scored it low), and
+    BiometricProcessor must attempt embedding regardless -- FaceQuality
+    is independent evidence, never a precondition FaceEmbedder consults.
+    Mirrors test_reference_resolved_runs_full_chain exactly, differing
+    only in the quality score used."""
+    tenant_id = f"tenant-g2-low-quality-{uuid4()}"
+    key_id = f"key-{uuid4()}"
+    storage = _storage(key_id)
+
+    async with session_factory() as session:
+        session_id = await _create_session(session, tenant_id)
+        identity_claim = await _seed_identity_claim(session, tenant_id, session_id, key_id)
+        await session.commit()
+
+    resolver = _FixedReferenceSourceResolver(_resolved(identity_claim))
+    detector = _FixedFaceDetector(_valid_detection())
+    quality_assessor = _FixedFaceQualityAssessor(_valid_quality(0.05))
+    embedder = _FixedFaceEmbedder(_valid_embedding())
+    processor = _processor(
+        key_id,
+        storage,
+        reference_source=resolver,
+        face_detector=detector,
+        face_quality_assessor=quality_assessor,
+        face_embedder=embedder,
+    )
+    await processor.process(session_id=UUID(session_id), tenant_id=tenant_id)
+
+    # The embedder must actually have been invoked -- not skipped because
+    # the quality score was low.
+    assert embedder.calls == 1
+    async with session_factory() as session:
+        service = _service(session, key_id)
+        quality_row = await service.get_effective_for_session_by_type(
+            session_id=UUID(session_id),
+            tenant_id=tenant_id,
+            evidence_type=EvidenceResultType.FACE_QUALITY_REFERENCE,
+        )
+        embedding_row = await service.get_effective_for_session_by_type(
+            session_id=UUID(session_id),
+            tenant_id=tenant_id,
+            evidence_type=EvidenceResultType.FACE_EMBEDDING_REFERENCE,
+        )
+        # The low score is persisted honestly, as its own independent
+        # evidence row -- not hidden, not used to block anything.
+        assert quality_row is not None and quality_row.status == EvidenceResultStatus.PASS
+        assert quality_row.result is not None
+        assert quality_row.result["quality_score"] == pytest.approx(0.05)
+        # Embedding still succeeded despite the low quality score.
+        assert embedding_row is not None and embedding_row.status == EvidenceResultStatus.PASS
+        assert embedding_row.parent_evidence_result_ids == (quality_row.id,)
+
+
 async def test_reference_detector_unavailable_persists_unavailable_no_downstream() -> None:
     tenant_id = f"tenant-g2-ref-unavailable-{uuid4()}"
     key_id = f"key-{uuid4()}"
@@ -961,3 +1018,127 @@ async def test_concurrent_supersession_against_moved_target_raises_uncaught() ->
                 producer="test",
                 producer_version="1.2",
             )
+
+
+# ---------------------------------------------------------------------------
+# Tenant isolation under concurrency -- BD-001 audit remediation: mirrors
+# test_document_processor.py's own
+# test_concurrent_cross_tenant_processing_does_not_leak_or_corrupt exactly,
+# one layer up. Every repository query BiometricProcessor's stages issue
+# (SqlAlchemyEvidenceRepository/SqlAlchemyEvidenceResultRepository) filters
+# by tenant_id at the SQL WHERE-clause level -- the same mechanism
+# DocumentProcessor already relies on, not a second implementation. This
+# proves that mechanism holds for the biometric pipeline specifically,
+# under genuine concurrency, rather than assuming it transfers unverified.
+# ---------------------------------------------------------------------------
+
+
+async def test_concurrent_cross_tenant_processing_does_not_leak_or_corrupt() -> None:
+    """Races the real owner's legitimate process() call against an
+    attacker's forged-tenant call for the same session_id at the same
+    time. The attacker's tenant_id does not match the session's real
+    owner, so every tenant-scoped lookup the attacker's call makes
+    (identity-claim seed, SELFIE capture, any evidence row) returns
+    nothing -- the attacker's call must complete as a harmless no-op
+    while the owner's call proceeds and produces a correct, uncorrupted
+    full chain, regardless of which call's transactions interleave
+    first."""
+    owning_tenant = f"tenant-g2-race-owner-{uuid4()}"
+    attacking_tenant = f"tenant-g2-race-attacker-{uuid4()}"
+    key_id = f"key-{uuid4()}"
+    storage = _storage(key_id)
+
+    async with session_factory() as session:
+        session_id = await _create_session(session, owning_tenant)
+        identity_claim = await _seed_identity_claim(session, owning_tenant, session_id, key_id)
+        await _upload_selfie(session, owning_tenant, session_id, storage)
+        await session.commit()
+
+    class _TenantScopedReferenceResolver(ReferenceSourceResolver):
+        """The real DocumentBoundReferenceResolver resolves by looking
+        up THIS session's effective DOCUMENT_FIELD_EXTRACTION row
+        scoped to the caller's own tenant_id -- it would never resolve
+        a forged-tenant caller to another tenant's identity_claim. A
+        tenant-blind _FixedReferenceSourceResolver (used elsewhere in
+        this file) would misrepresent that contract here, so this
+        double is tenant-aware instead."""
+
+        async def resolve(self, *, session_id: UUID, tenant_id: str) -> ReferenceResolution:
+            if tenant_id != owning_tenant:
+                return _not_available()
+            return _resolved(identity_claim)
+
+    def make_processor() -> BiometricProcessor:
+        return _processor(
+            key_id,
+            storage,
+            reference_source=_TenantScopedReferenceResolver(),
+            face_detector=_FixedFaceDetector(_valid_detection()),
+            face_quality_assessor=_FixedFaceQualityAssessor(_valid_quality()),
+            face_embedder=_FixedFaceEmbedder(_valid_embedding((1.0, 0.0, 0.0))),
+        )
+
+    import asyncio
+
+    processor_owner, processor_attacker = make_processor(), make_processor()
+    await asyncio.gather(
+        processor_owner.process(session_id=UUID(session_id), tenant_id=owning_tenant),
+        processor_attacker.process(session_id=UUID(session_id), tenant_id=attacking_tenant),
+    )
+
+    async with session_factory() as session:
+        service = _service(session, key_id)
+
+        # The attacker's forged tenant_id must see nothing at all --
+        # no cross-tenant read leakage into any of the six role-qualified
+        # face evidence types, and no cross-tenant write under it either.
+        for evidence_type in (
+            EvidenceResultType.FACE_DETECTION_REFERENCE,
+            EvidenceResultType.FACE_QUALITY_REFERENCE,
+            EvidenceResultType.FACE_EMBEDDING_REFERENCE,
+            EvidenceResultType.FACE_DETECTION_PROBE,
+            EvidenceResultType.FACE_QUALITY_PROBE,
+            EvidenceResultType.FACE_EMBEDDING_PROBE,
+            EvidenceResultType.FACE_MATCH,
+        ):
+            assert (
+                await service.get_effective_for_session_by_type(
+                    session_id=UUID(session_id),
+                    tenant_id=attacking_tenant,
+                    evidence_type=evidence_type,
+                )
+                is None
+            )
+
+        # The owner's tenant sees a correct, complete, uncorrupted chain --
+        # the concurrent forged-tenant call never raced its way into
+        # observing, creating, or corrupting the owner's own rows.
+        match_row = await service.get_effective_for_session_by_type(
+            session_id=UUID(session_id),
+            tenant_id=owning_tenant,
+            evidence_type=EvidenceResultType.FACE_MATCH,
+        )
+        assert match_row is not None and match_row.status == EvidenceResultStatus.PASS
+
+        effective = await service.list_effective_for_session(
+            session_id=UUID(session_id), tenant_id=owning_tenant
+        )
+        # Exactly one effective row per face evidence type for the owner --
+        # no duplication from the race.
+        face_types = [
+            r.evidence_type
+            for r in effective
+            if r.evidence_type.value.startswith("FACE_")
+        ]
+        assert sorted(face_types, key=lambda t: t.value) == sorted(
+            {
+                EvidenceResultType.FACE_DETECTION_REFERENCE,
+                EvidenceResultType.FACE_QUALITY_REFERENCE,
+                EvidenceResultType.FACE_EMBEDDING_REFERENCE,
+                EvidenceResultType.FACE_DETECTION_PROBE,
+                EvidenceResultType.FACE_QUALITY_PROBE,
+                EvidenceResultType.FACE_EMBEDDING_PROBE,
+                EvidenceResultType.FACE_MATCH,
+            },
+            key=lambda t: t.value,
+        )
