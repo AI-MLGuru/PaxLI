@@ -1,14 +1,14 @@
 import { NavLink, Route, Routes } from "react-router-dom";
 
 const capabilities = [
-  ["Document Verification", "Quality, classification, and structured extraction."],
-  ["OCR", "Extract relevant information from a document capture."],
-  ["MRZ & Barcode", "Read machine-readable document data where present."],
-  ["Field Reconciliation", "Compare fields across document-derived sources."],
-  ["Face Verification", "Compare a resolved reference face with a submitted selfie."],
-  ["Face Quality Assessment", "Assess whether a captured face is usable for processing."],
-  ["Temporal Liveness Demo", "Explore a bounded multi-frame heuristic path."],
-  ["Verification Decisioning", "Evaluate evidence through the governed workflow."],
+  ["Document Verification", "Quality, classification, and structured extraction.", "document"],
+  ["OCR", "Extract relevant information from a document capture.", "ocr"],
+  ["MRZ & Barcode", "Read machine-readable document data where present.", "scan"],
+  ["Field Reconciliation", "Compare fields across document-derived sources.", "reconcile"],
+  ["Face Verification", "Compare a resolved reference face with a submitted selfie.", "face"],
+  ["Face Quality Assessment", "Assess whether a captured face is usable for processing.", "quality"],
+  ["Temporal Liveness Demo", "Explore a bounded multi-frame heuristic path.", "temporal"],
+  ["Verification Decisioning", "Evaluate evidence through the governed workflow.", "decision"],
 ] as const;
 
 function Shell({ children }: { children: React.ReactNode }) {
@@ -61,18 +61,41 @@ function LandingPage() {
             browser does not retain captured media after the flow ends.
           </p>
         </div>
-        <div className="signal-panel" aria-label="Verification pipeline overview">
-          <div className="signal-orbit signal-orbit-one" aria-hidden="true" />
-          <div className="signal-orbit signal-orbit-two" aria-hidden="true" />
+        <div className="signal-panel" role="img" aria-label="Abstract verification flow from document and face signals to a policy decision">
           <div className="signal-header">
             <span className="status-dot" aria-hidden="true" />
             <span>Verification path</span>
             <span className="signal-state">DEMO</span>
           </div>
-          <div className="pipeline-list">
-            <div><span>01</span><strong>DOCUMENT</strong><small>quality + extraction</small></div>
-            <div><span>02</span><strong>BIOMETRIC</strong><small>reference + selfie</small></div>
-            <div><span>03</span><strong>DECISION</strong><small>policy evaluation</small></div>
+          <div className="verification-visual" aria-hidden="true">
+            <span className="visual-grid" />
+            <span className="flow-line flow-line-one" />
+            <span className="flow-line flow-line-two" />
+            <span className="flow-line flow-line-three" />
+            <span className="scan-line" />
+            <div className="visual-caption visual-caption-document">document</div>
+            <div className="visual-caption visual-caption-face">face signal</div>
+            <div className="document-signal">
+              <span className="document-signal-top">PAXLI / ID</span>
+              <span className="document-signal-line document-signal-line-long" />
+              <span className="document-signal-line" />
+              <span className="document-signal-line document-signal-line-short" />
+              <span className="document-signal-code">•••  /  •••</span>
+            </div>
+            <div className="identity-signal">
+              <span className="identity-ring identity-ring-outer" />
+              <span className="identity-ring identity-ring-inner" />
+              <span className="identity-core" />
+            </div>
+            <div className="face-signal">
+              <span className="face-signal-head" />
+              <span className="face-signal-shoulders" />
+            </div>
+            <div className="decision-signal">
+              <span className="decision-signal-kicker">03 / POLICY</span>
+              <strong>DECISION</strong>
+              <small>evidence projection</small>
+            </div>
           </div>
           <div className="signal-footer">Models produce evidence. The Decision Engine makes decisions.</div>
         </div>
@@ -87,9 +110,12 @@ function LandingPage() {
           <p className="section-intro">Evidence stays distinct from the final outcome, so each part of the flow remains explainable.</p>
         </div>
         <div className="capability-grid">
-          {capabilities.map(([title, description], index) => (
+          {capabilities.map(([title, description, icon], index) => (
             <article className="capability-item" key={title}>
-              <span className="capability-index">0{index + 1}</span>
+              <div className="capability-meta">
+                <span className={`capability-icon capability-icon-${icon}`} aria-hidden="true" />
+                <span className="capability-index">0{index + 1}</span>
+              </div>
               <h3>{title}</h3>
               <p>{description}</p>
             </article>
