@@ -108,7 +108,13 @@ export class PaxliApiClient {
   constructor(options: ApiClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/$/, "");
     this.credential = options.credential;
-    this.fetcher = options.fetcher ?? fetch;
+    // fetch is a native Window method -- storing the bare reference and
+    // calling it as `this.fetcher(...)` (i.e. with the client instance as
+    // receiver) throws "Illegal invocation" in real browsers, invisible
+    // under Node/jsdom-based unit tests that don't enforce the native
+    // receiver check. Bind explicitly rather than relying on call-site
+    // discipline.
+    this.fetcher = options.fetcher ?? fetch.bind(globalThis);
     this.correlationId = options.correlationId ?? makeCorrelationId();
   }
 
