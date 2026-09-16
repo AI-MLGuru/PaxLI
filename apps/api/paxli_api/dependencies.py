@@ -1,6 +1,7 @@
 from collections.abc import AsyncIterator
 
 from fastapi import Depends, Header, Request
+from insightface.app import FaceAnalysis
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from apps.api.paxli_api.config import Settings, get_settings
@@ -17,6 +18,7 @@ from core.document.deterministic import (
 from core.evidence.service import EvidenceService
 from core.evidence_result.schema_catalog import EvidenceResultSchemaCatalog
 from core.evidence_result.service import EvidenceResultService
+from core.face.matcher import CosineFaceMatcher
 from core.policy.service import PolicyService
 from core.rate_limit.enums import RateLimitScope
 from core.rate_limit.evaluation import FailMode, evaluate_admission
@@ -47,6 +49,14 @@ from infrastructure.deletion.reconciliation import (
 )
 from infrastructure.document.paddle_ocr_engine import PaddleOCREngine
 from infrastructure.document.processor import SqlAlchemyDocumentProcessor
+from infrastructure.face.document_face_extractor import InsightFaceDocumentFaceExtractor
+from infrastructure.face.document_reference_resolver import DocumentBoundReferenceResolver
+from infrastructure.face.insightface_adapter import (
+    InsightFaceDetector,
+    InsightFaceEmbedder,
+    InsightFaceQualityAssessor,
+)
+from infrastructure.face.processor import BiometricProcessor
 from infrastructure.rate_limit.network_source import (
     get_network_source_hmac_key,
     hash_network_source,
@@ -80,6 +90,52 @@ def _get_paddle_ocr_engine() -> PaddleOCREngine:
     if _paddle_ocr_engine is None:
         _paddle_ocr_engine = PaddleOCREngine()
     return _paddle_ocr_engine
+
+
+_shared_detection_face_analysis: FaceAnalysis | None = None
+_embedder_face_analysis: FaceAnalysis | None = None
+
+
+def _get_shared_detection_face_analysis() -> FaceAnalysis:
+    """Lazy module-level singleton, same shape as _get_paddle_ocr_engine()
+    above. BD-001.10 I-1: one detection-only FaceAnalysis instance shared
+    by FaceDetector, FaceQualityAssessor, and DocumentFaceExtractor --
+    empirically confirmed safe under concurrent asyncio.to_thread calls,
+    and confirmed to preserve each of those three capabilities' own
+    ~1-2s steady-state latency (never dragged onto the materially slower
+    recognition execution path measured for allowed_modules including
+    "recognition"). The module-level variable is assigned only after
+    FaceAnalysis(...) and .prepare() both succeed -- a failed first
+    attempt leaves it at None, so the next call retries from scratch,
+    the same retry-safety property _get_paddle_ocr_engine() already has."""
+    global _shared_detection_face_analysis
+    if _shared_detection_face_analysis is None:
+        app = FaceAnalysis(
+            name="buffalo_l", providers=["CPUExecutionProvider"], allowed_modules=["detection"]
+        )
+        app.prepare(ctx_id=-1, det_size=(640, 640))
+        _shared_detection_face_analysis = app
+    return _shared_detection_face_analysis
+
+
+def _get_embedder_face_analysis() -> FaceAnalysis:
+    """Lazy module-level singleton. BD-001.10 I-1: a separate
+    detection+recognition FaceAnalysis instance, used only by
+    FaceEmbedder -- deliberately not merged into the shared
+    detection-only instance above, since doing so would force the
+    other three detection-only capabilities onto the materially slower
+    recognition execution path for no benefit to any of them (confirmed
+    by live benchmark, not assumed)."""
+    global _embedder_face_analysis
+    if _embedder_face_analysis is None:
+        app = FaceAnalysis(
+            name="buffalo_l",
+            providers=["CPUExecutionProvider"],
+            allowed_modules=["detection", "recognition"],
+        )
+        app.prepare(ctx_id=-1, det_size=(640, 640))
+        _embedder_face_analysis = app
+    return _embedder_face_analysis
 
 
 async def get_session_service(
@@ -236,8 +292,28 @@ async def get_workflow_service(
         _get_paddle_ocr_engine(),
         DeterministicFieldReconciler(),
     )
+    detection_app = _get_shared_detection_face_analysis()
+    embedder_app = _get_embedder_face_analysis()
+    reference_source = DocumentBoundReferenceResolver(
+        request_session_factory,
+        key_provider,
+        settings.evidence_encryption_key_id,
+        document_storage,
+        InsightFaceDocumentFaceExtractor(app=detection_app),
+    )
+    biometric_processor = BiometricProcessor(
+        request_session_factory,
+        key_provider,
+        settings.evidence_encryption_key_id,
+        document_storage,
+        InsightFaceDetector(app=detection_app),
+        InsightFaceQualityAssessor(app=detection_app),
+        InsightFaceEmbedder(app=embedder_app),
+        CosineFaceMatcher(),
+        reference_source,
+    )
     yield VerificationWorkflowService(
-        session_service, orchestrator, audit_service, document_processor
+        session_service, orchestrator, audit_service, document_processor, biometric_processor
     )
 
 

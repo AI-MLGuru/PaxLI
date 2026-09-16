@@ -31,8 +31,31 @@ from core.document.deterministic import (
 )
 from core.evidence.enums import EvidenceType
 from core.evidence.service import EvidenceService
+from core.evidence_result.enums import EvidenceResultStatus, EvidenceResultType
+from core.evidence_result.models import ModelReference
 from core.evidence_result.schema_catalog import EvidenceResultSchemaCatalog
 from core.evidence_result.service import EvidenceResultService
+from core.face.capabilities import FaceDetector, FaceEmbedder, FaceQualityAssessor
+from core.face.matcher import CosineFaceMatcher
+from core.face.reference import (
+    ReferenceAcquisitionOutcome,
+    ReferenceArtifactImage,
+    ReferenceIdentity,
+    ReferenceProvenance,
+    ReferenceResolution,
+    ReferenceSourceResolver,
+)
+from core.face.types import (
+    FaceDetection,
+    FaceDetectionOutcome,
+    FaceEmbedding,
+    FaceEmbeddingOutcome,
+    FaceQuality,
+    FaceQualityOutcome,
+)
+from core.policy.condition import EvidenceCondition
+from core.policy.requirements import EvidenceRequirement, EvidenceRequirementLevel
+from core.policy.rules import Rule
 from core.policy.service import PolicyService
 from core.verification.enums import AssuranceLevel, VerificationStatus
 from core.verification.exceptions import ConcurrentTransitionError, SessionAlreadyTerminalError
@@ -50,6 +73,7 @@ from infrastructure.database.repositories.verification_session import (
 )
 from infrastructure.database.session import session_factory
 from infrastructure.document.processor import SqlAlchemyDocumentProcessor
+from infrastructure.face.processor import BiometricProcessor
 from infrastructure.security.local_key_provider import LocalAesGcmKeyProvider
 from infrastructure.storage.encrypted import EncryptedObjectStorage
 from infrastructure.storage.minio import MinioObjectStorage
@@ -96,6 +120,145 @@ async def _dispose_shared_engine_pool_after_module():
 _KEY_PROVIDER = LocalAesGcmKeyProvider({"test-workflow-key": b"0" * 32})
 
 
+class _FixedReferenceSourceResolver(ReferenceSourceResolver):
+    """BD-001.11 step 4/5: mirrors test_biometric_processor.py's own
+    fixed double exactly -- a static resolution, known before
+    submit() runs, used only where the test does not need the
+    reference tied to a real DOCUMENT_FIELD_EXTRACTION row (i.e. the
+    12 pre-existing dispatch tests, none of which upload a SELFIE, so
+    this is never actually invoked in any code path they exercise)."""
+
+    def __init__(self, resolution: ReferenceResolution) -> None:
+        self._resolution = resolution
+        self.calls = 0
+
+    async def resolve(self, *, session_id: UUID, tenant_id: str) -> ReferenceResolution:
+        self.calls += 1
+        return self._resolution
+
+
+class _DocumentFieldExtractionReferenceResolver(ReferenceSourceResolver):
+    """BD-001.11 §6's mandatory gate: unlike the fixed double above,
+    this resolver cannot know the reference identity_claim's id in
+    advance -- it does not exist until document_processor.process()
+    has already run inside this same submit() call (BD-001.10 §4's
+    frozen ordering). Resolves at call time against whichever
+    DOCUMENT_FIELD_EXTRACTION row is currently effective for this
+    session, exactly as the real DocumentBoundReferenceResolver would,
+    but skipping the actual face-crop extraction stage (fixed image
+    bytes) -- this test proves wiring correctness, not InsightFace
+    correctness (already proven in test_biometric_processor.py)."""
+
+    def __init__(self, image: bytes = b"reference") -> None:
+        self._image = image
+        self.calls = 0
+
+    async def resolve(self, *, session_id: UUID, tenant_id: str) -> ReferenceResolution:
+        self.calls += 1
+        async with session_factory() as session:
+            service = EvidenceResultService(
+                SqlAlchemyEvidenceResultRepository(session, _KEY_PROVIDER, "test-workflow-key"),
+                AuditService(SqlAlchemyAuditEventRepository(session)),
+                SqlAlchemyEvidenceRepository(session),
+            )
+            row = await service.get_effective_for_session_by_type(
+                session_id=session_id,
+                tenant_id=tenant_id,
+                evidence_type=EvidenceResultType.DOCUMENT_FIELD_EXTRACTION,
+            )
+        if row is None:
+            return ReferenceResolution(
+                outcome=ReferenceAcquisitionOutcome.NOT_AVAILABLE, identity=None
+            )
+        return ReferenceResolution(
+            outcome=ReferenceAcquisitionOutcome.RESOLVED,
+            identity=ReferenceIdentity(
+                identity_claim=row.id,
+                reference_artifact=ReferenceArtifactImage(kind="IMAGE", image=self._image),
+                provenance=ReferenceProvenance(
+                    acquisition_route="DOCUMENT_BOUND",
+                    source_evidence_result_ids=(row.id,),
+                ),
+            ),
+        )
+
+
+class _FixedFaceDetector(FaceDetector):
+    def __init__(self, result: FaceDetection) -> None:
+        self._result = result
+        self.calls = 0
+
+    async def detect(self, image: bytes) -> FaceDetection:
+        self.calls += 1
+        return self._result
+
+
+class _FixedFaceQualityAssessor(FaceQualityAssessor):
+    def __init__(self, result: FaceQuality) -> None:
+        self._result = result
+        self.calls = 0
+
+    async def assess(self, image: bytes) -> FaceQuality:
+        self.calls += 1
+        return self._result
+
+
+class _FixedFaceEmbedder(FaceEmbedder):
+    def __init__(self, result: FaceEmbedding) -> None:
+        self._result = result
+        self.calls = 0
+
+    async def embed(self, image: bytes) -> FaceEmbedding:
+        self.calls += 1
+        return self._result
+
+
+_WORKFLOW_FACE_MODEL_REFERENCE = ModelReference(
+    model_id="test-workflow-face-model", model_version="1.0"
+)
+
+
+def _not_available_resolution() -> ReferenceResolution:
+    return ReferenceResolution(outcome=ReferenceAcquisitionOutcome.NOT_AVAILABLE, identity=None)
+
+
+def _valid_detection() -> FaceDetection:
+    return FaceDetection(outcome=FaceDetectionOutcome.VALID, detected=True, face_count=1)
+
+
+def _valid_quality(score: float = 0.9) -> FaceQuality:
+    return FaceQuality(outcome=FaceQualityOutcome.VALID, quality_score=score)
+
+
+def _valid_embedding(vector: tuple[float, ...] = (1.0, 0.0, 0.0)) -> FaceEmbedding:
+    return FaceEmbedding(
+        outcome=FaceEmbeddingOutcome.VALID,
+        embedding=vector,
+        embedding_dimensions=len(vector),
+        model_reference=_WORKFLOW_FACE_MODEL_REFERENCE,
+    )
+
+
+def _noop_biometric_processor() -> BiometricProcessor:
+    """BD-001.11 step 4: a real BiometricProcessor whose reference
+    resolver always reports NOT_AVAILABLE -- a true no-op for every
+    one of the 12 pre-existing tests in this file, none of which
+    upload a SELFIE (BD-001.7 G.2-S1/G.2-S11's already-proven no-op
+    safety). Needed only because VerificationWorkflowService now calls
+    biometric_processor.process() unconditionally (BD-001.10 §4)."""
+    return BiometricProcessor(
+        session_factory,
+        _KEY_PROVIDER,
+        "test-workflow-key",
+        _evidence_storage(),
+        _FixedFaceDetector(_valid_detection()),
+        _FixedFaceQualityAssessor(_valid_quality()),
+        _FixedFaceEmbedder(_valid_embedding()),
+        CosineFaceMatcher(),
+        _FixedReferenceSourceResolver(_not_available_resolution()),
+    )
+
+
 def _services(session):
     policy_service = PolicyService(
         SqlAlchemyVerificationPolicyRepository(session),
@@ -133,7 +296,11 @@ def _services(session):
         DeterministicFieldReconciler(),
     )
     workflow = VerificationWorkflowService(
-        session_service, orchestrator, audit_service, document_processor
+        session_service,
+        orchestrator,
+        audit_service,
+        document_processor,
+        _noop_biometric_processor(),
     )
     return policy_service, session_service, orchestrator, audit_service, workflow
 
@@ -164,6 +331,68 @@ async def _activate_trivial_policy(tenant_id: str) -> None:
             default_outcome=DecisionOutcome.INCONCLUSIVE,
         )
         await session.commit()
+
+
+async def _activate_face_match_policy(tenant_id: str) -> None:
+    """BD-001.11 §6's mandatory gate: a policy that actually exercises
+    the Decision Engine's own evaluation logic against a real,
+    persisted FACE_MATCH row -- mirrors
+    test_decision_orchestration.py's
+    test_full_pipeline_verified_outcome_against_real_infrastructure
+    exactly (REQUIRED FACE_MATCH, status==PASS -> VERIFIED), one layer
+    up: proving VerificationWorkflowService's own wiring delivers a
+    FACE_MATCH row the Decision Engine can actually evaluate, not
+    re-proving the Decision Engine's own evaluation logic."""
+    async with session_factory() as session:
+        policy_service, *_ = _services(session)
+        await policy_service.create_and_activate(
+            tenant_id=tenant_id,
+            policy_id="policy-workflow-face-match-e2e",
+            assurance_level=AssuranceLevel.STANDARD,
+            created_by="admin",
+            evidence_requirements=(
+                EvidenceRequirement(
+                    evidence_type="FACE_MATCH", level=EvidenceRequirementLevel.REQUIRED
+                ),
+            ),
+            rules=(
+                Rule(
+                    id="r1",
+                    condition=EvidenceCondition(
+                        evidence_type="FACE_MATCH",
+                        field="status",
+                        operator="==",
+                        expected_value="PASS",
+                    ),
+                    outcome=DecisionOutcome.VERIFIED,
+                    priority=10,
+                    reason_code="POLICY:FACE_MATCH_OK",
+                ),
+            ),
+        )
+        await session.commit()
+
+
+async def _upload_evidence(
+    tenant_id: str, session_id: UUID, storage, evidence_type: EvidenceType, content: bytes
+) -> None:
+    async with session_factory() as db_session:
+        _policy_service, session_service, *_ = _services(db_session)
+        evidence_service = EvidenceService(
+            SqlAlchemyEvidenceRepository(db_session),
+            session_service,
+            storage,
+            AuditService(SqlAlchemyAuditEventRepository(db_session)),
+        )
+        await evidence_service.add(
+            session_id=session_id,
+            tenant_id=tenant_id,
+            evidence_type=evidence_type,
+            content=content,
+            checksum=f"{evidence_type.value}-{uuid4()}",
+            metadata={},
+        )
+        await db_session.commit()
 
 
 async def _create_session(tenant_id: str) -> UUID:
@@ -837,3 +1066,113 @@ async def test_lazy_expiration_beats_an_in_flight_submit() -> None:
             )
         ).scalars().all()
         assert decision_rows == []  # EXPIRED never carries a decision, ever
+
+
+# ---------------------------------------------------------------------------
+# BD-001.11 §6's mandatory gate: Decision-Engine visibility of biometric
+# evidence through the real /submit path, not BiometricProcessor.process()
+# called directly (as every test_biometric_processor.py test does).
+# ---------------------------------------------------------------------------
+
+
+async def test_submit_delivers_biometric_evidence_into_a_verified_decision() -> None:
+    """The one end-to-end chain no other test in this codebase proves:
+
+        submit() -> DocumentProcessor -> DOCUMENT_FIELD_EXTRACTION (PASS)
+                 -> BiometricProcessor -> FACE_MATCH (PASS)
+                 -> DecisionOrchestrator -> VERIFIED
+
+    test_biometric_processor.py proves BiometricProcessor's own
+    orchestration exhaustively but always calls process() directly, never
+    through VerificationWorkflowService. test_decision_orchestration.py
+    proves the Decision Engine evaluates a FACE_MATCH row correctly but
+    seeds that row directly, never through BiometricProcessor. Neither
+    proves the two are actually wired together correctly -- this does.
+
+    FIXED capability doubles (detector/quality/embedder), not real
+    InsightFace, per BD-001.11's frozen fixture strategy: this proves
+    wiring, not model correctness (already proven live elsewhere)."""
+    tenant_id = f"tenant-workflow-face-match-e2e-{uuid4()}"
+    await _activate_face_match_policy(tenant_id)
+    session_id = await _create_session(tenant_id)
+    storage = _evidence_storage()
+
+    document_content = (
+        MINIMAL_JPEG_BYTES + b"0" * 2000 + b"PAXLI_TEST_OCR_VALID:surname=ERIKSSON\x00"
+    )
+    await _upload_evidence(tenant_id, session_id, storage, EvidenceType.DOCUMENT, document_content)
+    await _upload_evidence(tenant_id, session_id, storage, EvidenceType.SELFIE, MINIMAL_JPEG_BYTES)
+
+    async with session_factory() as db_session:
+        (
+            _policy_service,
+            session_service,
+            orchestrator,
+            audit_service,
+            _unused_default_workflow,
+        ) = _services(db_session)
+        document_processor = SqlAlchemyDocumentProcessor(
+            session_factory,
+            _KEY_PROVIDER,
+            "test-workflow-key",
+            storage,
+            DeterministicQualityAssessor(),
+            DeterministicDocumentClassifier(),
+            DeterministicMRZParser(),
+            DeterministicBarcodeDecoder(),
+            DeterministicOCREngine(),
+            DeterministicFieldReconciler(),
+        )
+        biometric_processor = BiometricProcessor(
+            session_factory,
+            _KEY_PROVIDER,
+            "test-workflow-key",
+            storage,
+            _FixedFaceDetector(_valid_detection()),
+            _FixedFaceQualityAssessor(_valid_quality()),
+            _FixedFaceEmbedder(_valid_embedding((1.0, 0.0, 0.0))),
+            CosineFaceMatcher(),
+            _DocumentFieldExtractionReferenceResolver(),
+        )
+        workflow = VerificationWorkflowService(
+            session_service, orchestrator, audit_service, document_processor, biometric_processor
+        )
+        result_session, decision = await workflow.submit(session_id=session_id, tenant_id=tenant_id)
+        await db_session.commit()
+
+    assert result_session.status is VerificationStatus.COMPLETED
+    assert decision.outcome is DecisionOutcome.VERIFIED
+    assert decision.reason_codes == ("POLICY:FACE_MATCH_OK",)
+
+    async with session_factory() as verify_session:
+        service = EvidenceResultService(
+            SqlAlchemyEvidenceResultRepository(verify_session, _KEY_PROVIDER, "test-workflow-key"),
+            AuditService(SqlAlchemyAuditEventRepository(verify_session)),
+            SqlAlchemyEvidenceRepository(verify_session),
+        )
+        match_row = await service.get_effective_for_session_by_type(
+            session_id=session_id, tenant_id=tenant_id, evidence_type=EvidenceResultType.FACE_MATCH
+        )
+        assert match_row is not None
+        assert match_row.status == EvidenceResultStatus.PASS
+        reference_embedding = await service.get_effective_for_session_by_type(
+            session_id=session_id,
+            tenant_id=tenant_id,
+            evidence_type=EvidenceResultType.FACE_EMBEDDING_REFERENCE,
+        )
+        probe_embedding = await service.get_effective_for_session_by_type(
+            session_id=session_id,
+            tenant_id=tenant_id,
+            evidence_type=EvidenceResultType.FACE_EMBEDDING_PROBE,
+        )
+        assert reference_embedding is not None and probe_embedding is not None
+        assert match_row.result is not None
+        assert match_row.result["reference_evidence_result_id"] == str(reference_embedding.id)
+        assert match_row.result["probe_evidence_result_id"] == str(probe_embedding.id)
+
+        decision_row = (
+            await verify_session.execute(
+                select(DecisionRecord).where(DecisionRecord.session_id == str(session_id))
+            )
+        ).scalar_one()
+        assert decision_row.outcome == "VERIFIED"

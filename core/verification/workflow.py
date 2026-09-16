@@ -35,6 +35,7 @@ from core.decision.enums import EvaluationReason
 from core.decision.models import DecisionProvenance
 from core.decision.orchestration import DecisionOrchestrator
 from core.document.processor import DocumentProcessor
+from core.face.processor import BiometricProcessor
 from core.verification.enums import VerificationStatus
 from core.verification.exceptions import ConcurrentTransitionError, SessionAlreadyTerminalError
 from core.verification.models import VerificationSession
@@ -61,11 +62,13 @@ class VerificationWorkflowService:
         decision_orchestrator: DecisionOrchestrator,
         audit_service: AuditService,
         document_processor: DocumentProcessor,
+        biometric_processor: BiometricProcessor,
     ) -> None:
         self.session_service = session_service
         self.decision_orchestrator = decision_orchestrator
         self.audit_service = audit_service
         self.document_processor = document_processor
+        self.biometric_processor = biometric_processor
 
     async def submit(
         self,
@@ -138,6 +141,22 @@ class VerificationWorkflowService:
                 # itself no-ops when no DOCUMENT-type capture exists for
                 # this session.
                 await self.document_processor.process(
+                    session_id=session.id,
+                    tenant_id=session.tenant_id,
+                    request_id=request_id,
+                    correlation_id=correlation_id,
+                )
+                # BD-001.10 §4's frozen ordering: biometric processing runs
+                # after document processing, in the same synchronous
+                # PROCESSING step -- the reference side depends on
+                # DOCUMENT_FIELD_EXTRACTION already being effective.
+                # Unconditional, same reasoning as document_processor
+                # above: BiometricProcessor itself no-ops internally when
+                # no reference can be acquired and no SELFIE capture
+                # exists (BD-001.7 G.2-S1/G.2-S11). No try/except here --
+                # any exception propagates uncaught, exactly like
+                # document_processor.process() above (BD-001.10 §6).
+                await self.biometric_processor.process(
                     session_id=session.id,
                     tenant_id=session.tenant_id,
                     request_id=request_id,

@@ -198,6 +198,18 @@ def _processor(
     )
 
 
+class _NoopBiometricProcessor:
+    async def process(
+        self,
+        *,
+        session_id: UUID,
+        tenant_id: str,
+        request_id: str | None = None,
+        correlation_id: str | None = None,
+    ) -> None:
+        return None
+
+
 async def _effective_result(session, session_id: str, tenant_id: str, evidence_type: str):
     result = await session.execute(
         select(EvidenceResultRecord).where(
@@ -2226,7 +2238,11 @@ async def test_document_unsupported_lets_policy_not_document_processor_decide_ou
                 DeterministicOCREngine(), DeterministicFieldReconciler(),
             )
             workflow = VerificationWorkflowService(
-                session_service, orchestrator, audit_service, document_processor
+                session_service,
+                orchestrator,
+                audit_service,
+                document_processor,
+                _NoopBiometricProcessor(),
             )
             _session, decision = await workflow.submit(
                 session_id=created_session.id, tenant_id=tenant_id
@@ -2330,7 +2346,11 @@ async def test_mrz_check_digit_mismatch_lets_policy_not_document_processor_decid
             DeterministicOCREngine(), DeterministicFieldReconciler(),
         )
         workflow = VerificationWorkflowService(
-            session_service, orchestrator, audit_service, document_processor
+            session_service,
+            orchestrator,
+            audit_service,
+            document_processor,
+            _NoopBiometricProcessor(),
         )
         _session, decision = await workflow.submit(
             session_id=created_session.id, tenant_id=tenant_id
@@ -2433,7 +2453,11 @@ async def test_ocr_unreadable_lets_policy_not_document_processor_decide_outcome(
             DeterministicOCREngine(), DeterministicFieldReconciler(),
         )
         workflow = VerificationWorkflowService(
-            session_service, orchestrator, audit_service, document_processor
+            session_service,
+            orchestrator,
+            audit_service,
+            document_processor,
+            _NoopBiometricProcessor(),
         )
         _session, decision = await workflow.submit(
             session_id=created_session.id, tenant_id=tenant_id
@@ -2541,7 +2565,11 @@ async def test_document_field_extraction_conflict_lets_policy_not_document_proce
             DeterministicOCREngine(), DeterministicFieldReconciler(),
         )
         workflow = VerificationWorkflowService(
-            session_service, orchestrator, audit_service, document_processor
+            session_service,
+            orchestrator,
+            audit_service,
+            document_processor,
+            _NoopBiometricProcessor(),
         )
         _session, decision = await workflow.submit(
             session_id=created_session.id, tenant_id=tenant_id
@@ -2641,7 +2669,11 @@ async def test_concurrent_submit_with_a_real_document_converges_on_one_decision(
             DeterministicOCREngine(), DeterministicFieldReconciler(),
         )
         return VerificationWorkflowService(
-            session_service, orchestrator, audit_service, document_processor
+            session_service,
+            orchestrator,
+            audit_service,
+            document_processor,
+            _NoopBiometricProcessor(),
         )
 
     async def _submit_attempt() -> UUID:

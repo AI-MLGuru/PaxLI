@@ -165,6 +165,29 @@ class FakeDocumentProcessor:
         self.process_calls.append(session_id)
 
 
+class FakeBiometricProcessor:
+    """BD-001.11: same shape as FakeDocumentProcessor above, for the
+    same reason -- called unconditionally from the PROCESSING branch,
+    after document_processor.process(). A no-op here -- these tests
+    exercise workflow dispatch/audit logic, not biometric processing
+    itself (see tests/integration/test_biometric_processor.py for
+    that) -- but call count is tracked so dispatch tests can assert it
+    fired exactly once per PROCESSING hop."""
+
+    def __init__(self) -> None:
+        self.process_calls: list[UUID] = []
+
+    async def process(
+        self,
+        *,
+        session_id: UUID,
+        tenant_id: str,
+        request_id: str | None = None,
+        correlation_id: str | None = None,
+    ) -> None:
+        self.process_calls.append(session_id)
+
+
 class FakeAuditRepository:
     def __init__(self) -> None:
         self.events: list[AuditEvent] = []
@@ -226,14 +249,20 @@ def document_processor() -> FakeDocumentProcessor:
 
 
 @pytest.fixture
+def biometric_processor() -> FakeBiometricProcessor:
+    return FakeBiometricProcessor()
+
+
+@pytest.fixture
 def workflow(
     session_service: VerificationSessionService,
     orchestrator: FakeDecisionOrchestrator,
     audit_service: AuditService,
     document_processor: FakeDocumentProcessor,
+    biometric_processor: FakeBiometricProcessor,
 ) -> VerificationWorkflowService:
     return VerificationWorkflowService(
-        session_service, orchestrator, audit_service, document_processor
+        session_service, orchestrator, audit_service, document_processor, biometric_processor
     )
 
 
