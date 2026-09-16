@@ -24,6 +24,8 @@ different non-RESOLVED-outcome semantics (BD-001.7 §3a vs. §3). They
 share only the genuinely-identical low-level primitives below.
 """
 
+from collections.abc import Awaitable, Callable
+from time import perf_counter
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
@@ -58,6 +60,7 @@ from core.face.types import (
 from infrastructure.database.repositories.audit_event import SqlAlchemyAuditEventRepository
 from infrastructure.database.repositories.evidence import SqlAlchemyEvidenceRepository
 from infrastructure.database.repositories.evidence_result import SqlAlchemyEvidenceResultRepository
+from infrastructure.observability.stage_logging import Stage, log_stage_event
 
 if TYPE_CHECKING:
     from core.security.keys import KeyProvider
@@ -234,6 +237,71 @@ class BiometricProcessor:
         await self._run_reference_chain(session_id, tenant_id, request_id, correlation_id)
         await self._run_probe_chain(session_id, tenant_id, request_id, correlation_id)
         await self._run_face_match(session_id, tenant_id, request_id, correlation_id)
+
+    async def _run_observed_stage(
+        self,
+        stage: Stage,
+        operation: Callable[[], Awaitable[EvidenceResult]],
+        *,
+        session_id: UUID,
+        request_id: str | None,
+        correlation_id: str | None,
+    ) -> EvidenceResult:
+        started_at = perf_counter()
+        log_stage_event(
+            "verification_stage_started",
+            stage=stage,
+            session_id=str(session_id),
+            request_id=request_id,
+            correlation_id=correlation_id,
+        )
+        try:
+            result = await operation()
+        except CapabilityUnavailableError:
+            log_stage_event(
+                "verification_stage_unavailable",
+                stage=stage,
+                session_id=str(session_id),
+                request_id=request_id,
+                correlation_id=correlation_id,
+                duration_ms=(perf_counter() - started_at) * 1000,
+                failure_category="capability_unavailable",
+            )
+            raise
+        except Exception:
+            log_stage_event(
+                "verification_stage_failed",
+                stage=stage,
+                session_id=str(session_id),
+                request_id=request_id,
+                correlation_id=correlation_id,
+                duration_ms=(perf_counter() - started_at) * 1000,
+                failure_category="unexpected_exception",
+            )
+            raise
+
+        duration_ms = (perf_counter() - started_at) * 1000
+        if result.status is EvidenceResultStatus.INCONCLUSIVE:
+            log_stage_event(
+                "verification_stage_inconclusive",
+                stage=stage,
+                session_id=str(session_id),
+                request_id=request_id,
+                correlation_id=correlation_id,
+                duration_ms=duration_ms,
+                evidence_result_id=str(result.id),
+            )
+        else:
+            log_stage_event(
+                "verification_stage_completed",
+                stage=stage,
+                session_id=str(session_id),
+                request_id=request_id,
+                correlation_id=correlation_id,
+                duration_ms=duration_ms,
+                evidence_result_id=str(result.id),
+            )
+        return result
 
     def _build_service(self, session: AsyncSession) -> EvidenceResultService:
         return EvidenceResultService(
@@ -586,13 +654,54 @@ class BiometricProcessor:
         request_id: str | None,
         correlation_id: str | None,
     ) -> None:
-        resolution = await self._reference_source.resolve(
-            session_id=session_id, tenant_id=tenant_id
+        started_at = perf_counter()
+        log_stage_event(
+            "verification_stage_started",
+            stage="reference_acquisition",
+            session_id=str(session_id),
+            request_id=request_id,
+            correlation_id=correlation_id,
         )
+        try:
+            resolution = await self._reference_source.resolve(
+                session_id=session_id, tenant_id=tenant_id
+            )
+        except CapabilityUnavailableError:
+            log_stage_event(
+                "verification_stage_unavailable",
+                stage="reference_acquisition",
+                session_id=str(session_id),
+                request_id=request_id,
+                correlation_id=correlation_id,
+                duration_ms=(perf_counter() - started_at) * 1000,
+                failure_category="capability_unavailable",
+            )
+            raise
+        except Exception:
+            log_stage_event(
+                "verification_stage_failed",
+                stage="reference_acquisition",
+                session_id=str(session_id),
+                request_id=request_id,
+                correlation_id=correlation_id,
+                duration_ms=(perf_counter() - started_at) * 1000,
+                failure_category="unexpected_exception",
+            )
+            raise
+
         # CapabilityUnavailableError propagates uncaught (BD-001.2 D-3 /
         # BD-001.7 G.2-10) -- no try/except around resolve() here.
 
         if resolution.outcome is ReferenceAcquisitionOutcome.NOT_AVAILABLE:
+            log_stage_event(
+                "verification_stage_inconclusive",
+                stage="reference_acquisition",
+                session_id=str(session_id),
+                request_id=request_id,
+                correlation_id=correlation_id,
+                duration_ms=(perf_counter() - started_at) * 1000,
+                failure_category="reference_not_available",
+            )
             return  # G.2-S11: silent no-op, no row
 
         if resolution.outcome in (
@@ -606,6 +715,15 @@ class BiometricProcessor:
             )
             await self._persist_reference_acquisition_failure(
                 session_id, tenant_id, reason, request_id, correlation_id
+            )
+            log_stage_event(
+                "verification_stage_inconclusive",
+                stage="reference_acquisition",
+                session_id=str(session_id),
+                request_id=request_id,
+                correlation_id=correlation_id,
+                duration_ms=(perf_counter() - started_at) * 1000,
+                failure_category=reason.value,
             )
             return
             # G.2-S11: chain terminates at FACE_DETECTION_REFERENCE.
@@ -624,38 +742,73 @@ class BiometricProcessor:
             )
 
         image = identity.reference_artifact.image
-        detection_row = await self._run_detection_stage(
-            evidence_type=EvidenceResultType.FACE_DETECTION_REFERENCE,
-            parent_evidence_result_ids=(identity.identity_claim,),
-            image=image,
+        detection_row = await self._run_observed_stage(
+            "face_detection_reference",
+            lambda: self._run_detection_stage(
+                evidence_type=EvidenceResultType.FACE_DETECTION_REFERENCE,
+                parent_evidence_result_ids=(identity.identity_claim,),
+                image=image,
+                session_id=session_id,
+                tenant_id=tenant_id,
+                request_id=request_id,
+                correlation_id=correlation_id,
+            ),
             session_id=session_id,
-            tenant_id=tenant_id,
             request_id=request_id,
             correlation_id=correlation_id,
         )
         if detection_row.status is not EvidenceResultStatus.PASS:
+            log_stage_event(
+                "verification_stage_completed",
+                stage="reference_acquisition",
+                session_id=str(session_id),
+                request_id=request_id,
+                correlation_id=correlation_id,
+                duration_ms=(perf_counter() - started_at) * 1000,
+            )
             return
 
-        quality_row = await self._run_quality_stage(
-            evidence_type=EvidenceResultType.FACE_QUALITY_REFERENCE,
-            parent_evidence_result_ids=(detection_row.id,),
-            image=image,
+        quality_row = await self._run_observed_stage(
+            "face_quality_reference",
+            lambda: self._run_quality_stage(
+                evidence_type=EvidenceResultType.FACE_QUALITY_REFERENCE,
+                parent_evidence_result_ids=(detection_row.id,),
+                image=image,
+                session_id=session_id,
+                tenant_id=tenant_id,
+                request_id=request_id,
+                correlation_id=correlation_id,
+            ),
             session_id=session_id,
-            tenant_id=tenant_id,
             request_id=request_id,
             correlation_id=correlation_id,
         )
         # BD-001 Slice C's own frozen "no gating" decision: proceed to
         # embedding regardless of quality_row.status.
 
-        await self._run_embedding_stage(
-            evidence_type=EvidenceResultType.FACE_EMBEDDING_REFERENCE,
-            parent_evidence_result_ids=(quality_row.id,),
-            image=image,
+        await self._run_observed_stage(
+            "face_embedding_reference",
+            lambda: self._run_embedding_stage(
+                evidence_type=EvidenceResultType.FACE_EMBEDDING_REFERENCE,
+                parent_evidence_result_ids=(quality_row.id,),
+                image=image,
+                session_id=session_id,
+                tenant_id=tenant_id,
+                request_id=request_id,
+                correlation_id=correlation_id,
+            ),
             session_id=session_id,
-            tenant_id=tenant_id,
             request_id=request_id,
             correlation_id=correlation_id,
+        )
+
+        log_stage_event(
+            "verification_stage_completed",
+            stage="reference_acquisition",
+            session_id=str(session_id),
+            request_id=request_id,
+            correlation_id=correlation_id,
+            duration_ms=(perf_counter() - started_at) * 1000,
         )
 
     async def _run_probe_chain(
@@ -690,34 +843,52 @@ class BiometricProcessor:
         capture = captures[0]
         image = await self._storage.get(capture.object_key)
 
-        detection_row = await self._run_detection_stage(
-            evidence_type=EvidenceResultType.FACE_DETECTION_PROBE,
-            source_reference=capture.id,
-            image=image,
+        detection_row = await self._run_observed_stage(
+            "face_detection_probe",
+            lambda: self._run_detection_stage(
+                evidence_type=EvidenceResultType.FACE_DETECTION_PROBE,
+                source_reference=capture.id,
+                image=image,
+                session_id=session_id,
+                tenant_id=tenant_id,
+                request_id=request_id,
+                correlation_id=correlation_id,
+            ),
             session_id=session_id,
-            tenant_id=tenant_id,
             request_id=request_id,
             correlation_id=correlation_id,
         )
         if detection_row.status is not EvidenceResultStatus.PASS:
             return
 
-        quality_row = await self._run_quality_stage(
-            evidence_type=EvidenceResultType.FACE_QUALITY_PROBE,
-            parent_evidence_result_ids=(detection_row.id,),
-            image=image,
+        quality_row = await self._run_observed_stage(
+            "face_quality_probe",
+            lambda: self._run_quality_stage(
+                evidence_type=EvidenceResultType.FACE_QUALITY_PROBE,
+                parent_evidence_result_ids=(detection_row.id,),
+                image=image,
+                session_id=session_id,
+                tenant_id=tenant_id,
+                request_id=request_id,
+                correlation_id=correlation_id,
+            ),
             session_id=session_id,
-            tenant_id=tenant_id,
             request_id=request_id,
             correlation_id=correlation_id,
         )
 
-        await self._run_embedding_stage(
-            evidence_type=EvidenceResultType.FACE_EMBEDDING_PROBE,
-            parent_evidence_result_ids=(quality_row.id,),
-            image=image,
+        await self._run_observed_stage(
+            "face_embedding_probe",
+            lambda: self._run_embedding_stage(
+                evidence_type=EvidenceResultType.FACE_EMBEDDING_PROBE,
+                parent_evidence_result_ids=(quality_row.id,),
+                image=image,
+                session_id=session_id,
+                tenant_id=tenant_id,
+                request_id=request_id,
+                correlation_id=correlation_id,
+            ),
             session_id=session_id,
-            tenant_id=tenant_id,
             request_id=request_id,
             correlation_id=correlation_id,
         )
@@ -729,116 +900,185 @@ class BiometricProcessor:
         request_id: str | None,
         correlation_id: str | None,
     ) -> None:
-        async with self._session_factory() as session:
-            service = self._build_service(session)
-            # G.2-4: fresh re-read, never trusting the reference/probe
-            # walks' own return values from earlier in this invocation.
-            reference_detection = await service.get_effective_for_session_by_type(
-                session_id=session_id,
-                tenant_id=tenant_id,
-                evidence_type=EvidenceResultType.FACE_DETECTION_REFERENCE,
-            )
-            reference_quality = await service.get_effective_for_session_by_type(
-                session_id=session_id,
-                tenant_id=tenant_id,
-                evidence_type=EvidenceResultType.FACE_QUALITY_REFERENCE,
-            )
-            reference_embedding = await service.get_effective_for_session_by_type(
-                session_id=session_id,
-                tenant_id=tenant_id,
-                evidence_type=EvidenceResultType.FACE_EMBEDDING_REFERENCE,
-            )
-            probe_detection = await service.get_effective_for_session_by_type(
-                session_id=session_id,
-                tenant_id=tenant_id,
-                evidence_type=EvidenceResultType.FACE_DETECTION_PROBE,
-            )
-            probe_quality = await service.get_effective_for_session_by_type(
-                session_id=session_id,
-                tenant_id=tenant_id,
-                evidence_type=EvidenceResultType.FACE_QUALITY_PROBE,
-            )
-            probe_embedding = await service.get_effective_for_session_by_type(
-                session_id=session_id,
-                tenant_id=tenant_id,
-                evidence_type=EvidenceResultType.FACE_EMBEDDING_PROBE,
-            )
-            existing_match = await service.get_effective_for_session_by_type(
-                session_id=session_id,
-                tenant_id=tenant_id,
-                evidence_type=EvidenceResultType.FACE_MATCH,
-            )
+        started_at = perf_counter()
+        log_stage_event(
+            "verification_stage_started",
+            stage="face_match",
+            session_id=str(session_id),
+            request_id=request_id,
+            correlation_id=correlation_id,
+        )
+        try:
+            async with self._session_factory() as session:
+                service = self._build_service(session)
+                # G.2-4: fresh re-read, never trusting the reference/probe
+                # walks' own return values from earlier in this invocation.
+                reference_detection = await service.get_effective_for_session_by_type(
+                    session_id=session_id,
+                    tenant_id=tenant_id,
+                    evidence_type=EvidenceResultType.FACE_DETECTION_REFERENCE,
+                )
+                reference_quality = await service.get_effective_for_session_by_type(
+                    session_id=session_id,
+                    tenant_id=tenant_id,
+                    evidence_type=EvidenceResultType.FACE_QUALITY_REFERENCE,
+                )
+                reference_embedding = await service.get_effective_for_session_by_type(
+                    session_id=session_id,
+                    tenant_id=tenant_id,
+                    evidence_type=EvidenceResultType.FACE_EMBEDDING_REFERENCE,
+                )
+                probe_detection = await service.get_effective_for_session_by_type(
+                    session_id=session_id,
+                    tenant_id=tenant_id,
+                    evidence_type=EvidenceResultType.FACE_DETECTION_PROBE,
+                )
+                probe_quality = await service.get_effective_for_session_by_type(
+                    session_id=session_id,
+                    tenant_id=tenant_id,
+                    evidence_type=EvidenceResultType.FACE_QUALITY_PROBE,
+                )
+                probe_embedding = await service.get_effective_for_session_by_type(
+                    session_id=session_id,
+                    tenant_id=tenant_id,
+                    evidence_type=EvidenceResultType.FACE_EMBEDDING_PROBE,
+                )
+                existing_match = await service.get_effective_for_session_by_type(
+                    session_id=session_id,
+                    tenant_id=tenant_id,
+                    evidence_type=EvidenceResultType.FACE_MATCH,
+                )
 
-            reference_usable = _lineage_is_current(
-                reference_detection, reference_quality, reference_embedding
-            )
-            probe_usable = _lineage_is_current(probe_detection, probe_quality, probe_embedding)
+                reference_usable = _lineage_is_current(
+                    reference_detection, reference_quality, reference_embedding
+                )
+                probe_usable = _lineage_is_current(probe_detection, probe_quality, probe_embedding)
 
-            if not (reference_usable and probe_usable):
-                if existing_match is not None:
-                    current_parents = tuple(
-                        row.id
-                        for row, usable in (
-                            (reference_embedding, reference_usable),
-                            (probe_embedding, probe_usable),
+                if not (reference_usable and probe_usable):
+                    if existing_match is not None:
+                        current_parents = tuple(
+                            row.id
+                            for row, usable in (
+                                (reference_embedding, reference_usable),
+                                (probe_embedding, probe_usable),
+                            )
+                            if usable and row is not None
                         )
-                        if usable and row is not None
+                        if existing_match.parent_evidence_result_ids != current_parents:
+                            await self._persist_stage(
+                                service,
+                                existing_match,
+                                session_id=session_id,
+                                tenant_id=tenant_id,
+                                evidence_type=EvidenceResultType.FACE_MATCH,
+                                status=EvidenceResultStatus.INCONCLUSIVE,
+                                reason_codes=(FaceReasonCode.PARENT_EVIDENCE_NOT_USABLE.value,),
+                                result=None,
+                                parent_evidence_result_ids=current_parents,
+                                request_id=request_id,
+                                correlation_id=correlation_id,
+                            )
+                            await session.commit()
+                    log_stage_event(
+                        "verification_stage_inconclusive",
+                        stage="face_match",
+                        session_id=str(session_id),
+                        request_id=request_id,
+                        correlation_id=correlation_id,
+                        duration_ms=(perf_counter() - started_at) * 1000,
+                        failure_category="parent_evidence_not_usable",
                     )
-                    if existing_match.parent_evidence_result_ids != current_parents:
-                        await self._persist_stage(
-                            service,
-                            existing_match,
-                            session_id=session_id,
-                            tenant_id=tenant_id,
-                            evidence_type=EvidenceResultType.FACE_MATCH,
-                            status=EvidenceResultStatus.INCONCLUSIVE,
-                            reason_codes=(FaceReasonCode.PARENT_EVIDENCE_NOT_USABLE.value,),
-                            result=None,
-                            parent_evidence_result_ids=current_parents,
-                            request_id=request_id,
-                            correlation_id=correlation_id,
-                        )
-                        await session.commit()
-                return  # G.2-4: "no row until both ready" when nothing existed to invalidate
+                    return
 
-            assert reference_embedding is not None and probe_embedding is not None
-            current_parents = (reference_embedding.id, probe_embedding.id)
-            if (
-                existing_match is not None
-                and _is_reusable(existing_match.status)
-                and existing_match.parent_evidence_result_ids == current_parents
-            ):
-                return  # G.2-5: fresh, reusable
+                assert reference_embedding is not None and probe_embedding is not None
+                current_parents = (reference_embedding.id, probe_embedding.id)
+                if (
+                    existing_match is not None
+                    and _is_reusable(existing_match.status)
+                    and existing_match.parent_evidence_result_ids == current_parents
+                ):
+                    log_stage_event(
+                        "verification_stage_completed",
+                        stage="face_match",
+                        session_id=str(session_id),
+                        request_id=request_id,
+                        correlation_id=correlation_id,
+                        duration_ms=(perf_counter() - started_at) * 1000,
+                        evidence_result_id=str(existing_match.id),
+                    )
+                    return
 
-            reference_domain = _row_to_face_embedding(reference_embedding)
-            probe_domain = _row_to_face_embedding(probe_embedding)
-            outcome = self._face_matcher.compare(reference=reference_domain, probe=probe_domain)
+                reference_domain = _row_to_face_embedding(reference_embedding)
+                probe_domain = _row_to_face_embedding(probe_embedding)
+                outcome = self._face_matcher.compare(reference=reference_domain, probe=probe_domain)
 
-            if outcome.compatible:
-                status = EvidenceResultStatus.PASS
-                reason_codes: tuple[str, ...] = ()
-                result: dict[str, Any] | None = {
-                    "similarity": outcome.similarity,
-                    "reference_evidence_result_id": str(reference_embedding.id),
-                    "probe_evidence_result_id": str(probe_embedding.id),
-                }
-            else:
-                # BD-001 Slice E, restated not reopened (BD-001.7 §8).
-                status = EvidenceResultStatus.INCONCLUSIVE
-                reason_codes = (FaceReasonCode.REPRESENTATION_INCOMPATIBLE.value,)
-                result = None
+                if outcome.compatible:
+                    status = EvidenceResultStatus.PASS
+                    reason_codes: tuple[str, ...] = ()
+                    result: dict[str, Any] | None = {
+                        "similarity": outcome.similarity,
+                        "reference_evidence_result_id": str(reference_embedding.id),
+                        "probe_evidence_result_id": str(probe_embedding.id),
+                    }
+                else:
+                    status = EvidenceResultStatus.INCONCLUSIVE
+                    reason_codes = (FaceReasonCode.REPRESENTATION_INCOMPATIBLE.value,)
+                    result = None
 
-            await self._persist_stage(
-                service,
-                existing_match,
-                session_id=session_id,
-                tenant_id=tenant_id,
-                evidence_type=EvidenceResultType.FACE_MATCH,
-                status=status,
-                reason_codes=reason_codes,
-                result=result,
-                parent_evidence_result_ids=current_parents,
+                match_row = await self._persist_stage(
+                    service,
+                    existing_match,
+                    session_id=session_id,
+                    tenant_id=tenant_id,
+                    evidence_type=EvidenceResultType.FACE_MATCH,
+                    status=status,
+                    reason_codes=reason_codes,
+                    result=result,
+                    parent_evidence_result_ids=current_parents,
+                    request_id=request_id,
+                    correlation_id=correlation_id,
+                )
+                await session.commit()
+
+                if status is EvidenceResultStatus.INCONCLUSIVE:
+                    log_stage_event(
+                        "verification_stage_inconclusive",
+                        stage="face_match",
+                        session_id=str(session_id),
+                        request_id=request_id,
+                        correlation_id=correlation_id,
+                        duration_ms=(perf_counter() - started_at) * 1000,
+                        evidence_result_id=str(match_row.id),
+                    )
+                else:
+                    log_stage_event(
+                        "verification_stage_completed",
+                        stage="face_match",
+                        session_id=str(session_id),
+                        request_id=request_id,
+                        correlation_id=correlation_id,
+                        duration_ms=(perf_counter() - started_at) * 1000,
+                        evidence_result_id=str(match_row.id),
+                    )
+        except CapabilityUnavailableError:
+            log_stage_event(
+                "verification_stage_unavailable",
+                stage="face_match",
+                session_id=str(session_id),
                 request_id=request_id,
                 correlation_id=correlation_id,
+                duration_ms=(perf_counter() - started_at) * 1000,
+                failure_category="capability_unavailable",
             )
-            await session.commit()
+            raise
+        except Exception:
+            log_stage_event(
+                "verification_stage_failed",
+                stage="face_match",
+                session_id=str(session_id),
+                request_id=request_id,
+                correlation_id=correlation_id,
+                duration_ms=(perf_counter() - started_at) * 1000,
+                failure_category="unexpected_exception",
+            )
+            raise

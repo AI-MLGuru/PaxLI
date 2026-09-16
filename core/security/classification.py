@@ -35,6 +35,9 @@ SENSITIVE_FIELDS = frozenset(
         "bvn",
         "verification_id",
         "verification_identifier",
+        "ocr",
+        "raw_text",
+        "ocr_text",
     }
 )
 

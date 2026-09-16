@@ -29,6 +29,8 @@ the current (ocr_id, mrz_id, barcode_id) against the existing row's own
 parent_evidence_result_ids.
 """
 
+from collections.abc import Awaitable, Callable
+from time import perf_counter
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
@@ -60,6 +62,7 @@ from core.evidence_result.service import EvidenceResultService
 from infrastructure.database.repositories.audit_event import SqlAlchemyAuditEventRepository
 from infrastructure.database.repositories.evidence import SqlAlchemyEvidenceRepository
 from infrastructure.database.repositories.evidence_result import SqlAlchemyEvidenceResultRepository
+from infrastructure.observability.stage_logging import Stage, log_stage_event
 
 if TYPE_CHECKING:
     from core.security.keys import KeyProvider
@@ -252,23 +255,23 @@ class SqlAlchemyDocumentProcessor:
         # gets its own independent session and commits independently,
         # preserving partial-stage-failure preservation regardless of
         # ordering.
-        await self._run_quality(
-            session_id=session_id,
-            tenant_id=tenant_id,
-            capture_id=capture_id,
-            object_key=object_key,
-            ambiguous=ambiguous,
-            request_id=request_id,
-            correlation_id=correlation_id,
+        await self._run_observed_stage(
+            "document_quality",
+            lambda: self._run_quality(
+                session_id=session_id, tenant_id=tenant_id, capture_id=capture_id,
+                object_key=object_key, ambiguous=ambiguous, request_id=request_id,
+                correlation_id=correlation_id,
+            ),
+            session_id=session_id, request_id=request_id, correlation_id=correlation_id,
         )
-        await self._run_classification(
-            session_id=session_id,
-            tenant_id=tenant_id,
-            capture_id=capture_id,
-            object_key=object_key,
-            ambiguous=ambiguous,
-            request_id=request_id,
-            correlation_id=correlation_id,
+        await self._run_observed_stage(
+            "document_classification",
+            lambda: self._run_classification(
+                session_id=session_id, tenant_id=tenant_id, capture_id=capture_id,
+                object_key=object_key, ambiguous=ambiguous, request_id=request_id,
+                correlation_id=correlation_id,
+            ),
+            session_id=session_id, request_id=request_id, correlation_id=correlation_id,
         )
         # DP-003 Decision 7: invoked unconditionally, identically to the
         # two stages above -- no branching on DOCUMENT_CLASSIFICATION's
@@ -276,23 +279,23 @@ class SqlAlchemyDocumentProcessor:
         # carry them. NOT_SUBMITTED absorbs "no applicable zone/symbol
         # found" regardless of document type; any different evidentiary
         # weight is a policy concern, not evidence-producer logic.
-        await self._run_mrz(
-            session_id=session_id,
-            tenant_id=tenant_id,
-            capture_id=capture_id,
-            object_key=object_key,
-            ambiguous=ambiguous,
-            request_id=request_id,
-            correlation_id=correlation_id,
+        await self._run_observed_stage(
+            "document_mrz",
+            lambda: self._run_mrz(
+                session_id=session_id, tenant_id=tenant_id, capture_id=capture_id,
+                object_key=object_key, ambiguous=ambiguous, request_id=request_id,
+                correlation_id=correlation_id,
+            ),
+            session_id=session_id, request_id=request_id, correlation_id=correlation_id,
         )
-        await self._run_barcode(
-            session_id=session_id,
-            tenant_id=tenant_id,
-            capture_id=capture_id,
-            object_key=object_key,
-            ambiguous=ambiguous,
-            request_id=request_id,
-            correlation_id=correlation_id,
+        await self._run_observed_stage(
+            "document_barcode",
+            lambda: self._run_barcode(
+                session_id=session_id, tenant_id=tenant_id, capture_id=capture_id,
+                object_key=object_key, ambiguous=ambiguous, request_id=request_id,
+                correlation_id=correlation_id,
+            ),
+            session_id=session_id, request_id=request_id, correlation_id=correlation_id,
         )
         # DP-005 Decision 3: invoked unconditionally, like every stage
         # above -- OCR has no capability-level absence state (a document
@@ -302,14 +305,14 @@ class SqlAlchemyDocumentProcessor:
         # BEFORE OCREngine.extract() is ever called, exactly as it does
         # for every other stage -- that pipeline-level precondition is
         # unrelated to, and unaffected by, Decision 3.
-        await self._run_ocr(
-            session_id=session_id,
-            tenant_id=tenant_id,
-            capture_id=capture_id,
-            object_key=object_key,
-            ambiguous=ambiguous,
-            request_id=request_id,
-            correlation_id=correlation_id,
+        await self._run_observed_stage(
+            "document_ocr",
+            lambda: self._run_ocr(
+                session_id=session_id, tenant_id=tenant_id, capture_id=capture_id,
+                object_key=object_key, ambiguous=ambiguous, request_id=request_id,
+                correlation_id=correlation_id,
+            ),
+            session_id=session_id, request_id=request_id, correlation_id=correlation_id,
         )
         # DP-008/DP-009 Phase 4: runs after all three field-producing
         # stages above, unconditionally, like every stage before it --
@@ -318,15 +321,54 @@ class SqlAlchemyDocumentProcessor:
         # other stage. Unlike the five stages above, this one never
         # touches self._storage -- its inputs are OCR/MRZ/Barcode's own
         # already-persisted effective results, not the capture image.
-        await self._run_field_extraction(
-            session_id=session_id,
-            tenant_id=tenant_id,
-            capture_id=capture_id,
-            object_key=object_key,
-            ambiguous=ambiguous,
-            request_id=request_id,
-            correlation_id=correlation_id,
+        await self._run_observed_stage(
+            "document_field_extraction",
+            lambda: self._run_field_extraction(
+                session_id=session_id, tenant_id=tenant_id, capture_id=capture_id,
+                object_key=object_key, ambiguous=ambiguous, request_id=request_id,
+                correlation_id=correlation_id,
+            ),
+            session_id=session_id, request_id=request_id, correlation_id=correlation_id,
         )
+
+    async def _run_observed_stage(
+        self,
+        stage: Stage,
+        operation: Callable[[], Awaitable[None]],
+        *,
+        session_id: UUID,
+        request_id: str | None,
+        correlation_id: str | None,
+    ) -> None:
+        started_at = perf_counter()
+        log_stage_event(
+            "verification_stage_started", stage=stage, session_id=str(session_id),
+            request_id=request_id, correlation_id=correlation_id,
+        )
+        try:
+            await operation()
+        except CapabilityUnavailableError:
+            log_stage_event(
+                "verification_stage_unavailable", stage=stage, session_id=str(session_id),
+                request_id=request_id, correlation_id=correlation_id,
+                duration_ms=(perf_counter() - started_at) * 1000,
+                failure_category="capability_unavailable",
+            )
+            raise
+        except Exception:
+            log_stage_event(
+                "verification_stage_failed", stage=stage, session_id=str(session_id),
+                request_id=request_id, correlation_id=correlation_id,
+                duration_ms=(perf_counter() - started_at) * 1000,
+                failure_category="unexpected_exception",
+            )
+            raise
+        else:
+            log_stage_event(
+                "verification_stage_completed", stage=stage, session_id=str(session_id),
+                request_id=request_id, correlation_id=correlation_id,
+                duration_ms=(perf_counter() - started_at) * 1000,
+            )
 
     def _build_evidence_result_service(self, session: AsyncSession) -> EvidenceResultService:
         return EvidenceResultService(

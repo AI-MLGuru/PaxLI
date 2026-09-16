@@ -292,3 +292,29 @@ def test_liveness_audit_failure_returns_error_after_capture_persistence(
 
     assert response.status_code == 500
     assert len(service.persisted) == 1
+
+
+def test_liveness_capture_logging_does_not_invoke_provider(
+    api_client, issued_credentials, monkeypatch
+) -> None:
+    def fail_assess(*args, **kwargs):
+        raise AssertionError("Slice K capture logging must not assess liveness")
+
+    monkeypatch.setattr(
+        "infrastructure.liveness.insightface_provider.InsightFaceLivenessProvider.assess",
+        fail_assess,
+    )
+    create_response = api_client.post(
+        "/v1/verification-sessions",
+        json={"assurance_level": "STANDARD"},
+        headers={"Authorization": issued_credentials["tenant_a_operational"]},
+    )
+    session_id = create_response.json()["data"]["id"]
+
+    response = api_client.post(
+        f"/v1/verification-sessions/{session_id}/liveness",
+        files=[("frames", ("frame.jpg", MINIMAL_JPEG_BYTES, "image/jpeg"))],
+        headers={"Authorization": issued_credentials["tenant_a_operational"]},
+    )
+
+    assert response.status_code == 201

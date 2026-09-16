@@ -1,4 +1,5 @@
 from hashlib import sha256
+from time import perf_counter
 from typing import Annotated
 from uuid import UUID
 
@@ -45,6 +46,7 @@ from core.security.authentication import AuthenticatedPrincipal
 from core.security.authorization import Permission, require_permission
 from core.verification.service import SessionExpiredError, SessionNotFoundError
 from infrastructure.database.session import get_db_session
+from infrastructure.observability.stage_logging import log_stage_event
 
 router = APIRouter(prefix="/verification-sessions", tags=["evidence"])
 
@@ -213,22 +215,53 @@ async def upload_liveness(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Temporal Liveness Demo requires 1 to {settings.liveness_max_frames} frames",
         )
+    started_at = perf_counter()
+    log_stage_event(
+        "verification_stage_started",
+        stage="liveness_capture",
+        request_id=request_id(request),
+        correlation_id=request.headers.get("X-Correlation-ID"),
+        session_id=str(session_id),
+        frame_count=len(frames),
+    )
     uploaded: EvidenceResponse | None = None
-    for index, frame in enumerate(frames):
-        frame_key = f"{idempotency_key}:frame:{index}" if idempotency_key else None
-        uploaded = await store_upload(
-            session_id=session_id,
-            evidence_type=EvidenceType.LIVENESS,
-            request=request,
-            file=frame,
-            service=service,
-            principal=principal,
-            idempotency_key=frame_key,
-            audit_service=audit_service,
-            limiter=limiter,
-            rate_limit_checked=True,
+    try:
+        for index, frame in enumerate(frames):
+            frame_key = f"{idempotency_key}:frame:{index}" if idempotency_key else None
+            uploaded = await store_upload(
+                session_id=session_id,
+                evidence_type=EvidenceType.LIVENESS,
+                request=request,
+                file=frame,
+                service=service,
+                principal=principal,
+                idempotency_key=frame_key,
+                audit_service=audit_service,
+                limiter=limiter,
+                rate_limit_checked=True,
+            )
+    except Exception:
+        log_stage_event(
+            "verification_stage_failed",
+            stage="liveness_capture",
+            request_id=request_id(request),
+            correlation_id=request.headers.get("X-Correlation-ID"),
+            session_id=str(session_id),
+            duration_ms=(perf_counter() - started_at) * 1000,
+            frame_count=len(frames),
+            failure_category="capture_processing_failed",
         )
+        raise
     assert uploaded is not None
+    log_stage_event(
+        "verification_stage_completed",
+        stage="liveness_capture",
+        request_id=request_id(request),
+        correlation_id=request.headers.get("X-Correlation-ID"),
+        session_id=str(session_id),
+        duration_ms=(perf_counter() - started_at) * 1000,
+        frame_count=len(frames),
+    )
     return uploaded
 
 
